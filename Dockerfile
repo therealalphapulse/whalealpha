@@ -5,7 +5,8 @@ FROM python:3.12-slim AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
+COPY src ./src
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
 
@@ -14,11 +15,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 #      -> slim runtime pipeline, and gives a hook point for future codegen,
 #      e.g. an ORM client generation step) ------------------------------
 FROM deps AS build
-COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY scripts ./scripts
-RUN pip install --no-cache-dir --no-deps .
 
 # ---- runtime stage ------------------------------------------------------
 FROM python:3.12-slim AS runtime
