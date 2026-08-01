@@ -167,7 +167,8 @@ async def start_webhook_server(
     app = create_webhook_app(env, session_factory, http_client)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, env.WEBHOOK_HOST, env.WEBHOOK_PORT)
+    port = env.effective_webhook_port
+    site = web.TCPSite(runner, env.WEBHOOK_HOST, port)
     await site.start()
-    log.info("Webhook server started", host=env.WEBHOOK_HOST, port=env.WEBHOOK_PORT, path=env.WEBHOOK_PATH)
+    log.info("Webhook server started", host=env.WEBHOOK_HOST, port=port, path=env.WEBHOOK_PATH)
     return runner
