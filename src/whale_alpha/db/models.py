@@ -106,11 +106,18 @@ class User(Base):
     encrypted_wallet_key: Mapped[str | None] = mapped_column(String, nullable=True)
     wallet_public_key: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # NEW (feature: signal -> notification wiring): whether this user wants a
+    # Telegram DM when a new Signal is generated. Defaults on so existing
+    # behavior (everyone gets notified) matches what the bot's /start message
+    # already promises; toggle with /mute and /unmute.
+    notify_signals: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
     auto_trading_config: Mapped["AutoTradingConfig | None"] = relationship(
         back_populates="user", uselist=False
     )
     trades: Mapped[list["Trade"]] = relationship(back_populates="user")
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="actor")
+    price_alerts: Mapped[list["PriceAlert"]] = relationship(back_populates="user")
 
 
 class WhaleWallet(Base):
@@ -259,6 +266,42 @@ class Trade(Base):
     reconciliation_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
     __table_args__ = (Index("ix_trades_user_id_created_at", "user_id", "created_at"),)
+
+
+class AlertDirection(str, enum.Enum):
+    UP = "UP"
+    DOWN = "DOWN"
+    BOTH = "BOTH"
+
+
+class PriceAlert(Base):
+    """NEW (feature: % price-increase alerts) — user-configured watch on a
+    token's price. Not present in the original TS schema; there was no code
+    path for this feature at all before this port.
+
+    `reference_price_usd` is the baseline the percent move is measured
+    against. It's set when the alert is created (or when it last fired, if
+    `reset_on_trigger` is true) rather than recomputed from scratch each tick,
+    so "up 20%" always means 20% from a fixed point, not a rolling window.
+    """
+
+    __tablename__ = "price_alerts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user: Mapped[User] = relationship(back_populates="price_alerts")
+    token_mint: Mapped[str] = mapped_column(String, nullable=False)
+    threshold_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    direction: Mapped[AlertDirection] = mapped_column(
+        Enum(AlertDirection), default=AlertDirection.BOTH, nullable=False
+    )
+    reference_price_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    reset_on_trigger: Mapped[bool] = mapped_column(Boolean, default=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("ix_price_alerts_active_token_mint", "active", "token_mint"),)
 
 
 class AuditLog(Base):
