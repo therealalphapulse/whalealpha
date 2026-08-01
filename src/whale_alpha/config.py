@@ -43,8 +43,14 @@ class Env(BaseSettings):
     SOLANA_CLUSTER: Literal["mainnet-beta", "devnet", "testnet"] = "mainnet-beta"
 
     JUPITER_API_BASE: str = "https://quote-api.jup.ag/v6"
+    # Optional override for a paid/self-hosted price feed. When unset, the
+    # price feed integration (integrations/price_feed.py) falls back to
+    # Jupiter's public Price API — see that module's docstring for the exact
+    # request/response shape assumed and how to point this at a different
+    # provider.
     PRICE_FEED_API_BASE: str | None = None
     PRICE_FEED_API_KEY: str | None = None
+    PRICE_CACHE_TTL_SECONDS: float = Field(15, ge=1)
 
     ENCRYPTION_KEY: str
     JWT_SECRET: str = Field(..., min_length=16)
@@ -56,6 +62,23 @@ class Env(BaseSettings):
     DEFAULT_MAX_SLIPPAGE_BPS: int = 150
     DEFAULT_MAX_DAILY_TRADES: int = 10
     DEFAULT_MAX_DAILY_EXPOSURE_USD: float = 500
+
+    # --- Whale ingestion webhook (feature: whale wallet tracking) ---
+    # Inbound HTTP receiver for an indexer (Helius enhanced webhooks by
+    # default — see integrations/helius_webhook.py) that POSTs tracked-wallet
+    # activity. The bot itself stays long-polling; this is a *separate* small
+    # aiohttp server run alongside it (see main.py).
+    WEBHOOK_HOST: str = "0.0.0.0"
+    WEBHOOK_PORT: int = Field(8080, ge=1, le=65535)
+    WEBHOOK_PATH: str = "/webhooks/helius"
+    # Shared secret Helius echoes back in the `Authorization` header when you
+    # configure "Authentication Header" on the webhook in the Helius
+    # dashboard. Required in production so the endpoint can't be spoofed.
+    HELIUS_WEBHOOK_SECRET: str | None = None
+
+    # --- % price-increase alerts (feature: price alerts) ---
+    PRICE_ALERT_INTERVAL_SECONDS: float = Field(60, ge=5)
+    PRICE_ALERT_MIN_COOLDOWN_MINUTES: float = Field(15, ge=0)
 
     @field_validator("SOLANA_RPC_URL", "JUPITER_API_BASE")
     @classmethod
