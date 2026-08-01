@@ -16,6 +16,16 @@ scheduler, this now also starts:
     nonexistent % price-move alert feature.
 Both are started/stopped the same way as the scheduler: a background asyncio
 task plus a `stop()`/`cleanup()` call on shutdown.
+
+--- NEW: production-grade staged startup logging + fail-loud error handling ---
+Every stage of startup now logs explicitly (env -> Postgres -> Redis ->
+reconciliation -> bot -> Solana monitor -> Helius webhook -> background
+workers -> ready), so a Railway deploy log always shows exactly how far
+startup got. `run()` no longer swallows the traceback of a fatal startup
+error: it now prints the full traceback (file + line number) via
+`traceback.print_exc()` in addition to the structured log line, and always
+exits with a non-zero status so Railway reports the deploy as failed instead
+of leaving a container that looks "Online" but never came up.
 """
 
 from __future__ import annotations
@@ -23,9 +33,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal as signal_module
+import sys
+import traceback
 
 import httpx
 from redis.asyncio import Redis
+from sqlalchemy import text
 
 from whale_alpha.bot import create_bot
 from whale_alpha.config import get_env
@@ -41,15 +54,34 @@ log = child_logger("main")
 
 
 async def main() -> None:
+    # --- stage 1: environment -------------------------------------------
     env = get_env()
     configure_logging(env.LOG_LEVEL, env.NODE_ENV)
+    log.info("Loading environment...")
+    log.info("Environment loaded", node_env=env.NODE_ENV, log_level=env.LOG_LEVEL)
 
+    # --- stage 2: PostgreSQL ----------------------------------------------
+    log.info("Connecting PostgreSQL...")
     engine = create_engine(env)
     session_factory = create_session_factory(engine)
-    log.info("Database connected")
+    # create_async_engine() is lazy — it does not actually open a connection.
+    # Prove connectivity here with a real round-trip so a bad DATABASE_URL,
+    # unreachable host, or auth failure surfaces immediately and loudly,
+    # instead of silently deferring the first real error to whichever
+    # handler happens to touch the DB first.
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
+    log.info("PostgreSQL connected")
 
+    # --- stage 3: Redis -----------------------------------------------------
+    log.info("Connecting Redis...")
     redis = Redis.from_url(env.REDIS_URL)
+    await redis.ping()
+    log.info("Redis connected")
 
+    log.info("Database Ready.")
+
+    # --- stage 4: startup reconciliation -------------------------------
     reconciliation_connection = create_connection(env)
     try:
         async with session_factory() as session:
@@ -60,17 +92,22 @@ async def main() -> None:
 
     http_client = httpx.AsyncClient(timeout=30.0)
 
-    # Long-lived connection used by the scheduler (auto-trading eligibility /
-    # balance checks) — distinct from the short-lived one reconciliation just
-    # used, and distinct from the one each trade execution opens for itself
-    # in engines/trade_executor.py.
+    log.info("Loading Solana Monitor...")
     solana_connection = create_connection(env)
+    log.info("Solana Monitor ready")
 
+    log.info("Loading Telegram Bot...")
     bot, dp = create_bot(env, redis, session_factory, http_client)
+    log.info("Telegram Bot loaded")
 
+    log.info("Loading Background Workers...")
     stop_scheduler = start_scheduler(env, session_factory, bot, http_client, solana_connection)
     stop_price_alerts = start_price_alert_loop(env, session_factory, bot, http_client)
+    log.info("Background Workers started")
+
+    log.info("Loading Helius Webhook...")
     webhook_runner = await start_webhook_server(env, session_factory, http_client)
+    log.info("Helius Webhook running")
 
     stop_event = asyncio.Event()
 
@@ -80,13 +117,13 @@ async def main() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal_module.SIGINT, signal_module.SIGTERM):
-        # add_signal_handler isn't available on some platforms (e.g. Windows);
-        # Railway's runtime is Linux, so this is a defensive fallback only.
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _handle_sigint)
 
     polling_task = asyncio.create_task(dp.start_polling(bot))
-    log.info("Whale Alpha bot started", env=env.NODE_ENV)
+    log.info("Bot Started Successfully.", env=env.NODE_ENV)
+    log.info("Webhook Server Running.", host=env.WEBHOOK_HOST, port=env.effective_webhook_port)
+    log.info("Application Ready.")
 
     await stop_event.wait()
 
@@ -106,7 +143,11 @@ def run() -> None:
     try:
         asyncio.run(main())
     except Exception as err:  # noqa: BLE001 — mirrors the TS catch-all in main().catch(...)
-        log.error("Fatal startup error", err=str(err))
+        log.error("Fatal startup error", err=str(err), err_type=type(err).__name__)
+        print("FATAL: Whale Alpha failed to start. Full traceback:", file=sys.stderr)
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
         raise SystemExit(1) from err
 
 
