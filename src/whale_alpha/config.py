@@ -15,6 +15,7 @@ same env var names so `.env` files are drop-in compatible.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from functools import lru_cache
@@ -104,6 +105,26 @@ class Env(BaseSettings):
     @property
     def admin_telegram_ids(self) -> set[str]:
         return {s.strip() for s in self.TELEGRAM_ADMIN_CHAT_IDS.split(",") if s.strip()}
+
+    @property
+    def effective_webhook_port(self) -> int:
+        """Port the Helius webhook server actually binds to.
+
+        Railway injects a `PORT` env var (and, if a public domain / TCP
+        proxy is attached to the service, routes its healthcheck and
+        traffic to it) that can differ from whatever fixed `WEBHOOK_PORT`
+        was configured. Preferring `PORT` when present means the webhook
+        server — and Railway's optional `/healthz` healthcheck — line up
+        with Railway's networking automatically, without requiring the
+        "Target Port" to be manually kept in sync in the dashboard.
+        """
+        port = os.environ.get("PORT")
+        if port:
+            try:
+                return int(port)
+            except ValueError:
+                return self.WEBHOOK_PORT
+        return self.WEBHOOK_PORT
 
 
 def load_env() -> Env:
