@@ -4,7 +4,7 @@
 # NOTE: this project uses setuptools' src-layout (see pyproject.toml's
 # [tool.setuptools.packages.find] where = ["src"]). `pip install .` needs
 # setuptools to be able to *discover* a package under src/ to build the
-# wheel's metadata, even before `src/` has any real code in it — otherwise
+# wheel's metadata, even before `src/` has any real code in it â€” otherwise
 # it fails with "error in 'egg_base' option: 'src' does not exist or is not
 # a directory". We create a minimal stub package here so pip can resolve
 # and install every dependency (the expensive, cacheable part) without the
@@ -44,17 +44,33 @@ COPY --from=build /app/src ./src
 COPY --from=build /app/alembic ./alembic
 COPY --from=build /app/alembic.ini ./
 COPY --from=build /app/scripts ./scripts
+COPY docker-entrypoint.sh ./
 
 ENV PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
     NODE_ENV=production
 
+# chmod as root before dropping privileges; whalealpha only needs
+# read+execute on the script, which this grants.
+RUN chmod +x ./docker-entrypoint.sh
+
 USER whalealpha
 
 # Telegram updates use long-polling (no port needed for that), but the
 # whale-wallet ingestion webhook server (integrations/helius_webhook.py)
-# does listen on WEBHOOK_PORT (default 8080) — expose it so an indexer can
-# reach it when this container is deployed behind a public URL.
+# does listen on WEBHOOK_PORT (default 8080, or Railway's injected $PORT â€”
+# see config.py's effective_webhook_port) â€” expose it so an indexer, or
+# Railway's healthcheck, can reach it when this container is deployed
+# behind a public URL.
 EXPOSE 8080
 
+# ENTRYPOINT always runs first: it loads env, runs `alembic upgrade head`
+# to completion (aborting loudly on failure), logs "Database Ready.", and
+# then `exec`s CMD â€” replacing itself with the app process. This is the
+# single source of truth for "how this container starts"; it does not
+# depend on any Railway dashboard Start Command being configured correctly.
+# If Railway's dashboard has a custom Start Command set, clear it (or set
+# it to "python -m whale_alpha.main") so this ENTRYPOINT stays in the loop â€”
+# a dashboard Start Command completely replaces both ENTRYPOINT and CMD.
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["python", "-m", "whale_alpha.main"]
