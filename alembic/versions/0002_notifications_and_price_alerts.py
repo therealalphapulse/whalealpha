@@ -1,6 +1,6 @@
 """Add User.notify_signals and the price_alerts table.
 
-Revision ID: 0002_notifications_and_price_alerts
+Revision ID: 0002_notify_alerts
 Revises: 0001_initial
 Create Date: 2026-07-31
 
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0002_notifications_and_price_alerts"
+revision: str = "0002_notify_alerts"
 down_revision: Union[str, None] = "0001_initial"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
