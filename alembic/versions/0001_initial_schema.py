@@ -28,15 +28,19 @@ down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-role_enum = postgresql.ENUM("USER", "ADMIN", "SUPERADMIN", name="role")
+role_enum = postgresql.ENUM("USER", "ADMIN", "SUPERADMIN", name="role", create_type=False)
 wallet_status_enum = postgresql.ENUM(
-    "PENDING_REVIEW", "APPROVED", "REJECTED", "SUSPENDED", "RETIRED", name="walletstatus"
+    "PENDING_REVIEW", "APPROVED", "REJECTED", "SUSPENDED", "RETIRED",
+    name="walletstatus", create_type=False,
 )
-risk_profile_enum = postgresql.ENUM("CONSERVATIVE", "BALANCED", "AGGRESSIVE", name="riskprofile")
-trade_side_enum = postgresql.ENUM("BUY", "SELL", name="tradeside")
-trade_source_enum = postgresql.ENUM("MANUAL", "AUTO_SIGNAL", name="tradesource")
+risk_profile_enum = postgresql.ENUM(
+    "CONSERVATIVE", "BALANCED", "AGGRESSIVE", name="riskprofile", create_type=False
+)
+trade_side_enum = postgresql.ENUM("BUY", "SELL", name="tradeside", create_type=False)
+trade_source_enum = postgresql.ENUM("MANUAL", "AUTO_SIGNAL", name="tradesource", create_type=False)
 trade_status_enum = postgresql.ENUM(
-    "PENDING", "SUBMITTED", "CONFIRMED", "FAILED", "CANCELLED", name="tradestatus"
+    "PENDING", "SUBMITTED", "CONFIRMED", "FAILED", "CANCELLED",
+    name="tradestatus", create_type=False,
 )
 
 
