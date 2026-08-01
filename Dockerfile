@@ -1,11 +1,23 @@
 # syntax=docker/dockerfile:1
 
 # ---- deps stage -------------------------------------------------------
+# NOTE: this project uses setuptools' src-layout (see pyproject.toml's
+# [tool.setuptools.packages.find] where = ["src"]). `pip install .` needs
+# setuptools to be able to *discover* a package under src/ to build the
+# wheel's metadata, even before `src/` has any real code in it — otherwise
+# it fails with "error in 'egg_base' option: 'src' does not exist or is not
+# a directory". We create a minimal stub package here so pip can resolve
+# and install every dependency (the expensive, cacheable part) without the
+# real source being present yet; the `build` stage below then copies the
+# real src/ over the stub and reinstalls with --no-deps, which is fast
+# since dependency resolution already happened. This keeps this layer
+# cached across builds where only your source changed, not pyproject.toml.
 FROM python:3.12-slim AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
+RUN mkdir -p src/whale_alpha && touch src/whale_alpha/__init__.py
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
 
@@ -41,7 +53,7 @@ USER whalealpha
 
 # Telegram updates use long-polling (no port needed for that), but the
 # whale-wallet ingestion webhook server (integrations/helius_webhook.py)
-# does listen on WEBHOOK_PORT (default 8080) â€” expose it so an indexer can
+# does listen on WEBHOOK_PORT (default 8080) — expose it so an indexer can
 # reach it when this container is deployed behind a public URL.
 EXPOSE 8080
 
