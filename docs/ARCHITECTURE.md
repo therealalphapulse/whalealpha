@@ -80,12 +80,31 @@ for the full reasoning and the states this handles.
 
 ## What's stubbed vs. real
 
-See the `TODO(integration)` markers in:
+The diagram above was aspirational when first written — the notification and
+auto-trading branches existed as TODOs with no caller. As of this port,
+that's closed: `engines/scheduler.py` actually calls
+`services.notification.notify_signal_subscribers` and
+`engines.auto_trading.process_signal_for_auto_trading`, and the USD->lamports
+conversion uses a real price feed (`integrations/price_feed.py`) instead of
+the old `/ 1` placeholder. See README.md's "Feature status" table for the
+full list of what's wired up.
+
+Still-open `TODO(integration)` markers:
 - `integrations/solana_connection.py` — bulk wallet monitoring at scale
+  (polling vs. subscribing) once you're past a handful of tracked wallets
 - `engines/scheduler.py` — token safety context (liquidity/holders/LP lock)
-- `engines/auto_trading.py` — USD->lamports conversion needs a live price feed
-- `integrations/jupiter_client.py` — signing flow (custodial vs non-custodial)
+  is still passed as `None` to `evaluate_token_cluster`; wire in a
+  liquidity/holder-data provider to score signals less conservatively
+- `integrations/jupiter_client.py` — signing flow (custodial vs
+  non-custodial); the custodial encrypted-key signer in
+  `engines/trade_executor.py` and `bot/commands/wallet.py` is a starting
+  point requiring a security review, not a production-ready signer
+- `integrations/price_feed.py` and `integrations/helius_webhook.py` — both
+  have a real default implementation (Jupiter Price API; Helius enhanced
+  webhooks) but are explicitly flagged as assumptions about a third-party
+  payload/response shape you should verify against live data
 
 Everything else (scoring math, signal aggregation, risk-rule evaluation,
-RBAC, audit logging, encryption, and the new restart-safe reconciliation) is
-real, tested logic, not a placeholder.
+RBAC, audit logging, encryption, restart-safe reconciliation, and the
+notification/auto-trading/manual-trading/wallet-connection/price-alert
+wiring) is real, tested logic, not a placeholder.
