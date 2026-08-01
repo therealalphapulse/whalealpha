@@ -12,20 +12,20 @@ Same disclaimer as 0001: hand-authored against db/models.py, no live
 Postgres to autogenerate against in this sandbox. Diff against
 `alembic revision --autogenerate` before trusting this in production.
 """
-# force rebuild
 from __future__ import annotations
 
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0002_notifications_and_price_alerts"
 down_revision: Union[str, None] = "0001_initial"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-alert_direction_enum = sa.Enum("UP", "DOWN", "BOTH", name="alertdirection", create_type=False)
+alert_direction_enum = postgresql.ENUM("UP", "DOWN", "BOTH", name="alertdirection", create_type=False)
 
 
 def upgrade() -> None:
