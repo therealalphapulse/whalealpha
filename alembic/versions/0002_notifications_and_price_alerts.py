@@ -12,6 +12,7 @@ Same disclaimer as 0001: hand-authored against db/models.py, no live
 Postgres to autogenerate against in this sandbox. Diff against
 `alembic revision --autogenerate` before trusting this in production.
 """
+# force rebuild
 from __future__ import annotations
 
 from typing import Sequence, Union
