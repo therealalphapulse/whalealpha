@@ -24,7 +24,7 @@ down_revision: Union[str, None] = "0001_initial"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-alert_direction_enum = sa.Enum("UP", "DOWN", "BOTH", name="alertdirection")
+alert_direction_enum = sa.Enum("UP", "DOWN", "BOTH", name="alertdirection", create_type=False)
 
 
 def upgrade() -> None:
