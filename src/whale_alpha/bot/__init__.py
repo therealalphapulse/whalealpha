@@ -5,19 +5,33 @@ both transport and dispatch. aiogram v3 splits this into a `Bot` (transport,
 API calls) and a `Dispatcher` (routing/middleware), with `Router`s attached to
 the dispatcher. We mirror the same command set and the same middleware order
 (rate limit -> RBAC) as the original `bot.use(...)` calls.
+
+--- NEW vs. the original port ---
+`Dispatcher` now uses `RedisStorage` instead of the default in-memory FSM
+storage, since /connectwallet (bot/commands/wallet.py) needs FSM state to
+survive a restart between "asked for your key" and "received it" — in-memory
+storage would silently drop that mid-flow on a redeploy, leaving the user
+stuck. Also registers the four new command routers (wallet, manual_trading,
+alerts) and threads an `httpx.AsyncClient` through to the ones that need it
+for price-feed lookups.
 """
 
 from __future__ import annotations
 
+import httpx
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message
 from aiogram.filters import Command
+from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.types import Message
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from whale_alpha.bot.commands.admin import register_admin_commands
+from whale_alpha.bot.commands.alerts import register_alert_commands
+from whale_alpha.bot.commands.manual_trading import register_manual_trading_commands
 from whale_alpha.bot.commands.trading import register_trading_commands
+from whale_alpha.bot.commands.wallet import register_wallet_commands
 from whale_alpha.bot.commands.whales import register_whales_command
 from whale_alpha.bot.middlewares.rate_limit import RateLimitMiddleware
 from whale_alpha.bot.middlewares.rbac import RbacMiddleware
@@ -28,9 +42,11 @@ from whale_alpha.utils.logger import child_logger
 log = child_logger("bot")
 
 
-def create_bot(env: Env, redis: Redis, session_factory: async_sessionmaker) -> tuple[Bot, Dispatcher]:
+def create_bot(
+    env: Env, redis: Redis, session_factory: async_sessionmaker, http_client: httpx.AsyncClient
+) -> tuple[Bot, Dispatcher]:
     bot = Bot(token=env.TELEGRAM_BOT_TOKEN)
-    dp = Dispatcher()
+    dp = Dispatcher(storage=RedisStorage(redis))
 
     dp.update.outer_middleware(RateLimitMiddleware(redis))
     dp.update.outer_middleware(RbacMiddleware(env))
@@ -52,14 +68,21 @@ def create_bot(env: Env, redis: Redis, session_factory: async_sessionmaker) -> t
             "whales accumulate the same token, and trade manually or with rule-based "
             "auto trading.\n\n"
             "/whales — browse the curated whale database\n"
+            "/connectwallet — connect a wallet to trade with\n"
+            "/buy /sell — manual trading\n"
             "/portfolio — your trade history\n"
             "/autotrading — view/configure auto-trading rules\n"
+            "/alert /alerts — set % price-move alerts\n"
+            "/mute /unmute — toggle whale-signal DMs\n"
             f"{admin_lines}",
             parse_mode="Markdown",
         )
 
     dp.include_router(register_whales_command(session_factory))
     dp.include_router(register_trading_commands(session_factory))
+    dp.include_router(register_wallet_commands(session_factory, env))
+    dp.include_router(register_manual_trading_commands(session_factory, env, http_client))
+    dp.include_router(register_alert_commands(session_factory, env, http_client))
     dp.include_router(register_admin_commands(session_factory))
 
     @dp.errors()
