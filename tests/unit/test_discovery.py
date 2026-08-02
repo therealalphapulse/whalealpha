@@ -9,11 +9,13 @@ from datetime import UTC, datetime, timedelta
 
 from whale_alpha.engines.discovery import (
     DiscoveryConfig,
+    _queue_new_candidates,
     evaluate_promotion,
     evaluate_retention,
     select_wallets_to_retire_for_ceiling,
 )
 from whale_alpha.engines.scoring import MIN_APPROVED_SCORE, WalletMetrics
+from whale_alpha.integrations.wallet_discovery_source import DiscoveredCandidate
 
 NOW = datetime(2026, 8, 1, tzinfo=UTC)
 
@@ -240,3 +242,67 @@ def test_selects_exactly_the_surplus_count():
     to_retire = select_wallets_to_retire_for_ceiling(approved, max_tracked=7)
     assert len(to_retire) == 3
     assert set(to_retire) == {"0", "1", "2"}  # three lowest scores
+
+
+# --------------------------------------------------------------------------
+# _queue_new_candidates — dedup + budget logic behind both sourcing streams
+# (signal-derived and the trending-token bootstrap that fixes cold start).
+# --------------------------------------------------------------------------
+
+
+class _FakeSession:
+    """Records what would have been session.add()'d, without a real DB —
+    enough to test the dedup/budget logic in isolation."""
+
+    def __init__(self):
+        self.added: list[DiscoveredCandidate] = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+
+def _addrs(n: int) -> list[str]:
+    from solders.pubkey import Pubkey
+
+    return [str(Pubkey.new_unique()) for _ in range(n)]
+
+
+def test_queues_new_candidates_up_to_budget():
+    session = _FakeSession()
+    addrs = _addrs(5)
+    candidates = [DiscoveredCandidate(address=a, source="test") for a in addrs]
+    queued = _queue_new_candidates(session, candidates, known_addresses=set(), budget=3)
+    assert queued == 3
+    assert len(session.added) == 3
+
+
+def test_skips_candidates_already_known_tracked_or_queued():
+    session = _FakeSession()
+    addrs = _addrs(5)
+    known = {addrs[0], addrs[2]}
+    candidates = [DiscoveredCandidate(address=a, source="test") for a in addrs]
+    queued = _queue_new_candidates(session, candidates, known_addresses=known, budget=10)
+    assert queued == 3
+    assert {c.address for c in session.added} == {addrs[1], addrs[3], addrs[4]}
+
+
+def test_rejects_an_invalid_solana_address():
+    session = _FakeSession()
+    candidates = [DiscoveredCandidate(address="not-a-real-address", source="test")]
+    queued = _queue_new_candidates(session, candidates, known_addresses=set(), budget=10)
+    assert queued == 0
+    assert session.added == []
+
+
+def test_mutates_known_addresses_so_a_second_stream_cannot_double_queue():
+    session = _FakeSession()
+    known: set[str] = set()
+    addr = _addrs(1)[0]
+    first_stream = [DiscoveredCandidate(address=addr, source="signal_derived")]
+    _queue_new_candidates(session, first_stream, known_addresses=known, budget=10)
+    assert addr in known
+
+    second_stream = [DiscoveredCandidate(address=addr, source="trending_token_holder")]
+    queued = _queue_new_candidates(session, second_stream, known_addresses=known, budget=10)
+    assert queued == 0
+    assert len(session.added) == 1  # only the first stream's copy was queued
