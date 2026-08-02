@@ -16,6 +16,7 @@ import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
@@ -23,10 +24,161 @@ from solana.rpc.models import TokenAccountOpts
 from solders.pubkey import Pubkey
 
 from whale_alpha.config import Env
+from whale_alpha.utils.logger import child_logger
+
+log = child_logger("solana_connection")
+
+
+def _redact_endpoint(url: str) -> str:
+    """Strips likely API keys from an RPC URL before it ever hits a log line
+    — query strings, and (Alchemy/Ankr/dRPC-style) the last path segment.
+    """
+    parsed = urlsplit(url)
+    path = parsed.path
+    segments = path.rstrip("/").split("/")
+    if len(segments) > 1 and segments[-1]:
+        segments[-1] = "***"
+        path = "/".join(segments)
+    query = "***" if parsed.query else ""
+    return urlunsplit((parsed.scheme, parsed.netloc, path, query, ""))
+
+
+def _resolve_rpc_endpoints(env: Env) -> list[str]:
+    """Builds the ordered list of Solana RPC endpoints to use, primary first.
+
+    SOLANA_RPC_URL is always tried first (unchanged behavior when nothing
+    else is configured). Everything after it is only ever tried once an
+    earlier endpoint has failed:
+
+      1. SOLANA_RPC_FALLBACK_URLS — comma-separated full URLs, for any
+         provider not covered below (or a self-hosted / private node).
+      2. DRPC_API_KEY / ALCHEMY_API_KEY / ANKR_API_KEY — convenience keys
+         that build the provider's standard Solana mainnet URL, so ops
+         don't have to hand-construct it.
+      3. On mainnet-beta only: a couple of free, keyless public endpoints
+         (dRPC, Ankr) as a last-resort safety net, so a missing/misconfigured
+         API key still leaves the bot with *some* redundancy rather than a
+         single point of failure. These have low rate limits — fine as a
+         fallback of last resort, not meant to carry sustained load.
+
+    Duplicates (e.g. the same URL listed twice, or repeated across
+    SOLANA_RPC_URL and a fallback) are dropped, preserving first occurrence
+    so the intended priority order is kept.
+    """
+    endpoints = [env.SOLANA_RPC_URL]
+
+    for raw in env.SOLANA_RPC_FALLBACK_URLS.split(","):
+        url = raw.strip()
+        if url:
+            endpoints.append(url)
+
+    if env.DRPC_API_KEY:
+        endpoints.append(f"https://solana.drpc.org?dkey={env.DRPC_API_KEY}")
+    if env.ALCHEMY_API_KEY:
+        endpoints.append(f"https://solana-mainnet.g.alchemy.com/v2/{env.ALCHEMY_API_KEY}")
+    if env.ANKR_API_KEY:
+        endpoints.append(f"https://rpc.ankr.com/solana/{env.ANKR_API_KEY}")
+
+    if env.SOLANA_CLUSTER == "mainnet-beta":
+        endpoints.append("https://solana.drpc.org")
+        endpoints.append("https://rpc.ankr.com/solana")
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for url in endpoints:
+        if url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
+
+
+class _FailoverAsyncClient:
+    """Duck-typed drop-in for `solana.rpc.async_api.AsyncClient` that
+    transparently fails over across multiple RPC endpoints.
+
+    Every attribute access (`.get_balance`, `.send_raw_transaction`,
+    `.get_signatures_for_address`, ...) returns a proxy coroutine: calling it
+    attempts the currently-active endpoint's real `AsyncClient` first, then —
+    only if that raises — each remaining endpoint in turn, up to
+    `max_attempts` total tries, before re-raising the last error. This means
+    every existing call site across the codebase (`connection.get_balance(...)`,
+    `await connection.close()`, the `fn` passed into `_rate_limited_rpc_call`,
+    etc.) keeps working completely unchanged; only `create_connection()`
+    needed to change.
+
+    Failover is "sticky": once an endpoint succeeds, it becomes the active
+    one for subsequent calls (rather than always retrying the primary
+    first), so a sustained primary-provider outage doesn't tack a doomed
+    extra round-trip onto every single call until it recovers.
+
+    Re-sending a transaction to a second RPC after `send_raw_transaction`
+    raises on the first is safe: Solana dedupes by transaction signature, so
+    a possible double-broadcast of the *same* signed transaction is a no-op
+    at worst (and is exactly what some production setups do deliberately,
+    for faster propagation).
+    """
+
+    def __init__(self, urls: list[str], *, max_attempts: int, commitment: Any = Confirmed) -> None:
+        self._urls = urls
+        self._clients = [AsyncClient(url, commitment=commitment) for url in urls]
+        self._max_attempts = min(max_attempts, len(urls))
+        self._active = 0
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        async def _failover_call(*args: Any, **kwargs: Any) -> Any:
+            last_err: Exception | None = None
+            index = self._active
+            for attempt in range(self._max_attempts):
+                client = self._clients[index]
+                try:
+                    result = await getattr(client, name)(*args, **kwargs)
+                except Exception as err:  # noqa: BLE001 — any provider-side failure triggers failover
+                    last_err = err
+                    log.warning(
+                        "Solana RPC call failed, trying next endpoint" if attempt + 1 < self._max_attempts
+                        else "Solana RPC call failed on all endpoints",
+                        method=name,
+                        endpoint=_redact_endpoint(self._urls[index]),
+                        err=str(err),
+                        err_type=type(err).__name__,
+                    )
+                    index = (index + 1) % len(self._clients)
+                    continue
+                if index != self._active:
+                    log.warning(
+                        "Solana RPC failover: switched active endpoint",
+                        method=name,
+                        new_endpoint=_redact_endpoint(self._urls[index]),
+                    )
+                    self._active = index
+                return result
+
+            assert last_err is not None
+            raise last_err
+
+        return _failover_call
+
+    async def close(self) -> None:
+        for client in self._clients:
+            with contextlib.suppress(Exception):  # noqa: BLE001 — best-effort cleanup of every endpoint
+                await client.close()
 
 
 def create_connection(env: Env) -> AsyncClient:
-    return AsyncClient(env.SOLANA_RPC_URL, commitment=Confirmed)
+    endpoints = _resolve_rpc_endpoints(env)
+    if len(endpoints) == 1:
+        return AsyncClient(endpoints[0], commitment=Confirmed)
+    log.info(
+        "Solana RPC configured with failover",
+        endpoints=[_redact_endpoint(url) for url in endpoints],
+        max_attempts=min(env.SOLANA_RPC_MAX_FAILOVER_ATTEMPTS, len(endpoints)),
+    )
+    return _FailoverAsyncClient(  # type: ignore[return-value] — duck-typed, see class docstring
+        endpoints, max_attempts=env.SOLANA_RPC_MAX_FAILOVER_ATTEMPTS
+    )
 
 
 def is_valid_solana_address(address: str) -> bool:
