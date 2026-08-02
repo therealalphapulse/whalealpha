@@ -1,6 +1,8 @@
 """Tests for integrations/price_feed.py, using httpx.MockTransport so no real
-network call is made. Exercises caching, the Jupiter-shaped response parsing,
-and graceful handling of an unresolvable mint.
+network call is made. Exercises caching, response parsing for both Jupiter's
+current Price API V3 shape and a legacy/custom V2-shaped provider (kept for
+compatibility — see price_feed.py's docstring), the x-api-key auth header,
+and graceful handling of an unresolvable mint / provider error.
 """
 
 from __future__ import annotations
@@ -31,7 +33,22 @@ def _reset_cache():
     yield
 
 
-async def test_fetches_and_returns_prices_for_known_mints():
+async def test_fetches_and_returns_prices_for_known_mints_v3_shape():
+    # Jupiter Price API V3: flat map, no "data" wrapper, "usdPrice" field.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={MINT_A: {"usdPrice": 1.23}, MINT_B: {"usdPrice": 150.0}}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    prices = await price_feed.get_prices_usd(client, _Env(), [MINT_A, MINT_B])
+    assert prices[MINT_A] == 1.23
+    assert prices[MINT_B] == 150.0
+
+
+async def test_accepts_legacy_v2_shaped_response_for_custom_providers():
+    # A custom PRICE_FEED_API_BASE pointed at a provider that still uses the
+    # old {"data": {mint: {"price": ...}}} shape should still work.
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": {MINT_A: {"price": "1.23"}, MINT_B: {"price": "150.0"}}})
 
@@ -41,9 +58,25 @@ async def test_fetches_and_returns_prices_for_known_mints():
     assert prices[MINT_B] == 150.0
 
 
+async def test_sends_api_key_as_x_api_key_header_not_bearer():
+    captured_headers: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers.update(request.headers)
+        return httpx.Response(200, json={MINT_A: {"usdPrice": 1.0}})
+
+    class _EnvWithKey(_Env):
+        PRICE_FEED_API_KEY = "test-key-123"
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await price_feed.get_prices_usd(client, _EnvWithKey(), [MINT_A])
+    assert captured_headers.get("x-api-key") == "test-key-123"
+    assert "authorization" not in captured_headers
+
+
 async def test_omits_unresolvable_mints_rather_than_raising():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": {MINT_A: {"price": "1.23"}}})
+        return httpx.Response(200, json={MINT_A: {"usdPrice": 1.23}})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     prices = await price_feed.get_prices_usd(client, _Env(), [MINT_A, MINT_B])
@@ -57,7 +90,7 @@ async def test_second_call_within_ttl_does_not_hit_the_network_again():
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        return httpx.Response(200, json={"data": {MINT_A: {"price": "1.0"}}})
+        return httpx.Response(200, json={MINT_A: {"usdPrice": 1.0}})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     env = _Env()
