@@ -43,6 +43,25 @@ class Env(BaseSettings):
     SOLANA_WS_URL: str | None = None
     SOLANA_CLUSTER: Literal["mainnet-beta", "devnet", "testnet"] = "mainnet-beta"
 
+    # --- Solana RPC redundancy / failover (see integrations/solana_connection.py) ---
+    # Every Solana RPC call made through create_connection() now transparently
+    # fails over across multiple providers instead of hard-depending on
+    # SOLANA_RPC_URL alone. SOLANA_RPC_URL is always tried first; these add
+    # more endpoints, tried in order only after an earlier one errors.
+    #
+    # Comma-separated list of additional full RPC URLs (any provider, or a
+    # self-hosted node) — e.g. "https://rpc.example.com,https://rpc2.example.com".
+    SOLANA_RPC_FALLBACK_URLS: str = ""
+    # Convenience: set just the API key and the provider's standard Solana
+    # mainnet URL is built automatically, instead of hand-writing it into
+    # SOLANA_RPC_FALLBACK_URLS. Leave unset to skip that provider.
+    DRPC_API_KEY: str | None = None
+    ALCHEMY_API_KEY: str | None = None
+    ANKR_API_KEY: str | None = None
+    # Max endpoints tried (in order) for a single RPC call before giving up.
+    # 1 disables failover entirely (matches pre-failover behavior).
+    SOLANA_RPC_MAX_FAILOVER_ATTEMPTS: int = Field(4, ge=1)
+
     JUPITER_API_BASE: str = "https://quote-api.jup.ag/v6"
     # Optional override for a paid/self-hosted price feed. When unset, the
     # price feed integration (integrations/price_feed.py) falls back to
@@ -171,6 +190,15 @@ class Env(BaseSettings):
     def _optional_url(cls, v: str | None) -> str | None:
         if v is not None and not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError("must be a valid URL")
+        return v
+
+    @field_validator("SOLANA_RPC_FALLBACK_URLS")
+    @classmethod
+    def _fallback_urls_must_be_valid(cls, v: str) -> str:
+        for raw in v.split(","):
+            url = raw.strip()
+            if url and not (url.startswith("http://") or url.startswith("https://")):
+                raise ValueError(f"SOLANA_RPC_FALLBACK_URLS entry {url!r} must be a valid URL")
         return v
 
     @field_validator("DISCOVERY_MAX_TRACKED_WALLETS")
