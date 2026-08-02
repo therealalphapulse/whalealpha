@@ -53,6 +53,15 @@ class Env(BaseSettings):
     PRICE_FEED_API_KEY: str | None = None
     PRICE_CACHE_TTL_SECONDS: float = Field(15, ge=1)
 
+    # Jupiter Tokens API V2 — used only by the discovery engine's
+    # find_candidates_from_trending_tokens bootstrap source (see
+    # integrations/wallet_discovery_source.py). Falls back to
+    # PRICE_FEED_API_KEY if unset, since a single portal.jup.ag key covers
+    # both Price V3 and Tokens V2 on the same account — set JUPITER_API_KEY
+    # explicitly only if you're using a different key for this than pricing.
+    JUPITER_TOKENS_API_BASE: str = "https://api.jup.ag/tokens/v2"
+    JUPITER_API_KEY: str | None = None
+
     ENCRYPTION_KEY: str
     JWT_SECRET: str = Field(..., min_length=16)
 
@@ -120,6 +129,21 @@ class Env(BaseSettings):
     DISCOVERY_SOURCE_TOKEN_LOOKBACK: int = Field(20, ge=1)
     DISCOVERY_MAX_HOLDERS_PER_TOKEN: int = Field(50, ge=1)
 
+    # --- Trending-token bootstrap source (feature: discovery cold start) ---
+    # Independent of anything already tracked — see
+    # integrations/wallet_discovery_source.find_candidates_from_trending_tokens.
+    # Without this, discovery can ONLY source candidates from holders of
+    # tokens your own tracked whales already bought (see discover_candidates
+    # in engines/discovery.py), which is a closed loop: zero tracked wallets
+    # -> zero Signals -> zero candidates, forever. This source breaks that
+    # loop by pulling from Jupiter's platform-wide trending/most-traded
+    # tokens instead, so the engine can find its first wallets with no admin
+    # seeding required.
+    DISCOVERY_TRENDING_ENABLED: bool = True
+    DISCOVERY_TRENDING_CATEGORY: Literal["toporganicscore", "toptraded", "toptrending"] = "toptraded"
+    DISCOVERY_TRENDING_INTERVAL: Literal["5m", "1h", "6h", "24h"] = "1h"
+    DISCOVERY_TRENDING_TOKEN_LIMIT: int = Field(20, ge=1, le=100)
+
     # Optional: Helius API key, used by integrations/wallet_discovery_source.py
     # for wallet transaction-history lookups. Falls back to plain Solana RPC
     # (top-holder based discovery only, no historical PnL) when unset — see
@@ -134,7 +158,7 @@ class Env(BaseSettings):
             raise ValueError("must be a valid URL")
         return v
 
-    @field_validator("PRICE_FEED_API_BASE", "HELIUS_API_BASE")
+    @field_validator("PRICE_FEED_API_BASE", "HELIUS_API_BASE", "JUPITER_TOKENS_API_BASE")
     @classmethod
     def _optional_url(cls, v: str | None) -> str | None:
         if v is not None and not (v.startswith("http://") or v.startswith("https://")):
