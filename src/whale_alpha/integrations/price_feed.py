@@ -2,18 +2,31 @@
 and powers the entry-zone calculation (engines/signal.py) and the
 percent-increase price-alert engine (engines/price_alerts.py).
 
+--- UPDATED: Jupiter Price API V2 -> V3 (2026-08-02) ---
+This module originally defaulted to Jupiter's Price API V2
+(`https://api.jup.ag/price/v2`), which was free and keyless. Jupiter has
+since fully deprecated V2 — both the paid host (`api.jup.ag/price/v2`) and
+the free `lite-api.jup.ag` host it was migrated to were sunset (the latter
+on 31 Jan 2026) — so every request against the old default now 404s and
+every price-dependent feature (auto-trading, entry zones, price alerts)
+silently no-ops. See the "SOL/USD price unavailable" warnings in
+engines/scheduler.py and engines/price_alerts.py if this ever regresses.
+
 ASSUMPTION (flagged explicitly, same spirit as the repo's other
-TODO(integration) notes): with no `PRICE_FEED_API_BASE` configured, this
-defaults to Jupiter's public Price API v2 (`https://api.jup.ag/price/v2`),
-which returns `{"data": {"<mint>": {"price": "<decimal string>"}}}` for a
-comma-separated list of mint addresses. This is a free, keyless, rate-limited
-endpoint — fine for development and light production load, but you should
-point `PRICE_FEED_API_BASE` at a paid feed (Birdeye, CoinGecko Pro, your own
-aggregator) before relying on this for real trade sizing at scale. If you set
-`PRICE_FEED_API_BASE`, this module assumes the same request/response shape
-(`GET {base}?ids=mint1,mint2` -> `{"data": {mint: {"price": ...}}}`) and sends
-`PRICE_FEED_API_KEY` as a Bearer token — adjust `_fetch_prices` if your
-provider's contract differs.
+TODO(integration) notes): this now defaults to Jupiter's Price API **V3**
+(`https://api.jup.ag/price/v3?ids=mint1,mint2`), which returns a flat map
+`{"<mint>": {"usdPrice": <float>, "liquidity": ..., "blockId": ...,
+"decimals": ..., "createdAt": ..., "priceChange24h": ...}, ...}` — no
+`"data"` wrapper, and the price field is `usdPrice` (a number), not `price`
+(a decimal string) like V2. Unlike V2, **V3 requires an API key** sent as
+the `x-api-key` header (not `Authorization: Bearer`) — get one free at
+https://portal.jup.ag (a free tier exists; see their pricing page). Without
+`PRICE_FEED_API_KEY` set, expect 401s here, same practical effect as the old
+404s. If you set `PRICE_FEED_API_BASE` to point at a different provider
+entirely (Birdeye, CoinGecko Pro, your own aggregator), this module still
+tries both `usdPrice` and `price` field names and both the wrapped and
+unwrapped response shape for compatibility — adjust `_fetch_prices` further
+if your provider's contract differs from both.
 
 Prices are cached in-process for `env.PRICE_CACHE_TTL_SECONDS` (default 15s)
 per mint, keyed off a single shared cache so bursts of callers (scheduler,
@@ -34,7 +47,7 @@ log = child_logger("priceFeed")
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
 
-_JUPITER_PRICE_API_DEFAULT = "https://api.jup.ag/price/v2"
+_JUPITER_PRICE_API_DEFAULT = "https://api.jup.ag/price/v3"
 
 
 class PriceFeedError(Exception):
@@ -110,21 +123,23 @@ async def _fetch_prices(client: httpx.AsyncClient, env: Env, mints: list[str]) -
     base = env.PRICE_FEED_API_BASE or _JUPITER_PRICE_API_DEFAULT
     headers = {}
     if env.PRICE_FEED_API_KEY:
-        headers["Authorization"] = f"Bearer {env.PRICE_FEED_API_KEY}"
+        # V3 uses x-api-key, not the old Authorization: Bearer scheme V2 used.
+        headers["x-api-key"] = env.PRICE_FEED_API_KEY
 
     res = await client.get(base, params={"ids": ",".join(mints)}, headers=headers)
     if res.status_code >= 400:
         raise PriceFeedError(f"Price feed request failed: {res.status_code} {res.text}")
 
     body = res.json()
-    data = body.get("data", body)  # tolerate a provider that returns the map directly
+    data = body.get("data", body)  # tolerate a provider that wraps in {"data": ...} (old V2 shape)
 
     out: dict[str, float] = {}
     for mint in mints:
         entry = data.get(mint)
         if not entry:
             continue
-        raw_price = entry.get("price") if isinstance(entry, dict) else entry
+        # V3 uses "usdPrice"; fall back to V2's "price" for a custom/non-Jupiter provider.
+        raw_price = entry.get("usdPrice", entry.get("price")) if isinstance(entry, dict) else entry
         if raw_price is None:
             continue
         try:
