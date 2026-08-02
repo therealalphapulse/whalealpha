@@ -5,7 +5,11 @@ via a human admin's /addwhale.
 
 Pipeline (see docs/ARCHITECTURE.md for the full data-flow diagram):
 
-    integrations.wallet_discovery_source (candidate sourcing)
+    integrations.wallet_discovery_source (candidate sourcing — TWO
+    independent streams, see discover_candidates below: one built on
+    already-tracked whales' own Signals, one an admin-independent bootstrap
+    off Jupiter's platform-wide trending tokens. Only the second can produce
+    a first candidate from zero tracked wallets.)
               |
               v
     WalletCandidate (staging table — engines/discovery.discover_candidates)
@@ -61,9 +65,11 @@ from whale_alpha.engines.scoring import MIN_APPROVED_SCORE, WalletMetrics, score
 from whale_alpha.integrations import price_feed
 from whale_alpha.integrations.solana_connection import is_valid_solana_address
 from whale_alpha.integrations.wallet_discovery_source import (
+    DiscoveredCandidate,
     estimate_wallet_age_days,
     fetch_wallet_swap_history,
     find_candidates_from_token_holders,
+    find_candidates_from_trending_tokens,
 )
 from whale_alpha.services.admin.whale_wallet_admin_service import (
     DISCOVERY_ENGINE_TELEGRAM_ID,
@@ -233,13 +239,60 @@ async def _system_actor(session: AsyncSession) -> Actor:
 
 
 async def discover_candidates(
-    session: AsyncSession, connection: AsyncClient, env: Env
+    session: AsyncSession, http_client: httpx.AsyncClient, connection: AsyncClient, env: Env
 ) -> int:
-    """Sources new candidate addresses from recently-signaled tokens' large
-    holders (see integrations/wallet_discovery_source.py) and queues them in
-    WalletCandidate, skipping anything already tracked or already queued.
-    Returns the number of genuinely new candidates queued.
+    """Sources new candidate addresses from two independent streams and
+    queues them in WalletCandidate, skipping anything already tracked or
+    already queued. Returns the number of genuinely new candidates queued.
+
+    Stream 1 (holders of recently-signaled tokens) requires an existing
+    tracked wallet to have already produced a Signal — it's the
+    higher-precision stream (co-buyers of tokens *our own* whales picked),
+    but it cannot run at all from zero tracked wallets: zero wallets -> zero
+    ingested buy events -> zero Signals -> zero token mints to search.
+
+    Stream 2 (trending-token bootstrap,
+    integrations.wallet_discovery_source.find_candidates_from_trending_tokens)
+    has no such dependency — it pulls Jupiter's platform-wide trending
+    tokens regardless of what (if anything) is tracked. This is what lets
+    the engine find its first wallets with zero admin seeding, and it keeps
+    running alongside stream 1 afterwards too, as a second, independent
+    discovery channel — relying on stream 1 alone long-term would mean the
+    tracked set can only ever grow from wallets correlated with what's
+    already tracked, a blind spot worth avoiding even once bootstrapped.
+
+    The two streams split `DISCOVERY_CANDIDATE_BATCH_SIZE` evenly.
     """
+    existing_wallets = await session.execute(select(WhaleWallet.address))
+    existing_candidates = await session.execute(select(WalletCandidate.address))
+    known_addresses = {row[0] for row in existing_wallets.all()} | {row[0] for row in existing_candidates.all()}
+
+    per_stream_budget = max(1, env.DISCOVERY_CANDIDATE_BATCH_SIZE // 2)
+    queued = 0
+
+    queued += await _queue_candidates_from_signaled_tokens(
+        session, connection, env, known_addresses, budget=per_stream_budget
+    )
+
+    if env.DISCOVERY_TRENDING_ENABLED:
+        remaining_budget = env.DISCOVERY_CANDIDATE_BATCH_SIZE - queued
+        queued += await _queue_trending_bootstrap_candidates(
+            session, http_client, connection, env, known_addresses, budget=remaining_budget
+        )
+
+    if queued:
+        await session.commit()
+    return queued
+
+
+async def _queue_candidates_from_signaled_tokens(
+    session: AsyncSession,
+    connection: AsyncClient,
+    env: Env,
+    known_addresses: set[str],
+    *,
+    budget: int,
+) -> int:
     recent_signals = await session.execute(
         select(Signal.token_mint).order_by(Signal.created_at.desc()).limit(env.DISCOVERY_SOURCE_TOKEN_LOOKBACK)
     )
@@ -248,42 +301,73 @@ async def discover_candidates(
         log.debug("No recent signals to source discovery candidates from")
         return 0
 
-    existing_wallets = await session.execute(select(WhaleWallet.address))
-    existing_candidates = await session.execute(select(WalletCandidate.address))
-    known_addresses = {row[0] for row in existing_wallets.all()} | {row[0] for row in existing_candidates.all()}
-
     queued = 0
     for token_mint in token_mints:
-        if queued >= env.DISCOVERY_CANDIDATE_BATCH_SIZE:
+        if queued >= budget:
             break
         candidates = await find_candidates_from_token_holders(
             connection, token_mint, env.DISCOVERY_MAX_HOLDERS_PER_TOKEN
         )
-        for candidate in candidates:
-            if queued >= env.DISCOVERY_CANDIDATE_BATCH_SIZE:
-                break
-            if candidate.address in known_addresses:
-                continue
-            if not is_valid_solana_address(candidate.address):
-                continue
-            known_addresses.add(candidate.address)
-            session.add(
-                WalletCandidate(
-                    address=candidate.address,
-                    source=candidate.source,
-                    discovered_from_token_mint=candidate.discovered_from_token_mint,
-                )
-            )
-            queued += 1
-            log.info(
-                "New wallet discovered",
+        queued += _queue_new_candidates(session, candidates, known_addresses, budget - queued)
+    return queued
+
+
+async def _queue_trending_bootstrap_candidates(
+    session: AsyncSession,
+    http_client: httpx.AsyncClient,
+    connection: AsyncClient,
+    env: Env,
+    known_addresses: set[str],
+    *,
+    budget: int,
+) -> int:
+    if budget <= 0:
+        return 0
+    candidates = await find_candidates_from_trending_tokens(
+        http_client,
+        connection,
+        env,
+        max_tokens=env.DISCOVERY_TRENDING_TOKEN_LIMIT,
+        max_holders_per_token=env.DISCOVERY_MAX_HOLDERS_PER_TOKEN,
+    )
+    return _queue_new_candidates(session, candidates, known_addresses, budget)
+
+
+def _queue_new_candidates(
+    session: AsyncSession,
+    candidates: list[DiscoveredCandidate],
+    known_addresses: set[str],
+    budget: int,
+) -> int:
+    """Shared dedup/validation/insert logic for both sourcing streams — adds
+    a WalletCandidate row (in-session, not yet committed) for each address
+    not already tracked or queued, up to `budget`. Mutates `known_addresses`
+    in place so the two streams (called sequentially within one cycle) never
+    double-queue the same address.
+    """
+    queued = 0
+    for candidate in candidates:
+        if queued >= budget:
+            break
+        if candidate.address in known_addresses:
+            continue
+        if not is_valid_solana_address(candidate.address):
+            continue
+        known_addresses.add(candidate.address)
+        session.add(
+            WalletCandidate(
                 address=candidate.address,
                 source=candidate.source,
-                token_mint=candidate.discovered_from_token_mint,
+                discovered_from_token_mint=candidate.discovered_from_token_mint,
             )
-
-    if queued:
-        await session.commit()
+        )
+        queued += 1
+        log.info(
+            "New wallet discovered",
+            address=candidate.address,
+            source=candidate.source,
+            token_mint=candidate.discovered_from_token_mint,
+        )
     return queued
 
 
@@ -546,7 +630,9 @@ async def run_discovery_cycle(
 
     try:
         async with session_factory() as session:
-            summary["candidates_queued"] = await discover_candidates(session, solana_connection, env)
+            summary["candidates_queued"] = await discover_candidates(
+                session, http_client, solana_connection, env
+            )
     except Exception as err:  # noqa: BLE001 — one phase failing shouldn't block the others
         log.error("Discovery: candidate sourcing failed", err=str(err))
 
