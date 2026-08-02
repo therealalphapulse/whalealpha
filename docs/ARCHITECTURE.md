@@ -60,12 +60,28 @@ population within a healthy size or pruned wallets that stopped performing.
 `engines/discovery.py` closes that gap with a four-stage cycle, run on a
 timer (`DISCOVERY_INTERVAL_SECONDS`, default 15 min):
 
-1. **Source** (`discover_candidates`) — pulls other large holders of tokens
-   that recently produced a real `Signal` (i.e. multiple *already-tracked*
-   whales just accumulated it) via plain Solana RPC
-   (`integrations/wallet_discovery_source.find_candidates_from_token_holders`),
-   and queues genuinely-new addresses into the `WalletCandidate` staging
-   table. This never touches `whale_wallets` directly.
+1. **Source** (`discover_candidates`) — runs **two independent streams**
+   each cycle and queues genuinely-new addresses into the `WalletCandidate`
+   staging table (never touches `whale_wallets` directly):
+   - *Signal-derived* — other large holders of tokens that recently produced
+     a real `Signal` (i.e. multiple *already-tracked* whales just
+     accumulated it), via plain Solana RPC
+     (`find_candidates_from_token_holders`). Higher-precision (co-buyers of
+     tokens our own whales picked), but requires at least one tracked wallet
+     to have already produced a Signal — it cannot run from zero.
+   - *Trending-token bootstrap* — Jupiter's platform-wide trending/most-
+     traded tokens (`find_candidates_from_trending_tokens`,
+     `DISCOVERY_TRENDING_*` config), independent of anything already
+     tracked. **This is what lets the engine find its first wallets with
+     zero admin seeding** — without it, `zero tracked wallets -> zero
+     ingested buy events -> zero Signals -> zero candidates` is a closed
+     loop with no way in, which is exactly the "No approved whale wallets
+     yet" state a fresh deploy starts in. It keeps running alongside the
+     first stream afterwards too, as an ongoing second discovery channel,
+     so the tracked set doesn't only ever grow from wallets correlated with
+     what's already tracked. Needs `JUPITER_API_KEY` (or falls back to
+     `PRICE_FEED_API_KEY`) — without either, this stream is skipped (a
+     warning is logged) and only the signal-derived stream runs.
 2. **Evaluate** (`evaluate_candidates`) — fetches each queued candidate's
    swap history (requires `HELIUS_API_KEY`; see below), computes
    FIFO-matched realized PnL/ROI/win-rate/drawdown
@@ -106,12 +122,22 @@ automated action is audit-logged like any admin action, tagged
 `WHALE_WALLET_STATUS_CHANGE` so it's distinguishable from a human admin's
 `/addwhale`/`/approvewhale` in the audit trail.
 
-**Degraded mode without `HELIUS_API_KEY`:** candidate *sourcing* (RPC-only)
-and inactivity-based retirement both work with no API key at all. Only
-score *refresh* — and therefore new promotions, which require a fresh
-ROI/win-rate computation — needs it. Running without a key means the
-tracked population can shrink (via inactivity retirement) but won't grow;
-set the key for the engine to actually maintain the 500–1500 target.
+**Two independent API keys gate two independent things, and it's easy to
+have one without the other:**
+- **`JUPITER_API_KEY`** (or `PRICE_FEED_API_KEY` as a fallback) gates the
+  trending-token bootstrap *source* (step 1b above) — without it, the
+  signal-derived stream still runs, but a fresh deploy with zero tracked
+  wallets will never find its first candidate.
+- **`HELIUS_API_KEY`** gates *scoring* (step 2) — without it, candidates get
+  queued (by whichever source is working) but never scored, so nothing gets
+  promoted regardless of how many candidates are found. Inactivity-based
+  retirement (step 3) doesn't need it and still works.
+
+Running with neither key means the tracked population can only shrink
+(inactivity retirement); with only `HELIUS_API_KEY` it can score/retire but
+never bootstrap from empty; with only `JUPITER_API_KEY` it can find
+candidates but never actually promote any. Set both for the engine to
+actually maintain the 500–1500 target end to end.
 
 ## Why a PENDING Trade row is written before execution (new vs. the original)
 
