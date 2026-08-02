@@ -5,21 +5,31 @@ third-party data source, with everything downstream (engines/discovery.py,
 engines/discovery_metrics.py) provider-agnostic.
 
 Nothing in this repo invents on-chain data — every function here performs a
-real RPC/HTTP call. Two sourcing/history strategies are implemented, chosen
-per-call based on configuration:
+real RPC/HTTP call. Three sourcing/history strategies are implemented,
+chosen per-call based on configuration:
 
   1. Solana RPC only (always available, no API key required):
      `find_candidates_from_token_holders` — for a token that already produced
      a real Signal (i.e. multiple *tracked* whales just accumulated it), pull
      its other largest holders via `getTokenLargestAccounts`. Anyone already
      holding a meaningful position in a token our own tracked whales are
-     buying is a reasonable candidate to evaluate. This alone cannot compute
-     realized PnL/ROI history (plain RPC has no indexed "this wallet's trade
-     history" call), only wallet age (`get_wallet_first_activity_slot`) and
-     current activity — see discovery_metrics.py for how a candidate with
-     only partial data is scored.
+     buying is a reasonable candidate to evaluate.
 
-  2. Helius Enhanced Transactions API (`HELIUS_API_KEY` set):
+  2. Jupiter Tokens API V2 (`JUPITER_API_KEY` or `PRICE_FEED_API_KEY` set):
+     `find_candidates_from_trending_tokens` — pulls platform-wide
+     trending/most-traded tokens (independent of anything already tracked),
+     then reuses the same token-holders lookup as (1). This exists
+     specifically to break the discovery engine's cold-start deadlock: with
+     zero tracked wallets there are zero Signals, so (1) alone can never
+     produce a first candidate — see engines/discovery.py's
+     `discover_candidates` docstring for the full loop this closes.
+
+  Both (1) and (2) can only observe *current holdings*, not history — plain
+  RPC has no indexed "this wallet's trade history" call — so they give
+  wallet age (`estimate_wallet_age_days`) and current activity, not
+  PnL/ROI/win-rate. That requires:
+
+  3. Helius Enhanced Transactions API (`HELIUS_API_KEY` set):
      `fetch_wallet_swap_history` — pages through a wallet's parsed
      transaction history and extracts SWAP events, giving the discovery
      engine the realized buy/sell pairs it needs for accurate ROI/win-rate/
@@ -27,13 +37,16 @@ per-call based on configuration:
      integrations/helius_webhook.py already assumes for inbound events.
 
 ASSUMPTION (flagged, same as helius_webhook.py): the exact Helius Enhanced
-Transactions API request/response shape below matches their documented
-`GET /v0/addresses/{address}/transactions` endpoint as of this port. Verify
-against a live response before depending on it in production — third-party
-API shapes change without notice more often than on-chain program layouts do.
-If you use a different wallet-history provider (Birdeye, a self-hosted
-indexer, etc.), swap `fetch_wallet_swap_history` for a parser matching that
-provider's payload; `WalletSwap` downstream is provider-agnostic.
+Transactions API and Jupiter Tokens API V2 request/response shapes below
+match their documented endpoints as of this port
+(`GET /v0/addresses/{address}/transactions` and
+`GET /tokens/v2/{category}/{interval}` respectively). Verify against a live
+response before depending on either in production — third-party API shapes
+change without notice more often than on-chain program layouts do. If you
+use a different wallet-history or trending-token provider (Birdeye, a
+self-hosted indexer, etc.), swap the relevant function for a parser matching
+that provider's payload; `WalletSwap` and `DiscoveredCandidate` downstream
+are both provider-agnostic.
 """
 
 from __future__ import annotations
@@ -94,6 +107,72 @@ async def find_candidates_from_token_holders(
         )
         for owner in owners
     ]
+
+
+async def find_candidates_from_trending_tokens(
+    client: httpx.AsyncClient,
+    connection: AsyncClient,
+    env: Env,
+    *,
+    max_tokens: int,
+    max_holders_per_token: int,
+) -> list[DiscoveredCandidate]:
+    """Independent-of-tracked-wallets candidate source: pulls Jupiter's
+    platform-wide trending/most-traded tokens (`JUPITER_TOKENS_API_BASE`,
+    category/interval from `DISCOVERY_TRENDING_CATEGORY`/
+    `DISCOVERY_TRENDING_INTERVAL`), then reuses
+    `find_candidates_from_token_holders` for each. This is what lets the
+    discovery engine find its first wallets with zero admin seeding — see
+    the module docstring's strategy (2) and
+    engines/discovery.discover_candidates.
+
+    Returns [] (with a warning logged once, not per-cycle-spammed at debug
+    level) if no API key is configured or the request fails — callers should
+    treat that as "bootstrap source unavailable this cycle", not an error
+    worth crashing the whole discovery cycle over.
+    """
+    api_key = env.JUPITER_API_KEY or env.PRICE_FEED_API_KEY
+    if not api_key:
+        log.warning(
+            "Trending-token discovery source has no API key configured "
+            "(JUPITER_API_KEY / PRICE_FEED_API_KEY) — skipping. Discovery can "
+            "only source from holders of tokens already produced by your own "
+            "tracked whales' Signals until this is set, which cannot bootstrap "
+            "from zero tracked wallets."
+        )
+        return []
+
+    url = f"{env.JUPITER_TOKENS_API_BASE}/{env.DISCOVERY_TRENDING_CATEGORY}/{env.DISCOVERY_TRENDING_INTERVAL}"
+    try:
+        res = await client.get(
+            url,
+            params={"limit": str(max_tokens)},
+            headers={"x-api-key": api_key},
+            timeout=15.0,
+        )
+        if res.status_code >= 400:
+            log.warning("Jupiter Tokens API request failed", status=res.status_code, url=url)
+            return []
+        tokens = res.json()
+    except Exception as err:  # noqa: BLE001 — a provider hiccup shouldn't stop the discovery cycle
+        log.warning("Jupiter Tokens API request errored", err=str(err))
+        return []
+
+    if not isinstance(tokens, list):
+        return []
+
+    token_mints = [t["id"] for t in tokens if isinstance(t, dict) and t.get("id")][:max_tokens]
+
+    candidates: list[DiscoveredCandidate] = []
+    for mint in token_mints:
+        holders = await find_candidates_from_token_holders(connection, mint, max_holders_per_token)
+        candidates.extend(
+            DiscoveredCandidate(
+                address=h.address, source="trending_token_holder", discovered_from_token_mint=mint
+            )
+            for h in holders
+        )
+    return candidates
 
 
 async def fetch_wallet_swap_history(
