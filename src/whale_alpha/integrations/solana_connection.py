@@ -49,6 +49,63 @@ async def get_token_decimals(connection: AsyncClient, mint: str) -> int:
     return resp.value.decimals
 
 
+async def get_token_largest_accounts(connection: AsyncClient, mint: str, limit: int = 20) -> list[str]:
+    """Returns up to `limit` owner addresses holding the largest balances of
+    `mint`, via plain RPC `getTokenLargestAccounts` (no indexer needed).
+
+    Used as the discovery engine's always-available candidate source (see
+    integrations/wallet_discovery_source.py): tokens that already produced a
+    real Signal are, by definition, tokens multiple tracked whales bought —
+    so their other large holders are a reasonable pool of untracked wallets
+    worth evaluating. `getTokenLargestAccounts` returns *token accounts*, not
+    owners directly, so each is resolved via `getAccountInfo` (jsonParsed) to
+    its owning wallet. Note this call is capped at 20 by the RPC spec itself;
+    `limit` only trims further, it cannot request more than the RPC returns.
+    """
+    resp = await connection.get_token_largest_accounts(Pubkey.from_string(mint))
+    token_accounts = [entry.address for entry in resp.value][:limit]
+
+    owners: list[str] = []
+    for token_account in token_accounts:
+        try:
+            info = await connection.get_account_info_json_parsed(token_account)
+            parsed = info.value.data.parsed  # type: ignore[union-attr]
+            owner = parsed["info"]["owner"]
+            if owner:
+                owners.append(owner)
+        except Exception:  # noqa: BLE001 — skip an unparseable/closed account, don't fail the batch
+            continue
+    return owners
+
+
+async def get_wallet_first_activity_slot(connection: AsyncClient, address: str) -> int | None:
+    """Best-effort wallet age proxy: the slot of the oldest transaction signature
+    RPC will still return for this address. Solana RPC nodes only retain a
+    limited signature history (varies by provider), so for very old wallets
+    this under-counts age rather than over-counts it — acceptable for a
+    "is this wallet at least N days old" gate, not exact enough to display as
+    a precise age. Returns None if the address has no history at all.
+    """
+    pubkey = Pubkey.from_string(address)
+    oldest_signature = None
+    before = None
+    # Page backwards through signature history to the oldest page RPC will
+    # give us — capped at a few pages so one candidate can't blow the
+    # discovery cycle's time/RPC budget.
+    for _ in range(5):
+        resp = await connection.get_signatures_for_address(pubkey, before=before, limit=1000)
+        if not resp.value:
+            break
+        oldest_signature = resp.value[-1]
+        if len(resp.value) < 1000:
+            break
+        before = oldest_signature.signature
+
+    if oldest_signature is None:
+        return None
+    return oldest_signature.slot
+
+
 async def get_token_balance(connection: AsyncClient, owner_address: str, mint: str) -> tuple[int, int]:
     """Returns (raw_base_units, decimals) of `owner_address`'s balance of `mint`,
     summed across every token account they hold for that mint (normally just
