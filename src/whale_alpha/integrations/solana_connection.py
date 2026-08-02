@@ -11,7 +11,11 @@ engines/monitor.ingest_wallet_buy_event.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
@@ -49,33 +53,108 @@ async def get_token_decimals(connection: AsyncClient, mint: str) -> int:
     return resp.value.decimals
 
 
-async def get_token_largest_accounts(connection: AsyncClient, mint: str, limit: int = 20) -> list[str]:
+async def get_token_largest_accounts(
+    connection: AsyncClient,
+    mint: str,
+    limit: int = 20,
+    *,
+    min_interval_seconds: float = 0.12,
+    max_retries: int = 3,
+) -> list[str]:
     """Returns up to `limit` owner addresses holding the largest balances of
     `mint`, via plain RPC `getTokenLargestAccounts` (no indexer needed).
 
-    Used as the discovery engine's always-available candidate source (see
-    integrations/wallet_discovery_source.py): tokens that already produced a
-    real Signal are, by definition, tokens multiple tracked whales bought —
-    so their other large holders are a reasonable pool of untracked wallets
-    worth evaluating. `getTokenLargestAccounts` returns *token accounts*, not
-    owners directly, so each is resolved via `getAccountInfo` (jsonParsed) to
-    its owning wallet. Note this call is capped at 20 by the RPC spec itself;
-    `limit` only trims further, it cannot request more than the RPC returns.
+    Used as the discovery engine's candidate sources (see
+    integrations/wallet_discovery_source.py): both for holders of a token
+    that already produced a Signal, and for holders of Jupiter's
+    platform-wide trending tokens. `getTokenLargestAccounts` returns *token
+    accounts*, not owners directly, so each is resolved via `getAccountInfo`
+    (jsonParsed) to its owning wallet — up to 21 RPC calls for one mint (1 +
+    up to 20, the RPC's own hard cap on this call; `limit` only trims
+    further, it cannot request more than the RPC returns).
+
+    RATE LIMITING (fixes a real production issue): the discovery engine can
+    call this for ~20 trending tokens in one cycle, which without any
+    pacing means ~400+ RPC calls fired back-to-back — comfortably over what
+    most providers' free/lower tiers allow (Helius's RPC endpoint included),
+    producing a wall of 429s and silently dropping most candidates. Every
+    call here (including the initial getTokenLargestAccounts) is paced to
+    at least `min_interval_seconds` apart via a process-wide gate, and
+    retries once-or-more with exponential backoff specifically on 429 —
+    other errors (a bad/closed account, a malformed mint) still fail fast
+    and get skipped per-account as before, since retrying those wouldn't help.
     """
-    resp = await connection.get_token_largest_accounts(Pubkey.from_string(mint))
+    owners: list[str] = []
+    resp = await _rate_limited_rpc_call(
+        connection.get_token_largest_accounts,
+        Pubkey.from_string(mint),
+        min_interval_seconds=min_interval_seconds,
+        max_retries=max_retries,
+    )
     token_accounts = [entry.address for entry in resp.value][:limit]
 
-    owners: list[str] = []
     for token_account in token_accounts:
         try:
-            info = await connection.get_account_info_json_parsed(token_account)
-            parsed = info.value.data.parsed  # type: ignore[union-attr]
+            info = await _rate_limited_rpc_call(
+                connection.get_account_info_json_parsed,
+                token_account,
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+            )
+            parsed = info.value.data.parsed
             owner = parsed["info"]["owner"]
             if owner:
                 owners.append(owner)
-        except Exception:  # noqa: BLE001 — skip an unparseable/closed account, don't fail the batch
+        except Exception:  # noqa: BLE001 — skip an unparseable/closed/still-rate-limited account
             continue
     return owners
+
+
+_rpc_pacing_lock = asyncio.Lock()
+_rpc_last_call_at = 0.0
+
+
+async def _rate_limited_rpc_call(
+    fn: Callable[..., Awaitable[Any]], *args: Any, min_interval_seconds: float, max_retries: int, **kwargs: Any
+) -> Any:
+    """Process-wide pacing gate (at most one RPC call per `min_interval_seconds`
+    across ALL callers of this helper, not per-mint or per-connection —
+    that's the point, since the 429s come from the shared provider-side
+    limit, not a per-call one) plus retry-with-backoff specifically for 429
+    responses. Non-429 errors propagate immediately, unretried.
+    """
+    attempt = 0
+    while True:
+        async with _rpc_pacing_lock:
+            global _rpc_last_call_at
+            wait = min_interval_seconds - (time.monotonic() - _rpc_last_call_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _rpc_last_call_at = time.monotonic()
+
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as err:  # noqa: BLE001 — inspected below; re-raised if not a 429
+            attempt += 1
+            if not _is_rate_limited_error(err) or attempt > max_retries:
+                raise
+            backoff = min_interval_seconds * (2**attempt)
+            await asyncio.sleep(backoff)
+
+
+def _is_rate_limited_error(err: Exception) -> bool:
+    """Best-effort 429 detection across whatever HTTP client the installed
+    solana-py version vendors internally (it has historically shipped its
+    own patched httpx under a different import name to avoid version
+    conflicts) — so this checks status_code via duck-typing first, and
+    falls back to string matching if that attribute chain isn't present.
+    """
+    response = getattr(err, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code == 429:
+        return True
+    text = str(err)
+    return "429" in text or "Too Many Requests" in text
 
 
 async def get_wallet_first_activity_slot(connection: AsyncClient, address: str) -> int | None:
