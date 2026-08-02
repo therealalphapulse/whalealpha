@@ -128,6 +128,14 @@ class Env(BaseSettings):
     DISCOVERY_CANDIDATE_MIN_REEVAL_HOURS: float = Field(12, ge=0)
     DISCOVERY_SOURCE_TOKEN_LOOKBACK: int = Field(20, ge=1)
     DISCOVERY_MAX_HOLDERS_PER_TOKEN: int = Field(50, ge=1)
+    # Client-side pacing + retry for the Solana RPC calls behind holder
+    # resolution (integrations.solana_connection.get_token_largest_accounts).
+    # A discovery cycle can resolve holders for ~20 tokens in a row, which
+    # without pacing fires hundreds of RPC calls in a tight burst — over
+    # most providers' rate limits (Helius's RPC endpoint included). See that
+    # function's docstring for the production incident this fixes.
+    DISCOVERY_RPC_MIN_INTERVAL_SECONDS: float = Field(0.12, ge=0)
+    DISCOVERY_RPC_MAX_RETRIES: int = Field(3, ge=0)
 
     # --- Trending-token bootstrap source (feature: discovery cold start) ---
     # Independent of anything already tracked — see
