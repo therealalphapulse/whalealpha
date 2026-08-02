@@ -306,7 +306,11 @@ async def _queue_candidates_from_signaled_tokens(
         if queued >= budget:
             break
         candidates = await find_candidates_from_token_holders(
-            connection, token_mint, env.DISCOVERY_MAX_HOLDERS_PER_TOKEN
+            connection,
+            token_mint,
+            env.DISCOVERY_MAX_HOLDERS_PER_TOKEN,
+            min_interval_seconds=env.DISCOVERY_RPC_MIN_INTERVAL_SECONDS,
+            max_retries=env.DISCOVERY_RPC_MAX_RETRIES,
         )
         queued += _queue_new_candidates(session, candidates, known_addresses, budget - queued)
     return queued
