@@ -11,11 +11,15 @@ did not exist in the TS version.
 In addition to the bot's long-polling task and the signal-evaluation
 scheduler, this now also starts:
   * the Helius webhook server (integrations/helius_webhook.py) — the
-    previously-nonexistent inbound path for whale wallet tracking, and
+    previously-nonexistent inbound path for whale wallet tracking,
   * the price-alert loop (engines/price_alerts.py) — the previously
-    nonexistent % price-move alert feature.
-Both are started/stopped the same way as the scheduler: a background asyncio
-task plus a `stop()`/`cleanup()` call on shutdown.
+    nonexistent % price-move alert feature, and
+  * the Whale Wallet Discovery & Intelligence Engine
+    (engines/discovery.py) — the previously-nonexistent automated
+    wallet-sourcing/removal loop; before this, whale_wallets only ever grew
+    via a human admin's /addwhale.
+All three are started/stopped the same way as the scheduler: a background
+asyncio task plus a `stop()`/`cleanup()` call on shutdown.
 
 --- NEW: production-grade staged startup logging + fail-loud error handling ---
 Every stage of startup now logs explicitly (env -> Postgres -> Redis ->
@@ -43,6 +47,7 @@ from sqlalchemy import text
 from whale_alpha.bot import create_bot
 from whale_alpha.config import get_env
 from whale_alpha.db.session import create_engine, create_session_factory
+from whale_alpha.engines.discovery import start_discovery_loop
 from whale_alpha.engines.price_alerts import start_price_alert_loop
 from whale_alpha.engines.reconciliation import reconcile_pending_trades
 from whale_alpha.engines.scheduler import start_scheduler
@@ -103,6 +108,11 @@ async def main() -> None:
     log.info("Loading Background Workers...")
     stop_scheduler = start_scheduler(env, session_factory, bot, http_client, solana_connection)
     stop_price_alerts = start_price_alert_loop(env, session_factory, bot, http_client)
+    stop_discovery: object | None = None
+    if env.DISCOVERY_ENABLED:
+        stop_discovery = start_discovery_loop(env, session_factory, http_client, solana_connection)
+    else:
+        log.warning("Whale Wallet Discovery Engine disabled via DISCOVERY_ENABLED=false")
     log.info("Background Workers started")
 
     log.info("Loading Helius Webhook...")
@@ -130,6 +140,8 @@ async def main() -> None:
     polling_task.cancel()
     await stop_scheduler()
     await stop_price_alerts()
+    if stop_discovery is not None:
+        await stop_discovery()
     await webhook_runner.cleanup()
     await solana_connection.close()
     await http_client.aclose()
