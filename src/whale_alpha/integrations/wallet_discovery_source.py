@@ -88,13 +88,28 @@ async def find_candidates_from_token_holders(
     connection: AsyncClient,
     token_mint: str,
     max_holders: int,
+    *,
+    min_interval_seconds: float = 0.12,
+    max_retries: int = 3,
 ) -> list[DiscoveredCandidate]:
     """RPC-only candidate source: other large holders of a token our own
     tracked whales just accumulated (see engines/discovery.py — called with
     the token_mint of recently-generated Signals). Requires no API key.
+
+    `min_interval_seconds`/`max_retries` pace the underlying RPC calls (see
+    get_token_largest_accounts's docstring) — pass
+    `env.DISCOVERY_RPC_MIN_INTERVAL_SECONDS`/`env.DISCOVERY_RPC_MAX_RETRIES`
+    from the caller rather than relying on these defaults where an `env` is
+    available, so it's actually configurable in production.
     """
     try:
-        owners = await get_token_largest_accounts(connection, token_mint, limit=max_holders)
+        owners = await get_token_largest_accounts(
+            connection,
+            token_mint,
+            limit=max_holders,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+        )
     except Exception as err:  # noqa: BLE001 — one bad mint shouldn't stop the discovery cycle
         log.warning("Failed to fetch token largest accounts", mint=token_mint, err=str(err))
         return []
@@ -165,7 +180,13 @@ async def find_candidates_from_trending_tokens(
 
     candidates: list[DiscoveredCandidate] = []
     for mint in token_mints:
-        holders = await find_candidates_from_token_holders(connection, mint, max_holders_per_token)
+        holders = await find_candidates_from_token_holders(
+            connection,
+            mint,
+            max_holders_per_token,
+            min_interval_seconds=env.DISCOVERY_RPC_MIN_INTERVAL_SECONDS,
+            max_retries=env.DISCOVERY_RPC_MAX_RETRIES,
+        )
         candidates.extend(
             DiscoveredCandidate(
                 address=h.address, source="trending_token_holder", discovered_from_token_mint=mint
