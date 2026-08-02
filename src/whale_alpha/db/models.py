@@ -67,6 +67,19 @@ class WalletStatus(str, enum.Enum):
     RETIRED = "RETIRED"
 
 
+class CandidateStatus(str, enum.Enum):
+    """Lifecycle of a discovery-engine candidate, kept separate from
+    WalletStatus so the (potentially large, noisy) discovery pipeline never
+    touches the admin-curated WhaleWallet table until a candidate actually
+    clears the promotion bar. See engines/discovery.py.
+    """
+
+    NEW = "NEW"  # queued, not yet evaluated
+    EVALUATED = "EVALUATED"  # metrics computed, did not clear the bar (yet)
+    PROMOTED = "PROMOTED"  # promoted into whale_wallets
+    REJECTED = "REJECTED"  # evaluated and disqualified (e.g. too young, wash-trading flags)
+
+
 class RiskProfile(str, enum.Enum):
     CONSERVATIVE = "CONSERVATIVE"
     BALANCED = "BALANCED"
@@ -161,11 +174,64 @@ class WhaleWallet(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    # --- NEW (feature: Whale Wallet Discovery & Intelligence Engine) ---
+    # Distinguishes wallets the discovery engine found and auto-promoted from
+    # ones a human admin added via /addwhale, without needing a second table
+    # join for the common "who/what put this here" question. Defaults false
+    # for wallets that predate this feature (admin-added, or seeded).
+    auto_discovered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    discovery_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Consecutive re-scoring cycles this wallet has scored below the approval
+    # bar. Used for hysteresis (see engines/discovery.py) so one noisy/bad
+    # cycle doesn't immediately retire an otherwise-good wallet.
+    consecutive_low_score_cycles: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     events: Mapped[list["WalletEvent"]] = relationship(back_populates="wallet")
 
     __table_args__ = (
         Index("ix_whale_wallets_status", "status"),
         Index("ix_whale_wallets_score", "score"),
+    )
+
+
+class WalletCandidate(Base):
+    """Discovery-engine staging table — new feature, no TS equivalent existed.
+
+    Candidate Solana addresses surfaced by
+    integrations/wallet_discovery_source.py land here first, get their
+    on-chain history fetched + scored (engines/discovery.py), and only cross
+    into the admin-curated `whale_wallets` table if they clear the promotion
+    bar. Keeping this separate means:
+      * the (much larger, noisier) discovery funnel never touches the table
+        the signal engine and admin RBAC care about, and
+      * we don't re-fetch + re-score the same candidate address every cycle
+        (rate-limit friendly) — `last_evaluated_at` gates re-evaluation.
+    """
+
+    __tablename__ = "wallet_candidates"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
+    address: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)  # e.g. "helius_token_holders", "co_buyer"
+    status: Mapped[CandidateStatus] = mapped_column(
+        Enum(CandidateStatus), default=CandidateStatus.NEW, nullable=False
+    )
+    discovered_from_token_mint: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    last_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    evaluation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promoted_wallet_id: Mapped[str | None] = mapped_column(ForeignKey("whale_wallets.id"), nullable=True)
+
+    __table_args__ = (
+        Index("ix_wallet_candidates_status", "status"),
+        Index("ix_wallet_candidates_last_evaluated_at", "last_evaluated_at"),
     )
 
 
