@@ -81,6 +81,52 @@ class Env(BaseSettings):
     PRICE_ALERT_INTERVAL_SECONDS: float = Field(60, ge=5)
     PRICE_ALERT_MIN_COOLDOWN_MINUTES: float = Field(15, ge=0)
 
+    # --- Whale Wallet Discovery & Intelligence Engine (feature: discovery) ---
+    # See engines/discovery.py. This is the ONLY thing allowed to add wallets
+    # to whale_wallets without a human admin behind it — every threshold below
+    # is deliberately configuration, not a code constant, so ops can tune the
+    # engine without a deploy.
+    DISCOVERY_ENABLED: bool = True
+    DISCOVERY_INTERVAL_SECONDS: float = Field(900, ge=30)  # 15 min between cycles by default
+
+    # Target population bounds for the tracked (APPROVED) wallet database.
+    DISCOVERY_MIN_TRACKED_WALLETS: int = Field(500, ge=1)
+    DISCOVERY_MAX_TRACKED_WALLETS: int = Field(1500, ge=1)
+
+    # Minimum bar a brand-new candidate must clear to be auto-promoted
+    # straight to APPROVED. Intentionally stricter than
+    # engines.scoring.MIN_APPROVED_SCORE (the bar for an *existing* tracked
+    # wallet to stay APPROVED) — a wallet with no track record in our system
+    # yet should have to prove more before it can move real signal weight.
+    DISCOVERY_MIN_SCORE_TO_APPROVE: float = Field(55, ge=0, le=100)
+    DISCOVERY_MIN_ROI_30D: float = Field(0.15, ge=-1)
+    DISCOVERY_MIN_WIN_RATE: float = Field(0.5, ge=0, le=1)
+    DISCOVERY_MIN_TRADE_COUNT_30D: int = Field(10, ge=1)
+    DISCOVERY_MIN_WALLET_AGE_DAYS: int = Field(14, ge=0)
+
+    # A tracked wallet with no on-chain activity for this long is treated as
+    # dormant and retired regardless of its last score, freeing a slot.
+    DISCOVERY_INACTIVITY_TIMEOUT_DAYS: int = Field(21, ge=1)
+    # A wallet must score below the approval bar for this many *consecutive*
+    # re-scoring cycles before it's retired — avoids flapping a good wallet
+    # out over one noisy cycle (e.g. a temporary metrics-fetch hiccup).
+    DISCOVERY_LOW_SCORE_CYCLES_BEFORE_RETIRE: int = Field(3, ge=1)
+
+    # Rate-limit / batching knobs so a run with hundreds of tracked + queued
+    # candidate wallets doesn't hammer the RPC/indexer in one cycle.
+    DISCOVERY_CANDIDATE_BATCH_SIZE: int = Field(50, ge=1)
+    DISCOVERY_RESCORE_BATCH_SIZE: int = Field(100, ge=1)
+    DISCOVERY_CANDIDATE_MIN_REEVAL_HOURS: float = Field(12, ge=0)
+    DISCOVERY_SOURCE_TOKEN_LOOKBACK: int = Field(20, ge=1)
+    DISCOVERY_MAX_HOLDERS_PER_TOKEN: int = Field(50, ge=1)
+
+    # Optional: Helius API key, used by integrations/wallet_discovery_source.py
+    # for wallet transaction-history lookups. Falls back to plain Solana RPC
+    # (top-holder based discovery only, no historical PnL) when unset — see
+    # that module's docstring.
+    HELIUS_API_KEY: str | None = None
+    HELIUS_API_BASE: str = "https://api.helius.xyz"
+
     @field_validator("SOLANA_RPC_URL", "JUPITER_API_BASE")
     @classmethod
     def _must_be_url(cls, v: str) -> str:
@@ -88,11 +134,19 @@ class Env(BaseSettings):
             raise ValueError("must be a valid URL")
         return v
 
-    @field_validator("PRICE_FEED_API_BASE")
+    @field_validator("PRICE_FEED_API_BASE", "HELIUS_API_BASE")
     @classmethod
     def _optional_url(cls, v: str | None) -> str | None:
         if v is not None and not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError("must be a valid URL")
+        return v
+
+    @field_validator("DISCOVERY_MAX_TRACKED_WALLETS")
+    @classmethod
+    def _max_tracked_gte_min(cls, v: int, info) -> int:  # noqa: ANN001 — pydantic v2 ValidationInfo
+        min_tracked = info.data.get("DISCOVERY_MIN_TRACKED_WALLETS")
+        if min_tracked is not None and v < min_tracked:
+            raise ValueError("DISCOVERY_MAX_TRACKED_WALLETS must be >= DISCOVERY_MIN_TRACKED_WALLETS")
         return v
 
     @field_validator("ENCRYPTION_KEY")
