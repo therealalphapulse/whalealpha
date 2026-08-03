@@ -43,12 +43,51 @@ def _redact_endpoint(url: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, query, ""))
 
 
-def _resolve_rpc_endpoints(env: Env) -> list[str]:
-    """Builds the ordered list of Solana RPC endpoints to use, primary first.
+# --------------------------------------------------------------------------
+# Provider resolution
+# --------------------------------------------------------------------------
+#
+# Every configured RPC endpoint is tagged with a `role`, which is what
+# workload routing (below) uses to decide which provider a given RPC method
+# should prefer:
+#
+#   * "primary"   — SOLANA_RPC_URL. The provider ops explicitly chose as
+#                    the bot's main node — typically the most reliable/paid
+#                    one (in this deployment's logs, Helius's RPC endpoint).
+#                    Preferred for latency- and correctness-sensitive
+#                    workloads (landing + confirming transactions, reading
+#                    signature/transaction history for reconciliation).
+#   * "secondary" — SOLANA_RPC_FALLBACK_URLS entries and DRPC_API_KEY /
+#                    ALCHEMY_API_KEY / ANKR_API_KEY. Ops-provisioned
+#                    redundancy. Preferred for high-volume commodity reads
+#                    (balance/account/token-holder lookups) specifically to
+#                    take that load off the primary node — the discovery
+#                    engine alone can fire hundreds of these in one cycle
+#                    (see get_token_largest_accounts below), which is the
+#                    exact traffic pattern that produced the 429s this
+#                    module was originally hardened against.
+#   * "public"    — free, keyless mainnet-beta safety-net endpoints added
+#                    automatically. Last resort only in every workload:
+#                    low rate limits, fine as a final fallback, not meant
+#                    to carry real traffic.
 
-    SOLANA_RPC_URL is always tried first (unchanged behavior when nothing
-    else is configured). Everything after it is only ever tried once an
-    earlier endpoint has failed:
+
+class _RpcProviderSpec:
+    __slots__ = ("name", "url", "role")
+
+    def __init__(self, name: str, url: str, role: str) -> None:
+        self.name = name
+        self.url = url
+        self.role = role
+
+
+def _resolve_rpc_provider_specs(env: Env) -> list[_RpcProviderSpec]:
+    """Builds the ordered, deduplicated, role-tagged list of Solana RPC
+    providers to use. SOLANA_RPC_URL is always included first as "primary"
+    (unchanged behavior when nothing else is configured). Everything after
+    it is only ever tried once an earlier provider in its workload's route
+    has failed — see `_build_routes` for how role maps to per-workload
+    ordering:
 
       1. SOLANA_RPC_FALLBACK_URLS — comma-separated full URLs, for any
          provider not covered below (or a self-hosted / private node).
@@ -58,58 +97,145 @@ def _resolve_rpc_endpoints(env: Env) -> list[str]:
       3. On mainnet-beta only: a couple of free, keyless public endpoints
          (dRPC, Ankr) as a last-resort safety net, so a missing/misconfigured
          API key still leaves the bot with *some* redundancy rather than a
-         single point of failure. These have low rate limits — fine as a
-         fallback of last resort, not meant to carry sustained load.
+         single point of failure.
 
     Duplicates (e.g. the same URL listed twice, or repeated across
     SOLANA_RPC_URL and a fallback) are dropped, preserving first occurrence
     so the intended priority order is kept.
     """
-    endpoints = [env.SOLANA_RPC_URL]
+    specs = [_RpcProviderSpec("primary", env.SOLANA_RPC_URL, "primary")]
 
-    for raw in env.SOLANA_RPC_FALLBACK_URLS.split(","):
+    for i, raw in enumerate(env.SOLANA_RPC_FALLBACK_URLS.split(",")):
         url = raw.strip()
         if url:
-            endpoints.append(url)
+            specs.append(_RpcProviderSpec(f"fallback-{i}", url, "secondary"))
 
     if env.DRPC_API_KEY:
-        endpoints.append(f"https://solana.drpc.org?dkey={env.DRPC_API_KEY}")
+        specs.append(_RpcProviderSpec("drpc", f"https://solana.drpc.org?dkey={env.DRPC_API_KEY}", "secondary"))
     if env.ALCHEMY_API_KEY:
-        endpoints.append(f"https://solana-mainnet.g.alchemy.com/v2/{env.ALCHEMY_API_KEY}")
+        specs.append(
+            _RpcProviderSpec(
+                "alchemy", f"https://solana-mainnet.g.alchemy.com/v2/{env.ALCHEMY_API_KEY}", "secondary"
+            )
+        )
     if env.ANKR_API_KEY:
-        endpoints.append(f"https://rpc.ankr.com/solana/{env.ANKR_API_KEY}")
+        specs.append(_RpcProviderSpec("ankr", f"https://rpc.ankr.com/solana/{env.ANKR_API_KEY}", "secondary"))
 
     if env.SOLANA_CLUSTER == "mainnet-beta":
-        endpoints.append("https://solana.drpc.org")
-        endpoints.append("https://rpc.ankr.com/solana")
+        specs.append(_RpcProviderSpec("drpc-public", "https://solana.drpc.org", "public"))
+        specs.append(_RpcProviderSpec("ankr-public", "https://rpc.ankr.com/solana", "public"))
 
     seen: set[str] = set()
-    deduped: list[str] = []
-    for url in endpoints:
-        if url not in seen:
-            seen.add(url)
-            deduped.append(url)
+    deduped: list[_RpcProviderSpec] = []
+    for spec in specs:
+        if spec.url not in seen:
+            seen.add(spec.url)
+            deduped.append(spec)
     return deduped
 
 
+def resolve_websocket_url(env: Env) -> str | None:
+    """Picks the best available Solana WebSocket endpoint, for future use by
+    a WS-based wallet monitor.
+
+    NOT currently called by any engine — see this module's top-of-file TODO
+    and engines/monitor.py, which still polls RPC rather than subscribing.
+    Provided now so that work doesn't also have to re-derive "which
+    configured provider has WS support"; adding it here is purely additive
+    and does not change any existing behavior.
+
+    Preference order: an explicitly configured SOLANA_WS_URL always wins
+    (ops' own choice); otherwise the first WS-capable *keyed* provider
+    (Alchemy, then dRPC — both support `wss://` on the same host/key as
+    their HTTP RPC endpoint; Ankr's Solana WS support requires a
+    provider-specific path this module doesn't guess at, so it's skipped
+    here). Returns None if nothing WS-capable is configured.
+    """
+    if env.SOLANA_WS_URL:
+        return env.SOLANA_WS_URL
+    if env.ALCHEMY_API_KEY:
+        return f"wss://solana-mainnet.g.alchemy.com/v2/{env.ALCHEMY_API_KEY}"
+    if env.DRPC_API_KEY:
+        return f"wss://solana.drpc.org?dkey={env.DRPC_API_KEY}"
+    return None
+
+
+# --------------------------------------------------------------------------
+# Workload routing
+# --------------------------------------------------------------------------
+
+# Solana RPC method name -> workload category. Anything not listed here
+# (get_token_supply's sibling calls added by a future solana-py version,
+# etc.) falls back to "general", which routes exactly like the original
+# flat failover (primary first) — so an unrecognized method never loses
+# redundancy, it just doesn't get workload-specific placement.
+_METHOD_WORKLOADS: dict[str, str] = {
+    # account / balance lookups
+    "get_balance": "account_lookup",
+    "get_account_info": "account_lookup",
+    "get_account_info_json_parsed": "account_lookup",
+    "get_token_accounts_by_owner_json_parsed": "account_lookup",
+    # token data ("token metadata" in the RPC methods this codebase actually
+    # calls — decimals/supply and largest-holder resolution; on-chain
+    # Metaplex metadata lookups aren't used anywhere in this repo)
+    "get_token_supply": "token_metadata",
+    "get_token_largest_accounts": "token_metadata",
+    # transaction / signature history
+    "get_signatures_for_address": "tx_history",
+    "get_signature_statuses": "tx_history",
+    "get_transaction": "tx_history",
+    "get_block_time": "tx_history",
+    # transaction submission + the chain state needed to submit/confirm one
+    "send_raw_transaction": "tx_submission",
+    "confirm_transaction": "tx_submission",
+    "get_block_height": "tx_submission",
+    "get_latest_blockhash": "tx_submission",
+    "is_blockhash_valid": "tx_submission",
+}
+
+# Per-workload provider-role preference. Read as: for this workload, try
+# every provider with the first listed role, then every provider with the
+# second role, etc. (Within a role, providers keep the relative order they
+# were resolved in — SOLANA_RPC_FALLBACK_URLS order, then dRPC/Alchemy/Ankr.)
+_ROLE_PRIORITY_BY_WORKLOAD: dict[str, tuple[str, ...]] = {
+    "tx_submission": ("primary", "secondary", "public"),
+    "tx_history": ("primary", "secondary", "public"),
+    "account_lookup": ("secondary", "primary", "public"),
+    "token_metadata": ("secondary", "primary", "public"),
+    "general": ("primary", "secondary", "public"),
+}
+
+# NOTE on price queries: they're intentionally out of scope for this
+# module's routing. Price lookups never went through Solana RPC at all —
+# they're a separate Jupiter Price API client (integrations/price_feed.py)
+# with its own PRICE_FEED_API_BASE/PRICE_FEED_API_KEY override and its own
+# fallback behavior. dRPC/Alchemy/Ankr are Solana RPC node providers, not
+# price oracles, so there's nothing to route price queries to among them.
+
+
 class _FailoverAsyncClient:
-    """Duck-typed drop-in for `solana.rpc.async_api.AsyncClient` that
-    transparently fails over across multiple RPC endpoints.
+    """Duck-typed drop-in for `solana.rpc.async_api.AsyncClient` that routes
+    each RPC method to whichever configured provider best suits its
+    workload (see `_ROLE_PRIORITY_BY_WORKLOAD` above), and transparently
+    fails over to the next provider in that workload's route if the
+    assigned one errors.
 
     Every attribute access (`.get_balance`, `.send_raw_transaction`,
-    `.get_signatures_for_address`, ...) returns a proxy coroutine: calling it
-    attempts the currently-active endpoint's real `AsyncClient` first, then —
-    only if that raises — each remaining endpoint in turn, up to
-    `max_attempts` total tries, before re-raising the last error. This means
-    every existing call site across the codebase (`connection.get_balance(...)`,
-    `await connection.close()`, the `fn` passed into `_rate_limited_rpc_call`,
-    etc.) keeps working completely unchanged; only `create_connection()`
-    needed to change.
+    `.get_signatures_for_address`, ...) returns a proxy coroutine. This
+    means every existing call site across the codebase
+    (`connection.get_balance(...)`, `await connection.close()`, the `fn`
+    passed into `_rate_limited_rpc_call`, etc.) keeps working completely
+    unchanged; only `create_connection()` needed to change.
 
-    Failover is "sticky": once an endpoint succeeds, it becomes the active
-    one for subsequent calls (rather than always retrying the primary
-    first), so a sustained primary-provider outage doesn't tack a doomed
-    extra round-trip onto every single call until it recovers.
+    Routing is "sticky" *per workload*: once a provider succeeds for a given
+    workload, it stays the active one for that workload's future calls
+    (rather than re-trying the whole route from the top every time) — so,
+    for example, transaction submission can stay pinned to the primary node
+    while account lookups simultaneously stay pinned to a secondary
+    provider, and a sustained single-provider outage doesn't tack a doomed
+    extra round-trip onto every subsequent call in that workload until it
+    recovers. Different workloads track their active provider
+    independently.
 
     Re-sending a transaction to a second RPC after `send_raw_transaction`
     raises on the first is safe: Solana dedupes by transaction signature, so
@@ -118,48 +244,91 @@ class _FailoverAsyncClient:
     for faster propagation).
     """
 
-    def __init__(self, urls: list[str], *, max_attempts: int, commitment: Any = Confirmed) -> None:
-        self._urls = urls
-        self._clients = [AsyncClient(url, commitment=commitment) for url in urls]
-        self._max_attempts = min(max_attempts, len(urls))
-        self._active = 0
+    def __init__(
+        self,
+        specs: list[_RpcProviderSpec],
+        *,
+        max_attempts: int,
+        routing_strategy: str,
+        commitment: Any = Confirmed,
+    ) -> None:
+        self._names = [spec.name for spec in specs]
+        self._urls = [spec.url for spec in specs]
+        self._clients = [AsyncClient(spec.url, commitment=commitment) for spec in specs]
+        self._max_attempts = min(max_attempts, len(specs))
+        self._routes = self._build_routes(specs, routing_strategy)
+        self._active: dict[str, int] = {category: order[0] for category, order in self._routes.items()}
+
+    @staticmethod
+    def _build_routes(specs: list[_RpcProviderSpec], routing_strategy: str) -> dict[str, list[int]]:
+        natural_order = list(range(len(specs)))
+
+        if routing_strategy == "primary_first":
+            # Opt-out of workload-aware routing: every workload gets the
+            # same route, primary first — i.e. exactly the original flat
+            # failover behavior, for ops who'd rather not have different
+            # workloads pinned to different providers.
+            return {category: natural_order for category in {*_METHOD_WORKLOADS.values(), "general"}}
+
+        indices_by_role: dict[str, list[int]] = {"primary": [], "secondary": [], "public": []}
+        for index, spec in enumerate(specs):
+            indices_by_role[spec.role].append(index)
+
+        routes: dict[str, list[int]] = {}
+        for category, role_priority in _ROLE_PRIORITY_BY_WORKLOAD.items():
+            order = [index for role in role_priority for index in indices_by_role[role]]
+            routes[category] = order or natural_order
+        return routes
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
+        category = _METHOD_WORKLOADS.get(name, "general")
 
-        async def _failover_call(*args: Any, **kwargs: Any) -> Any:
+        async def _routed_call(*args: Any, **kwargs: Any) -> Any:
+            order = self._routes[category]
+            active = self._active[category]
+            start_pos = order.index(active) if active in order else 0
+            # This workload's preferred route, rotated to start at whichever
+            # provider is currently active for it (sticky), then capped to
+            # max_attempts so a fully-down provider set fails fast rather
+            # than exhausting every configured endpoint on every call.
+            route = (order[start_pos:] + order[:start_pos])[: self._max_attempts]
+
             last_err: Exception | None = None
-            index = self._active
-            for attempt in range(self._max_attempts):
+            for position, index in enumerate(route):
                 client = self._clients[index]
                 try:
                     result = await getattr(client, name)(*args, **kwargs)
                 except Exception as err:  # noqa: BLE001 — any provider-side failure triggers failover
                     last_err = err
                     log.warning(
-                        "Solana RPC call failed, trying next endpoint" if attempt + 1 < self._max_attempts
-                        else "Solana RPC call failed on all endpoints",
+                        "Solana RPC call failed, routing to next provider"
+                        if position + 1 < len(route)
+                        else "Solana RPC call failed on every routed provider",
                         method=name,
+                        workload=category,
+                        provider=self._names[index],
                         endpoint=_redact_endpoint(self._urls[index]),
                         err=str(err),
                         err_type=type(err).__name__,
                     )
-                    index = (index + 1) % len(self._clients)
                     continue
-                if index != self._active:
+                if index != self._active[category]:
                     log.warning(
-                        "Solana RPC failover: switched active endpoint",
+                        "Solana RPC routing: switched active provider for workload",
                         method=name,
+                        workload=category,
+                        new_provider=self._names[index],
                         new_endpoint=_redact_endpoint(self._urls[index]),
                     )
-                    self._active = index
+                    self._active[category] = index
                 return result
 
             assert last_err is not None
             raise last_err
 
-        return _failover_call
+        return _routed_call
 
     async def close(self) -> None:
         for client in self._clients:
@@ -168,17 +337,26 @@ class _FailoverAsyncClient:
 
 
 def create_connection(env: Env) -> AsyncClient:
-    endpoints = _resolve_rpc_endpoints(env)
-    if len(endpoints) == 1:
-        return AsyncClient(endpoints[0], commitment=Confirmed)
+    specs = _resolve_rpc_provider_specs(env)
+    if len(specs) == 1:
+        return AsyncClient(specs[0].url, commitment=Confirmed)
+
+    connection = _FailoverAsyncClient(
+        specs,
+        max_attempts=env.SOLANA_RPC_MAX_FAILOVER_ATTEMPTS,
+        routing_strategy=env.SOLANA_RPC_ROUTING_STRATEGY,
+    )
     log.info(
-        "Solana RPC configured with failover",
-        endpoints=[_redact_endpoint(url) for url in endpoints],
-        max_attempts=min(env.SOLANA_RPC_MAX_FAILOVER_ATTEMPTS, len(endpoints)),
+        "Solana RPC configured with multi-provider routing",
+        providers=[
+            {"name": spec.name, "role": spec.role, "endpoint": _redact_endpoint(spec.url)} for spec in specs
+        ],
+        routing_strategy=env.SOLANA_RPC_ROUTING_STRATEGY,
+        max_attempts=connection._max_attempts,  # noqa: SLF001 — logging our own just-built instance
     )
-    return _FailoverAsyncClient(  # type: ignore[return-value] — duck-typed, see class docstring
-        endpoints, max_attempts=env.SOLANA_RPC_MAX_FAILOVER_ATTEMPTS
-    )
+    return connection  # type: ignore[return-value] — duck-typed, see class docstring
+
+
 
 
 def is_valid_solana_address(address: str) -> bool:
