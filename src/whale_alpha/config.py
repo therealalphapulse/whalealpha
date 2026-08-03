@@ -61,6 +61,16 @@ class Env(BaseSettings):
     # Max endpoints tried (in order) for a single RPC call before giving up.
     # 1 disables failover entirely (matches pre-failover behavior).
     SOLANA_RPC_MAX_FAILOVER_ATTEMPTS: int = Field(4, ge=1)
+    # "balanced" (default): route each RPC call to whichever configured
+    # provider best suits its workload — e.g. account/token-holder lookups
+    # prefer secondary providers (to keep that high-volume traffic off the
+    # primary node), while transaction submission and signature/tx-history
+    # reads prefer the primary node (latency + correctness sensitive). See
+    # integrations/solana_connection.py's _ROLE_PRIORITY_BY_WORKLOAD.
+    # "primary_first": opt out of workload-aware routing — every call tries
+    # SOLANA_RPC_URL first, then falls through the rest in the order they
+    # were configured, exactly like the original flat failover behavior.
+    SOLANA_RPC_ROUTING_STRATEGY: Literal["balanced", "primary_first"] = "balanced"
 
     JUPITER_API_BASE: str = "https://quote-api.jup.ag/v6"
     # Optional override for a paid/self-hosted price feed. When unset, the
