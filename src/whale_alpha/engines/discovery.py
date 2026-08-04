@@ -867,15 +867,38 @@ def start_discovery_loop(
 ):
     """Same asyncio-task-and-sleep-loop shape as engines/scheduler.py and
     engines/price_alerts.py — see those modules' docstrings for why (and
-    for the arq/celery-beat upgrade path once running multiple workers)."""
+    for the arq/celery-beat upgrade path once running multiple workers).
+
+    --- Phase 1 stabilization fix ---
+    engines/scheduler.py and engines/price_alerts.py sleep-then-run on a
+    30s / 60s interval, so their first cycle (and first log line) lands
+    within a minute of startup either way. This loop's interval
+    (DISCOVERY_INTERVAL_SECONDS, 900s/15min by default) is two orders of
+    magnitude larger, so the old sleep-then-run shape meant the engine
+    produced literally zero log output — no "Discovery cycle started", no
+    source/candidate/promotion logs, nothing — for the first 15 minutes
+    after every deploy or restart, even though it was starting and would
+    have run correctly. That is indistinguishable, from the logs alone,
+    from the engine never having started at all (see the bug report: "app
+    starts fine, no exceptions ... only periodic Jupiter price requests
+    ... no discovery logs"). The task itself, the scheduler registration,
+    and the discovery gating logic were already correct; only the
+    startup ordering was wrong.
+
+    Now the loop runs its first cycle after a short, separately-configured
+    DISCOVERY_STARTUP_DELAY_SECONDS (default 15s — just enough for the rest
+    of startup to settle) and only THEN falls back to sleeping
+    DISCOVERY_INTERVAL_SECONDS between subsequent cycles.
+    """
 
     async def _loop() -> None:
+        await asyncio.sleep(env.DISCOVERY_STARTUP_DELAY_SECONDS)
         while True:
-            await asyncio.sleep(env.DISCOVERY_INTERVAL_SECONDS)
             try:
                 await run_discovery_cycle(env, session_factory, http_client, solana_connection)
             except Exception as err:  # noqa: BLE001 — mirrors the other loops' catch-all
                 log.error("Discovery cycle crashed", err=str(err))
+            await asyncio.sleep(env.DISCOVERY_INTERVAL_SECONDS)
 
     task = asyncio.create_task(_loop())
 
