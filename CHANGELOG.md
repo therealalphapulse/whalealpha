@@ -3,6 +3,54 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] - Hybrid Wallet Discovery Engine (Phase 1 refactor)
+### Added
+- **On-chain launch discovery** (`integrations/free_market_sources.py`): pump.fun,
+  LaunchLab, Raydium, and Meteora free-tier "recent launches / new pools" polling,
+  resolved to early holders via existing plain-RPC token-holder lookup. Needs no
+  tracked wallets, Signals, or API key — this is what actually eliminates the
+  discovery engine's cold-start loop from an empty database, not just the trending
+  bootstrap alone.
+- **Trending-token provider fallback chain**: Jupiter Tokens API V2 (unchanged) ->
+  Birdeye free tier -> DexScreener (fully keyless), tried in order; one provider
+  being down/rate-limited/unconfigured never stops discovery.
+- **On-chain behaviour scoring** (`engines/behavior_scoring.py`, new): Early Buyer,
+  Diamond Hand, Quick Flip, Sniper Probability, Conviction, Consistency, and Risk
+  scores, derived from already-computed metrics. Enriches candidate confidence by a
+  small, bounded amount only — `engines/scoring.score_wallet` is unmodified.
+- **Smart-money labels** (`engines/wallet_labels.py`, new): Whale, Smart Money, KOL,
+  Cabal, Early Adopter, Momentum Trader, High Conviction, Swing Trader, Scalper,
+  Fresh Wallet, Dormant Alpha — derived from real metrics/behaviour, copied onto
+  `WhaleWallet.tags` at promotion.
+- **Wallet Graph Expansion** (`engines/wallet_graph.py`, new): every `APPROVED`
+  wallet becomes a discovery node — its recently traded tokens are re-queried for
+  co-holders, and repeated co-occurrence across distinct tokens (new
+  `wallet_relationships` table, migration `0004_hybrid_discovery`) queues the
+  related address as its own candidate.
+- `discover_candidates` rewritten from two fixed streams into a priority-ordered,
+  budget-rolling pipeline over every enabled source (on-chain launches -> trending
+  fallback chain -> legacy signal-derived stream); one source failing never blocks
+  the rest. Per-source and per-rejection-reason counts are now logged each cycle.
+- Unit tests: `test_behavior_scoring.py`, `test_wallet_labels.py`,
+  `test_wallet_graph.py` (all pure, no DB/network); `test_discovery.py` updated for
+  `_queue_new_candidates`'s new `(found, queued)` return.
+
+### Changed
+- `WhaleWalletAdminService.promote_candidate` gained an optional `tags` param
+  (discovery-engine-only call site) to carry smart-money labels onto the promoted
+  wallet.
+- `db/models.py`: `WalletCandidate` gained `behavior_scores` (JSON) and `labels`
+  (array); new `WalletRelationship` table. No other schema changes.
+
+### Verified in this environment
+- `pytest tests/unit` — 106/106 passing (93 pre-existing + 13 new).
+- `ruff check` clean on every new/modified file.
+- Not verified: live responses from pump.fun/LaunchLab/Raydium/Meteora/Birdeye/
+  DexScreener — this sandbox has no network access to those hosts. Every parser is
+  defensive (tries several plausible key names, returns `[]` rather than raising on
+  an unexpected shape) for exactly that reason; verify against a live response
+  before depending on any one of them in production.
+
 ## [0.2.0] - Unreleased
 ### Added
 - **Whale wallet tracking**: inbound Helius-webhook receiver (`integrations/helius_webhook.py`,
