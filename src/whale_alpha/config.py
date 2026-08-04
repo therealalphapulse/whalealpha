@@ -188,7 +188,67 @@ class Env(BaseSettings):
     HELIUS_API_KEY: str | None = None
     HELIUS_API_BASE: str = "https://api.helius.xyz"
 
-    @field_validator("SOLANA_RPC_URL", "JUPITER_API_BASE")
+    # --- Hybrid Discovery Engine: on-chain launch sources (Priority 1) ---
+    # See integrations/free_market_sources.py. Each source is independently
+    # toggleable and failure-isolated — a dead/rate-limited provider never
+    # stops the other sources or the discovery cycle. These are the highest
+    # priority sourcing streams: fresh liquidity events and their early
+    # buyers/accumulators, which need no tracked wallets or Signals to exist
+    # (unlike the legacy signaled-token-holders stream), so they are what
+    # actually eliminates the cold-start loop end to end.
+    DISCOVERY_PUMPFUN_ENABLED: bool = True
+    DISCOVERY_PUMPFUN_API_BASE: str = "https://frontend-api.pump.fun"
+    DISCOVERY_LAUNCHLAB_ENABLED: bool = True
+    DISCOVERY_LAUNCHLAB_API_BASE: str = "https://api-v3.raydium.io/launchlab"
+    DISCOVERY_RAYDIUM_ENABLED: bool = True
+    DISCOVERY_RAYDIUM_API_BASE: str = "https://api-v3.raydium.io"
+    DISCOVERY_METEORA_ENABLED: bool = True
+    DISCOVERY_METEORA_API_BASE: str = "https://amm-v2.meteora.ag"
+    # How far back (minutes) an on-chain launch source looks for "fresh"
+    # pools/mints each cycle. Kept short — this stream is meant to catch
+    # launches near-real-time, not backfill history.
+    DISCOVERY_ONCHAIN_LAUNCH_LOOKBACK_MINUTES: int = Field(30, ge=1)
+    DISCOVERY_MAX_LAUNCHES_PER_SOURCE: int = Field(15, ge=1)
+
+    # --- Trending-token fallback chain (Priority 2) ---
+    # DISCOVERY_TRENDING_* above already configures the Jupiter leg (tried
+    # first). If Jupiter has no key configured or its request fails, the
+    # engine falls through this ordered list of free-tier providers before
+    # giving up on trending-token sourcing for the cycle — see
+    # integrations/free_market_sources.find_trending_tokens_multi_provider.
+    # Never a hard dependency on any single one of them.
+    DISCOVERY_BIRDEYE_ENABLED: bool = True
+    DISCOVERY_BIRDEYE_API_BASE: str = "https://public-api.birdeye.so"
+    BIRDEYE_API_KEY: str | None = None
+    DISCOVERY_DEXSCREENER_ENABLED: bool = True
+    DISCOVERY_DEXSCREENER_API_BASE: str = "https://api.dexscreener.com"
+
+    # --- Wallet Graph Expansion (Priority 4) ---
+    # Every promoted wallet becomes a discovery node: its recent traded
+    # tokens are re-queried for co-holders/co-buyers, and repeated
+    # co-occurrence across distinct tokens raises a relationship-strength
+    # score (engines/wallet_graph.py) that feeds new-candidate confidence.
+    # Uses the existing Postgres schema (a new lightweight table, no graph
+    # database) per the architecture requirements.
+    DISCOVERY_GRAPH_EXPANSION_ENABLED: bool = True
+    DISCOVERY_GRAPH_EXPANSION_BATCH_SIZE: int = Field(20, ge=1)
+    DISCOVERY_GRAPH_MAX_TOKENS_PER_WALLET: int = Field(5, ge=1)
+    # A related wallet must co-occur across at least this many distinct
+    # shared tokens before it's queued as its own candidate — a single
+    # shared token is weak evidence (could be coincidence on a hot token),
+    # repeated co-trading across several is not.
+    DISCOVERY_GRAPH_MIN_COOCCURRENCE: int = Field(2, ge=1)
+
+    @field_validator(
+        "SOLANA_RPC_URL",
+        "JUPITER_API_BASE",
+        "DISCOVERY_PUMPFUN_API_BASE",
+        "DISCOVERY_LAUNCHLAB_API_BASE",
+        "DISCOVERY_RAYDIUM_API_BASE",
+        "DISCOVERY_METEORA_API_BASE",
+        "DISCOVERY_BIRDEYE_API_BASE",
+        "DISCOVERY_DEXSCREENER_API_BASE",
+    )
     @classmethod
     def _must_be_url(cls, v: str) -> str:
         if not (v.startswith("http://") or v.startswith("https://")):
