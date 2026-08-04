@@ -126,6 +126,12 @@ class Env(BaseSettings):
     # engine without a deploy.
     DISCOVERY_ENABLED: bool = True
     DISCOVERY_INTERVAL_SECONDS: float = Field(900, ge=30)  # 15 min between cycles by default
+    # Delay before the FIRST discovery cycle after startup. Kept short (and
+    # deliberately separate from DISCOVERY_INTERVAL_SECONDS) so the engine
+    # produces its first observable log line — and starts sourcing/scoring
+    # candidates — within seconds of boot instead of only after a full
+    # 15-minute interval has elapsed. See start_discovery_loop.
+    DISCOVERY_STARTUP_DELAY_SECONDS: float = Field(15, ge=0)
 
     # Target population bounds for the tracked (APPROVED) wallet database.
     DISCOVERY_MIN_TRACKED_WALLETS: int = Field(500, ge=1)
