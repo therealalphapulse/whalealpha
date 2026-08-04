@@ -129,6 +129,7 @@ class WhaleWalletAdminService:
         confidence: float,
         metrics: WalletMetrics,
         source: str,
+        tags: list[str] | None = None,
     ) -> WhaleWallet:
         """Creates a new WhaleWallet directly in APPROVED status with
         auto_discovered=True — the discovery engine's equivalent of a human
@@ -137,6 +138,11 @@ class WhaleWalletAdminService:
         promotion bar (see should_promote_candidate), never on raw user
         input, so the "users can never add whale wallets" invariant still
         holds — this is the automated-admin path, not a user-facing one.
+
+        `tags` (new, feature: Hybrid Wallet Discovery Engine) carries the
+        smart-money labels engines/wallet_labels.assign_labels derived for
+        this candidate (Whale, Smart Money, Sniper, etc.) — purely
+        informational, defaults to [] like every other admin-added wallet.
         """
         _assert_admin(actor)
 
@@ -147,6 +153,7 @@ class WhaleWalletAdminService:
             added_by_admin_id=actor.id,
             auto_discovered=True,
             discovery_source=source,
+            tags=tags or [],
             score=score,
             confidence=confidence,
             last_scored_at=datetime.now(UTC),
