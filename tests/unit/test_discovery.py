@@ -5,7 +5,9 @@ and tests/unit/test_scoring.py for the underlying scoring algorithm itself.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 from whale_alpha.engines.discovery import (
     DiscoveryConfig,
@@ -13,6 +15,7 @@ from whale_alpha.engines.discovery import (
     evaluate_promotion,
     evaluate_retention,
     select_wallets_to_retire_for_ceiling,
+    start_discovery_loop,
 )
 from whale_alpha.engines.scoring import MIN_APPROVED_SCORE, WalletMetrics
 from whale_alpha.integrations.wallet_discovery_source import DiscoveredCandidate
@@ -295,6 +298,38 @@ def test_rejects_an_invalid_solana_address():
     assert found == 1
     assert queued == 0
     assert session.added == []
+
+
+class _FakeLoopEnv:
+    """Minimal stand-in for Env — start_discovery_loop only reads these two
+    fields directly; run_discovery_cycle itself is mocked out below so it
+    never touches the rest of a real Env/session/http_client/RPC connection."""
+
+    def __init__(self, *, startup_delay: float, interval: float) -> None:
+        self.DISCOVERY_STARTUP_DELAY_SECONDS = startup_delay
+        self.DISCOVERY_INTERVAL_SECONDS = interval
+
+
+async def test_discovery_loop_runs_first_cycle_after_startup_delay_not_full_interval():
+    """Regression test for the Phase 1 stabilization bug: the loop used to
+    `sleep(DISCOVERY_INTERVAL_SECONDS)` *before* ever calling
+    run_discovery_cycle, so with the real 900s default the engine produced
+    zero discovery logs for the first 15 minutes of every process lifetime
+    — indistinguishable from "never started" in the logs. It must now run
+    its first cycle after the much shorter DISCOVERY_STARTUP_DELAY_SECONDS."""
+    env = _FakeLoopEnv(startup_delay=0.01, interval=100)  # interval kept huge on purpose
+
+    with patch(
+        "whale_alpha.engines.discovery.run_discovery_cycle", new_callable=AsyncMock
+    ) as mock_cycle:
+        stop = start_discovery_loop(env, session_factory=object(), http_client=object(), solana_connection=object())
+        try:
+            # Long enough to clear the 0.01s startup delay, nowhere near the
+            # 100s interval — so a call here proves the fix, not a fluke.
+            await asyncio.sleep(0.1)
+            assert mock_cycle.await_count == 1
+        finally:
+            await stop()
 
 
 def test_mutates_known_addresses_so_a_second_stream_cannot_double_queue():
