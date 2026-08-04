@@ -1,29 +1,45 @@
-"""Whale Wallet Discovery & Intelligence Engine — new feature, no TS
-equivalent existed. This closes the "users must never manually add whale
-wallets, so *something* has to" gap: before this, `whale_wallets` only grew
-via a human admin's /addwhale.
+"""Whale Wallet Discovery & Intelligence Engine — Hybrid Discovery Engine
+(Phase 1 refactor). Originally new feature, no TS equivalent existed; this
+closes the "users must never manually add whale wallets, so *something* has
+to" gap — before this, `whale_wallets` only grew via a human admin's
+/addwhale.
 
 Pipeline (see docs/ARCHITECTURE.md for the full data-flow diagram):
 
-    integrations.wallet_discovery_source (candidate sourcing — TWO
-    independent streams, see discover_candidates below: one built on
-    already-tracked whales' own Signals, one an admin-independent bootstrap
-    off Jupiter's platform-wide trending tokens. Only the second can produce
-    a first candidate from zero tracked wallets.)
+    Candidate sourcing — MULTIPLE independent, priority-ordered streams, see
+    discover_candidates below:
+      1. Real-time on-chain launch discovery (pump.fun, LaunchLab, Raydium,
+         Meteora — integrations/free_market_sources.py). Needs no tracked
+         wallets, Signals, or API key; this is what actually eliminates the
+         cold-start loop from zero.
+      2. Trending-token provider fallback chain (Jupiter -> Birdeye ->
+         DexScreener), also independent of anything already tracked.
+      3. The legacy signaled-token-holders stream
+         (integrations.wallet_discovery_source.find_candidates_from_token_holders)
+         — co-buyers of tokens our own tracked whales' Signals already
+         picked. High precision, but alone can never bootstrap from zero.
+      4. Wallet Graph Expansion (engines/wallet_graph.py, its own phase in
+         run_discovery_cycle) — every promoted wallet becomes a discovery
+         node; repeated co-trading relationships raise confidence.
+    One failing/disabled source never stops the others — see
+    discover_candidates and run_discovery_cycle's per-phase try/except.
               |
               v
     WalletCandidate (staging table — engines/discovery.discover_candidates)
               |
               v  (fetch on-chain history, engines/discovery_metrics.compute_wallet_metrics)
               |  (score, engines/scoring.score_wallet — UNCHANGED algorithm)
+              |  (behaviour, engines/behavior_scoring.py — Priority 6, enrichment only)
+              |  (labels, engines/wallet_labels.py — Priority 7)
               v
     evaluate_promotion() -- pure decision --> promote via WhaleWalletAdminService
               |
               v
-    WhaleWallet (APPROVED, auto_discovered=True) --> already wired into the
-    signal engine (engines/monitor.py only ingests events from APPROVED
-    wallets; engines/signal.py already weights confidence by wallet.score —
-    no changes needed there, see docs/ARCHITECTURE.md).
+    WhaleWallet (APPROVED, auto_discovered=True, tags=smart-money labels) -->
+    already wired into the signal engine (engines/monitor.py only ingests
+    events from APPROVED wallets; engines/signal.py already weights
+    confidence by wallet.score — no changes needed there, see
+    docs/ARCHITECTURE.md).
 
 A second, independent pass (`rescore_tracked_wallets`) periodically
 re-evaluates already-APPROVED wallets and retires ones that go dormant or
@@ -38,10 +54,12 @@ The impure orchestration around them (fetching candidates, running the DB
 transaction, calling the admin service) is intentionally thin.
 """
 
+
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -60,9 +78,16 @@ from whale_alpha.db.models import (
     WalletStatus,
     WhaleWallet,
 )
+from whale_alpha.engines.behavior_scoring import (
+    behavior_confidence_bonus,
+    behavior_scores_to_json,
+    compute_behavior_scores,
+)
 from whale_alpha.engines.discovery_metrics import ComputedMetrics, compute_wallet_metrics
 from whale_alpha.engines.scoring import MIN_APPROVED_SCORE, WalletMetrics, score_wallet
-from whale_alpha.integrations import price_feed
+from whale_alpha.engines.wallet_graph import expand_wallet_graph
+from whale_alpha.engines.wallet_labels import assign_labels
+from whale_alpha.integrations import free_market_sources, price_feed
 from whale_alpha.integrations.solana_connection import is_valid_solana_address
 from whale_alpha.integrations.wallet_discovery_source import (
     DiscoveredCandidate,
@@ -238,51 +263,112 @@ async def _system_actor(session: AsyncSession) -> Actor:
     return Actor(id=user.id, role=user.role)
 
 
+# Priority-ordered on-chain launch sources (Priority 1 — see
+# integrations/free_market_sources.py). Each entry is (source_key,
+# async_fn) where async_fn(http_client, connection, env, *,
+# max_launches, max_holders_per_token) -> list[DiscoveredCandidate]. Tried
+# in this order every cycle; one failing/disabled source never blocks the
+# next — see discover_candidates.
+_ON_CHAIN_LAUNCH_SOURCES = (
+    ("pumpfun_launch", free_market_sources.find_candidates_from_pumpfun_launches),
+    ("launchlab_launch", free_market_sources.find_candidates_from_launchlab_launches),
+    ("raydium_new_pool", free_market_sources.find_candidates_from_raydium_new_pools),
+    ("meteora_new_pool", free_market_sources.find_candidates_from_meteora_pools),
+)
+
+
 async def discover_candidates(
     session: AsyncSession, http_client: httpx.AsyncClient, connection: AsyncClient, env: Env
-) -> int:
-    """Sources new candidate addresses from two independent streams and
-    queues them in WalletCandidate, skipping anything already tracked or
-    already queued. Returns the number of genuinely new candidates queued.
+) -> dict[str, int]:
+    """Sources new candidate addresses from every enabled discovery stream,
+    in priority order, and queues them in WalletCandidate — skipping
+    anything already tracked or already queued. Returns a per-source count
+    of genuinely new candidates queued (see run_discovery_cycle for the
+    structured log this feeds).
 
-    Stream 1 (holders of recently-signaled tokens) requires an existing
-    tracked wallet to have already produced a Signal — it's the
-    higher-precision stream (co-buyers of tokens *our own* whales picked),
-    but it cannot run at all from zero tracked wallets: zero wallets -> zero
-    ingested buy events -> zero Signals -> zero token mints to search.
+    Priority order (see docs/ARCHITECTURE.md and the Phase 1 refactor
+    prompt for the full rationale):
 
-    Stream 2 (trending-token bootstrap,
-    integrations.wallet_discovery_source.find_candidates_from_trending_tokens)
-    has no such dependency — it pulls Jupiter's platform-wide trending
-    tokens regardless of what (if anything) is tracked. This is what lets
-    the engine find its first wallets with zero admin seeding, and it keeps
-    running alongside stream 1 afterwards too, as a second, independent
-    discovery channel — relying on stream 1 alone long-term would mean the
-    tracked set can only ever grow from wallets correlated with what's
-    already tracked, a blind spot worth avoiding even once bootstrapped.
+      1. Real-time on-chain launch discovery (_ON_CHAIN_LAUNCH_SOURCES:
+         pump.fun, LaunchLab, Raydium, Meteora) — fresh liquidity events and
+         their early accumulators. Needs no tracked wallets, no Signals, no
+         API key. This is what actually closes the cold-start loop from
+         absolute zero, not just the trending-token bootstrap alone.
 
-    The two streams split `DISCOVERY_CANDIDATE_BATCH_SIZE` evenly.
+      2. Trending-token provider fallback chain (Jupiter -> Birdeye ->
+         DexScreener, see integrations/free_market_sources.py). Also
+         independent of anything already tracked.
+
+      3. The legacy signaled-token-holders stream
+         (`_queue_candidates_from_signaled_tokens`) — co-buyers of tokens
+         our own tracked whales already picked. High-precision, but by
+         itself can never produce a first candidate from zero tracked
+         wallets: zero wallets -> zero Signals -> zero token mints to
+         search. Kept running as ONE source among many, not the primary
+         one, per the hybrid architecture.
+
+      4. Wallet Graph Expansion (engines/wallet_graph.py) runs as its own
+         phase in run_discovery_cycle, not here — it needs already-APPROVED
+         wallets to expand from, so it naturally only contributes once the
+         population above zero exists.
+
+    Each source draws from one shared, priority-ordered budget
+    (`DISCOVERY_CANDIDATE_BATCH_SIZE`): higher-priority sources get first
+    claim on it, and whatever they don't use rolls over to the next source,
+    rather than a fixed even split — so on a quiet on-chain-launch cycle the
+    trending/legacy streams still get to use the leftover budget, and on a
+    busy one the on-chain streams aren't artificially capped.
     """
     existing_wallets = await session.execute(select(WhaleWallet.address))
     existing_candidates = await session.execute(select(WalletCandidate.address))
     known_addresses = {row[0] for row in existing_wallets.all()} | {row[0] for row in existing_candidates.all()}
 
-    per_stream_budget = max(1, env.DISCOVERY_CANDIDATE_BATCH_SIZE // 2)
-    queued = 0
+    remaining = env.DISCOVERY_CANDIDATE_BATCH_SIZE
+    per_source_queued: dict[str, int] = {}
 
-    queued += await _queue_candidates_from_signaled_tokens(
-        session, connection, env, known_addresses, budget=per_stream_budget
-    )
+    for source_key, source_fn in _ON_CHAIN_LAUNCH_SOURCES:
+        if remaining <= 0:
+            break
+        try:
+            candidates = await source_fn(
+                http_client,
+                connection,
+                env,
+                max_launches=env.DISCOVERY_MAX_LAUNCHES_PER_SOURCE,
+                max_holders_per_token=env.DISCOVERY_MAX_HOLDERS_PER_TOKEN,
+            )
+        except Exception as err:  # noqa: BLE001 — one provider failing must never stop the others
+            log.warning("Discovery source failed, continuing with the rest", source=source_key, err=str(err))
+            candidates = []
+        found, queued = _queue_new_candidates(session, candidates, known_addresses, remaining)
+        per_source_queued[source_key] = queued
+        remaining -= queued
+        log.info("Discovery source cycle", source=source_key, found=found, queued=queued)
 
-    if env.DISCOVERY_TRENDING_ENABLED:
-        remaining_budget = env.DISCOVERY_CANDIDATE_BATCH_SIZE - queued
-        queued += await _queue_trending_bootstrap_candidates(
-            session, http_client, connection, env, known_addresses, budget=remaining_budget
+    if remaining > 0 and env.DISCOVERY_TRENDING_ENABLED:
+        found, queued = await _queue_trending_bootstrap_candidates(
+            session, http_client, connection, env, known_addresses, budget=remaining
         )
+        remaining -= queued
+        # find_candidates_from_trending_tokens / the fallback chain both tag
+        # each DiscoveredCandidate with the provider that actually served
+        # it (trending_token_holder / birdeye_trending / dexscreener_trending)
+        # rather than a generic "trending" bucket — see
+        # _queue_trending_bootstrap_candidates.
+        per_source_queued["trending_fallback_chain"] = queued
+        log.info("Discovery source cycle", source="trending_fallback_chain", found=found, queued=queued)
 
-    if queued:
+    if remaining > 0:
+        queued = await _queue_candidates_from_signaled_tokens(
+            session, connection, env, known_addresses, budget=remaining
+        )
+        per_source_queued["token_holder_of_signaled_token"] = queued
+        remaining -= queued
+        log.info("Discovery source cycle", source="token_holder_of_signaled_token", queued=queued)
+
+    if sum(per_source_queued.values()):
         await session.commit()
-    return queued
+    return per_source_queued
 
 
 async def _queue_candidates_from_signaled_tokens(
@@ -293,6 +379,11 @@ async def _queue_candidates_from_signaled_tokens(
     *,
     budget: int,
 ) -> int:
+    """Priority 3 — the legacy stream: other large holders of tokens our
+    own tracked whales' Signals already picked. See discover_candidates'
+    docstring for why this is now one source among several rather than the
+    primary (or only) one.
+    """
     recent_signals = await session.execute(
         select(Signal.token_mint).order_by(Signal.created_at.desc()).limit(env.DISCOVERY_SOURCE_TOKEN_LOOKBACK)
     )
@@ -312,7 +403,8 @@ async def _queue_candidates_from_signaled_tokens(
             min_interval_seconds=env.DISCOVERY_RPC_MIN_INTERVAL_SECONDS,
             max_retries=env.DISCOVERY_RPC_MAX_RETRIES,
         )
-        queued += _queue_new_candidates(session, candidates, known_addresses, budget - queued)
+        _, newly_queued = _queue_new_candidates(session, candidates, known_addresses, budget - queued)
+        queued += newly_queued
     return queued
 
 
@@ -324,17 +416,35 @@ async def _queue_trending_bootstrap_candidates(
     known_addresses: set[str],
     *,
     budget: int,
-) -> int:
+) -> tuple[int, int]:
+    """Priority 2 — Jupiter Tokens API V2 first (unchanged, existing
+    behavior); if that yields nothing (no key configured, or the request
+    failed), falls through to the Birdeye -> DexScreener chain in
+    integrations/free_market_sources.py. Returns (found, queued).
+    """
     if budget <= 0:
-        return 0
-    candidates = await find_candidates_from_trending_tokens(
+        return 0, 0
+
+    jupiter_candidates = await find_candidates_from_trending_tokens(
         http_client,
         connection,
         env,
         max_tokens=env.DISCOVERY_TRENDING_TOKEN_LIMIT,
         max_holders_per_token=env.DISCOVERY_MAX_HOLDERS_PER_TOKEN,
     )
-    return _queue_new_candidates(session, candidates, known_addresses, budget)
+    if jupiter_candidates:
+        found, queued = _queue_new_candidates(session, jupiter_candidates, known_addresses, budget)
+        return found, queued
+
+    fallback_candidates = await free_market_sources.find_trending_tokens_multi_provider(
+        http_client,
+        connection,
+        env,
+        max_tokens=env.DISCOVERY_TRENDING_TOKEN_LIMIT,
+        max_holders_per_token=env.DISCOVERY_MAX_HOLDERS_PER_TOKEN,
+        jupiter_mints=None,
+    )
+    return _queue_new_candidates(session, fallback_candidates, known_addresses, budget)
 
 
 def _queue_new_candidates(
@@ -342,12 +452,16 @@ def _queue_new_candidates(
     candidates: list[DiscoveredCandidate],
     known_addresses: set[str],
     budget: int,
-) -> int:
-    """Shared dedup/validation/insert logic for both sourcing streams — adds
+) -> tuple[int, int]:
+    """Shared dedup/validation/insert logic for every sourcing stream — adds
     a WalletCandidate row (in-session, not yet committed) for each address
     not already tracked or queued, up to `budget`. Mutates `known_addresses`
-    in place so the two streams (called sequentially within one cycle) never
-    double-queue the same address.
+    in place so sources called sequentially within one cycle never
+    double-queue the same address. Returns (found, queued) — `found` is the
+    number of raw candidates the source returned (before dedup/budget/
+    validation), `queued` is how many actually became new rows; the gap
+    between them is what the "Rejected: Duplicate" bucket in the discovery
+    log reflects.
     """
     queued = 0
     for candidate in candidates:
@@ -372,7 +486,7 @@ def _queue_new_candidates(
             source=candidate.source,
             token_mint=candidate.discovered_from_token_mint,
         )
-    return queued
+    return len(candidates), queued
 
 
 async def evaluate_candidates(
@@ -386,9 +500,26 @@ async def evaluate_candidates(
     promoting the ones that clear evaluate_promotion() into whale_wallets
     (capacity permitting) and marking the rest EVALUATED/REJECTED so they
     aren't immediately re-fetched next cycle.
+
+    For every candidate that produces enough history to score (Priority 5),
+    also computes on-chain behaviour scores (Priority 6,
+    engines/behavior_scoring.py) and derives smart-money labels from them
+    (Priority 7, engines/wallet_labels.py) — stored on the candidate
+    regardless of outcome, and copied onto WhaleWallet.tags if promoted.
+    Behaviour only ever *enriches* confidence by a small, bounded amount
+    (see behavior_confidence_bonus); it never overrides the core
+    score_wallet output or any of evaluate_promotion's hard gates.
+
+    Tracks a per-source pass/reject breakdown and a rejection-reason tally
+    for the structured discovery log (see run_discovery_cycle).
     """
     config = DiscoveryConfig.from_env(env)
     summary = {"evaluated": 0, "promoted": 0, "rejected": 0, "insufficient_data": 0}
+    by_source: dict[str, Counter] = {}
+    reason_summary: Counter = Counter()
+
+    def _source_counter(source: str) -> Counter:
+        return by_source.setdefault(source, Counter())
 
     reeval_cutoff = datetime.now(UTC) - timedelta(hours=env.DISCOVERY_CANDIDATE_MIN_REEVAL_HOURS)
     result = await session.execute(
@@ -413,6 +544,7 @@ async def evaluate_candidates(
 
     for candidate in batch:
         summary["evaluated"] += 1
+        _source_counter(candidate.source)["evaluated"] += 1
         candidate.evaluation_count += 1
         candidate.last_evaluated_at = datetime.now(UTC)
 
@@ -421,6 +553,7 @@ async def evaluate_candidates(
         )
         if swaps is None:
             summary["insufficient_data"] += 1
+            reason_summary["NO_HISTORY_PROVIDER_OR_FETCH_FAILED"] += 1
             candidate.status = CandidateStatus.EVALUATED
             candidate.rejection_reason = "NO_HISTORY_PROVIDER_OR_FETCH_FAILED"
             continue
@@ -429,14 +562,23 @@ async def evaluate_candidates(
         computed = compute_wallet_metrics(swaps, wallet_age_days=wallet_age_days)
         if computed is None:
             summary["insufficient_data"] += 1
+            reason_summary["INSUFFICIENT_TRADE_HISTORY"] += 1
             candidate.status = CandidateStatus.EVALUATED
             candidate.rejection_reason = "INSUFFICIENT_TRADE_HISTORY"
             continue
 
         result_ = score_wallet(computed.metrics)
+        behavior = compute_behavior_scores(computed.metrics, swaps)
+        labels = assign_labels(
+            metrics=computed.metrics, behavior=behavior, trade_count_30d=computed.trade_count_30d
+        )
+        enriched_confidence = max(0.0, min(100.0, result_.confidence + behavior_confidence_bonus(behavior)))
+
         candidate.last_score = result_.score
-        candidate.last_confidence = result_.confidence
+        candidate.last_confidence = enriched_confidence
         candidate.last_metrics = _metrics_to_json(computed)
+        candidate.behavior_scores = behavior_scores_to_json(behavior)
+        candidate.labels = labels
 
         decision = evaluate_promotion(
             score=result_.score,
@@ -448,6 +590,8 @@ async def evaluate_candidates(
 
         if not decision.approved:
             summary["rejected"] += 1
+            _source_counter(candidate.source)["rejected"] += 1
+            reason_summary[decision.reason or "UNKNOWN"] += 1
             candidate.status = CandidateStatus.EVALUATED
             candidate.rejection_reason = decision.reason
             continue
@@ -458,6 +602,8 @@ async def evaluate_candidates(
             # it's picked up again once a slot opens from retirement/ceiling
             # enforcement, without needing to re-fetch its history immediately.
             summary["rejected"] += 1
+            _source_counter(candidate.source)["rejected"] += 1
+            reason_summary["AT_MAX_TRACKED_WALLETS"] += 1
             candidate.status = CandidateStatus.EVALUATED
             candidate.rejection_reason = "AT_MAX_TRACKED_WALLETS"
             continue
@@ -468,17 +614,33 @@ async def evaluate_candidates(
             address=candidate.address,
             label=None,
             score=result_.score,
-            confidence=result_.confidence,
+            confidence=enriched_confidence,
             metrics=computed.metrics,
             source=candidate.source,
+            tags=labels,
         )
         candidate.status = CandidateStatus.PROMOTED
         candidate.promoted_wallet_id = wallet.id
         current_approved_count += 1
         summary["promoted"] += 1
-        log.info("Wallet promoted", address=candidate.address, score=result_.score, wallet_id=wallet.id)
+        _source_counter(candidate.source)["promoted"] += 1
+        log.info(
+            "Wallet promoted",
+            address=candidate.address,
+            score=result_.score,
+            wallet_id=wallet.id,
+            labels=labels,
+        )
 
     await session.commit()
+
+    if by_source:
+        log.info(
+            "Discovery evaluation breakdown",
+            by_source={source: dict(counts) for source, counts in by_source.items()},
+            reason_summary=dict(reason_summary),
+        )
+
     return summary
 
 
@@ -630,13 +792,13 @@ async def run_discovery_cycle(
     async with session_factory() as session:
         actor = await _system_actor(session)
 
-    summary: dict[str, int] = {}
+    summary: dict[str, object] = {}
 
     try:
         async with session_factory() as session:
-            summary["candidates_queued"] = await discover_candidates(
-                session, http_client, solana_connection, env
-            )
+            by_source_queued = await discover_candidates(session, http_client, solana_connection, env)
+            summary["candidates_queued"] = sum(by_source_queued.values())
+            summary["candidates_by_source"] = by_source_queued
     except Exception as err:  # noqa: BLE001 — one phase failing shouldn't block the others
         log.error("Discovery: candidate sourcing failed", err=str(err))
 
@@ -653,6 +815,27 @@ async def run_discovery_cycle(
             summary.update(rescore_summary)
     except Exception as err:  # noqa: BLE001
         log.error("Discovery: re-scoring pass failed", err=str(err))
+
+    if env.DISCOVERY_GRAPH_EXPANSION_ENABLED:
+        try:
+            async with session_factory() as session:
+                existing_wallets = await session.execute(select(WhaleWallet.address))
+                existing_candidates = await session.execute(select(WalletCandidate.address))
+                known_addresses = {row[0] for row in existing_wallets.all()} | {
+                    row[0] for row in existing_candidates.all()
+                }
+                graph_candidates, wallets_processed = await expand_wallet_graph(
+                    session, http_client, solana_connection, env, known_addresses
+                )
+                _, graph_queued = _queue_new_candidates(
+                    session, graph_candidates, known_addresses, budget=len(graph_candidates)
+                )
+                if graph_queued:
+                    await session.commit()
+                summary["graph_expanded"] = wallets_processed
+                summary["graph_candidates_queued"] = graph_queued
+        except Exception as err:  # noqa: BLE001
+            log.error("Discovery: wallet graph expansion failed", err=str(err))
 
     try:
         async with session_factory() as session:
