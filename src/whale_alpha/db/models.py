@@ -30,6 +30,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -224,6 +225,16 @@ class WalletCandidate(Base):
     last_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # --- NEW (feature: Hybrid Wallet Discovery Engine, Phase 1 refactor) ---
+    # On-chain behaviour scores (engines/behavior_scoring.py — Early Buyer,
+    # Diamond Hand, Quick Flip, Sniper Probability, Conviction, Consistency,
+    # Risk) and the smart-money labels derived from them
+    # (engines/wallet_labels.py). Stored on the candidate so a promoted
+    # wallet's labels/behaviour are available immediately (copied onto
+    # WhaleWallet.tags at promotion) without recomputation.
+    behavior_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    labels: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+
     evaluation_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -232,6 +243,46 @@ class WalletCandidate(Base):
     __table_args__ = (
         Index("ix_wallet_candidates_status", "status"),
         Index("ix_wallet_candidates_last_evaluated_at", "last_evaluated_at"),
+    )
+
+
+class WalletRelationship(Base):
+    """Wallet graph — new feature (Hybrid Wallet Discovery Engine, Phase 1
+    refactor). Deliberately a plain Postgres table, not a graph database
+    (per the architecture requirements): a relationship is just "these two
+    addresses have repeatedly shown up trading the same tokens", which a
+    unique-pair row with a running counter models perfectly well at the
+    scale this engine targets (thousands of wallets, not millions of edges).
+
+    One row per (wallet_address, related_address) pair. `co_occurrence_count`
+    increments every discovery cycle the pair is seen sharing a *new* token
+    mint (see engines/wallet_graph.py) — repeated co-trading across distinct
+    tokens is much stronger evidence than one shared hot token, which is why
+    candidates sourced from this table require
+    `DISCOVERY_GRAPH_MIN_COOCCURRENCE` before being queued (see
+    engines/discovery.py). `strength` is a normalized 0..1 confidence value
+    derived from that count, consumed as an enrichment signal only — it
+    never gates promotion on its own (see evaluate_promotion).
+    """
+
+    __tablename__ = "wallet_relationships"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
+    wallet_address: Mapped[str] = mapped_column(String, nullable=False)
+    related_address: Mapped[str] = mapped_column(String, nullable=False)
+    relationship_type: Mapped[str] = mapped_column(String, nullable=False)  # e.g. CO_BUY, CO_SELL, CO_TIMING
+    co_occurrence_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    shared_token_mints: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    strength: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    first_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("wallet_address", "related_address", name="uq_wallet_relationships_pair"),
+        Index("ix_wallet_relationships_wallet_address", "wallet_address"),
+        Index("ix_wallet_relationships_related_address", "related_address"),
     )
 
 
