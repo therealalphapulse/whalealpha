@@ -52,45 +52,62 @@ object that already passed `signal`'s multi-wallet confidence threshold. A
 single wallet buying a token, however large, cannot trigger a trade by
 itself.
 
-## Whale Wallet Discovery & Intelligence Engine
+## Whale Wallet Discovery & Intelligence Engine (Hybrid Discovery Engine, Phase 1 refactor)
 
 Before this feature, `whale_wallets` only ever grew via a human admin's
 `/addwhale` — there was no automated path, and nothing kept the tracked
 population within a healthy size or pruned wallets that stopped performing.
-`engines/discovery.py` closes that gap with a four-stage cycle, run on a
+`engines/discovery.py` closes that gap with a five-stage cycle, run on a
 timer (`DISCOVERY_INTERVAL_SECONDS`, default 15 min):
 
-1. **Source** (`discover_candidates`) — runs **two independent streams**
-   each cycle and queues genuinely-new addresses into the `WalletCandidate`
-   staging table (never touches `whale_wallets` directly):
-   - *Signal-derived* — other large holders of tokens that recently produced
-     a real `Signal` (i.e. multiple *already-tracked* whales just
-     accumulated it), via plain Solana RPC
-     (`find_candidates_from_token_holders`). Higher-precision (co-buyers of
-     tokens our own whales picked), but requires at least one tracked wallet
-     to have already produced a Signal — it cannot run from zero.
-   - *Trending-token bootstrap* — Jupiter's platform-wide trending/most-
-     traded tokens (`find_candidates_from_trending_tokens`,
-     `DISCOVERY_TRENDING_*` config), independent of anything already
-     tracked. **This is what lets the engine find its first wallets with
-     zero admin seeding** — without it, `zero tracked wallets -> zero
-     ingested buy events -> zero Signals -> zero candidates` is a closed
-     loop with no way in, which is exactly the "No approved whale wallets
-     yet" state a fresh deploy starts in. It keeps running alongside the
-     first stream afterwards too, as an ongoing second discovery channel,
-     so the tracked set doesn't only ever grow from wallets correlated with
-     what's already tracked. Needs `JUPITER_API_KEY` (or falls back to
-     `PRICE_FEED_API_KEY`) — without either, this stream is skipped (a
-     warning is logged) and only the signal-derived stream runs.
+1. **Source** (`discover_candidates`) — runs **every enabled discovery
+   source in priority order**, drawing from one shared,
+   priority-ordered budget (`DISCOVERY_CANDIDATE_BATCH_SIZE` — a
+   higher-priority source's unused budget rolls over to the next, rather
+   than a fixed split), and queues genuinely-new addresses into the
+   `WalletCandidate` staging table (never touches `whale_wallets` directly).
+   One source failing or being disabled never blocks the rest:
+   - *Real-time on-chain launch discovery* (`integrations/free_market_sources.py`,
+     Priority 1) — pump.fun, LaunchLab, Raydium, and Meteora's public,
+     keyless "recent launches / new pools" endpoints, each resolved to its
+     largest holders via plain Solana RPC
+     (`find_candidates_from_token_holders`, no API key). **This is what
+     actually eliminates the cold-start loop** — it needs no tracked
+     wallets, no Signals, and no paid API key, so it produces candidates
+     from a completely empty database.
+   - *Trending-token fallback chain* (Priority 2) — Jupiter Tokens API V2
+     first (`find_candidates_from_trending_tokens`, needs
+     `JUPITER_API_KEY`/`PRICE_FEED_API_KEY`); if that's unavailable, falls
+     through to Birdeye's free tier, then DexScreener's fully keyless feed
+     (`find_trending_tokens_multi_provider`). Stops at the first provider
+     that returns results.
+   - *Signal-derived* (Priority 3, legacy stream, unchanged behavior) —
+     other large holders of tokens that recently produced a real `Signal`
+     (i.e. multiple *already-tracked* whales just accumulated it). Highest
+     precision, but by itself can never bootstrap from zero tracked
+     wallets — now just one source among several rather than a hard
+     dependency.
+   - *Wallet Graph Expansion* (Priority 4, `engines/wallet_graph.py`) —
+     runs as its own phase later in the cycle (see step 4 below), not
+     inside `discover_candidates`, since it needs already-`APPROVED`
+     wallets to expand from.
 2. **Evaluate** (`evaluate_candidates`) — fetches each queued candidate's
    swap history (requires `HELIUS_API_KEY`; see below), computes
    FIFO-matched realized PnL/ROI/win-rate/drawdown
-   (`engines/discovery_metrics.py`), scores the result with the **same,
-   unmodified** `engines/scoring.score_wallet` used for admin-added wallets,
-   and runs it through `evaluate_promotion` — a pure function that gates on
-   score, ROI, win rate, trade count, wallet age, and wash-trading flags.
+   (`engines/discovery_metrics.py`, Priority 5), scores the result with the
+   **same, unmodified** `engines/scoring.score_wallet` used for admin-added
+   wallets, and runs it through `evaluate_promotion` — a pure function that
+   gates on score, ROI, win rate, trade count, wallet age, and wash-trading
+   flags (all unchanged from before this refactor). In parallel, computes
+   on-chain behaviour scores (`engines/behavior_scoring.py`, Priority 6 —
+   Early Buyer, Diamond Hand, Quick Flip, Sniper Probability, Conviction,
+   Consistency, Risk) and derives smart-money labels from them
+   (`engines/wallet_labels.py`, Priority 7). Behaviour only ever *enriches*
+   confidence by a small, bounded amount (`behavior_confidence_bonus`,
+   capped at ±8) — it never overrides the core score or any promotion gate.
    Candidates that clear every gate are promoted straight to `APPROVED` via
-   `WhaleWalletAdminService.promote_candidate`.
+   `WhaleWalletAdminService.promote_candidate`, with their labels copied
+   onto `WhaleWallet.tags`.
 3. **Re-score & retire** (`rescore_tracked_wallets`) — periodically
    re-fetches history for already-`APPROVED` wallets (oldest-scored first)
    and retires ones that go dormant (`last_active_at` — already populated by
@@ -101,16 +118,29 @@ timer (`DISCOVERY_INTERVAL_SECONDS`, default 15 min):
    population is already at/below `DISCOVERY_MIN_TRACKED_WALLETS` — removing
    a mediocre wallet when we're short on wallets would make the shortage
    worse, not better. Inactivity-based retirement is never suppressed.
-4. **Enforce the ceiling** (`enforce_population_ceiling`) — if a burst of
+4. **Expand the wallet graph** (`engines/wallet_graph.expand_wallet_graph`,
+   Priority 4) — every `APPROVED` wallet is a discovery node: its recently
+   traded token mints are re-queried for co-holders, and a related address
+   that co-occurs across at least `DISCOVERY_GRAPH_MIN_COOCCURRENCE`
+   distinct tokens with an already-trusted wallet is queued as its own
+   candidate. Relationship strength is tracked in a new `wallet_relationships`
+   table (plain Postgres, not a graph database) via the pure
+   `compute_strength`/`update_relationship` functions. Runs incrementally
+   over a batch of `APPROVED` wallets per cycle
+   (`DISCOVERY_GRAPH_EXPANSION_BATCH_SIZE`), never the whole population at
+   once.
+5. **Enforce the ceiling** (`enforce_population_ceiling`) — if a burst of
    promotions pushes the population over `DISCOVERY_MAX_TRACKED_WALLETS`,
    retires the lowest-scoring wallets back down to it.
 
-Every promotion/retirement *decision* is a pure function
-(`evaluate_promotion` / `evaluate_retention` /
-`select_wallets_to_retire_for_ceiling` in `engines/discovery.py`) — no DB,
-no network — so the admission-control logic is unit-tested directly (see
-`tests/unit/test_discovery.py`), the same testability shape as
-`engines/scoring.py` and `engines/signal.py`.
+Every promotion/retirement *decision*, plus the wallet-graph strength math,
+is a pure function (`evaluate_promotion` / `evaluate_retention` /
+`select_wallets_to_retire_for_ceiling` / `wallet_graph.compute_strength` /
+`wallet_graph.update_relationship`) — no DB, no network — so the
+admission-control and graph logic is unit-tested directly (see
+`tests/unit/test_discovery.py`, `tests/unit/test_wallet_graph.py`,
+`tests/unit/test_behavior_scoring.py`, `tests/unit/test_wallet_labels.py`),
+the same testability shape as `engines/scoring.py` and `engines/signal.py`.
 
 **Every write still goes through `WhaleWalletAdminService`, the same choke
 point `/addwhale` uses** (see "Why the admin/user boundary is enforced where
@@ -122,22 +152,23 @@ automated action is audit-logged like any admin action, tagged
 `WHALE_WALLET_STATUS_CHANGE` so it's distinguishable from a human admin's
 `/addwhale`/`/approvewhale` in the audit trail.
 
-**Two independent API keys gate two independent things, and it's easy to
-have one without the other:**
-- **`JUPITER_API_KEY`** (or `PRICE_FEED_API_KEY` as a fallback) gates the
-  trending-token bootstrap *source* (step 1b above) — without it, the
-  signal-derived stream still runs, but a fresh deploy with zero tracked
-  wallets will never find its first candidate.
+**API keys are all optional, and every source degrades independently:**
+- The Priority 1 on-chain launch sources and the DexScreener leg of the
+  Priority 2 fallback chain need **no API key at all** — this is what lets
+  the engine bootstrap from a completely fresh deploy with zero
+  configuration beyond `SOLANA_RPC_URL`.
+- **`JUPITER_API_KEY`** (or `PRICE_FEED_API_KEY`) upgrades the Priority 2
+  trending source to Jupiter's data; without it, the chain falls through to
+  Birdeye (optionally `BIRDEYE_API_KEY` for a higher free-tier ceiling) and
+  then DexScreener automatically.
 - **`HELIUS_API_KEY`** gates *scoring* (step 2) — without it, candidates get
-  queued (by whichever source is working) but never scored, so nothing gets
-  promoted regardless of how many candidates are found. Inactivity-based
+  queued (by whichever sources are working) but never scored, so nothing
+  gets promoted regardless of how many candidates are found. Inactivity-based
   retirement (step 3) doesn't need it and still works.
 
-Running with neither key means the tracked population can only shrink
-(inactivity retirement); with only `HELIUS_API_KEY` it can score/retire but
-never bootstrap from empty; with only `JUPITER_API_KEY` it can find
-candidates but never actually promote any. Set both for the engine to
-actually maintain the 500–1500 target end to end.
+Set `HELIUS_API_KEY` for the engine to actually promote what it finds; every
+other key is a nice-to-have that widens a fallback chain, not a hard
+requirement to bootstrap from zero.
 
 ## Why a PENDING Trade row is written before execution (new vs. the original)
 
