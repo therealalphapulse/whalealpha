@@ -271,7 +271,8 @@ def test_queues_new_candidates_up_to_budget():
     session = _FakeSession()
     addrs = _addrs(5)
     candidates = [DiscoveredCandidate(address=a, source="test") for a in addrs]
-    queued = _queue_new_candidates(session, candidates, known_addresses=set(), budget=3)
+    found, queued = _queue_new_candidates(session, candidates, known_addresses=set(), budget=3)
+    assert found == 5
     assert queued == 3
     assert len(session.added) == 3
 
@@ -281,7 +282,8 @@ def test_skips_candidates_already_known_tracked_or_queued():
     addrs = _addrs(5)
     known = {addrs[0], addrs[2]}
     candidates = [DiscoveredCandidate(address=a, source="test") for a in addrs]
-    queued = _queue_new_candidates(session, candidates, known_addresses=known, budget=10)
+    found, queued = _queue_new_candidates(session, candidates, known_addresses=known, budget=10)
+    assert found == 5
     assert queued == 3
     assert {c.address for c in session.added} == {addrs[1], addrs[3], addrs[4]}
 
@@ -289,7 +291,8 @@ def test_skips_candidates_already_known_tracked_or_queued():
 def test_rejects_an_invalid_solana_address():
     session = _FakeSession()
     candidates = [DiscoveredCandidate(address="not-a-real-address", source="test")]
-    queued = _queue_new_candidates(session, candidates, known_addresses=set(), budget=10)
+    found, queued = _queue_new_candidates(session, candidates, known_addresses=set(), budget=10)
+    assert found == 1
     assert queued == 0
     assert session.added == []
 
@@ -303,6 +306,6 @@ def test_mutates_known_addresses_so_a_second_stream_cannot_double_queue():
     assert addr in known
 
     second_stream = [DiscoveredCandidate(address=addr, source="trending_token_holder")]
-    queued = _queue_new_candidates(session, second_stream, known_addresses=known, budget=10)
+    _, queued = _queue_new_candidates(session, second_stream, known_addresses=known, budget=10)
     assert queued == 0
     assert len(session.added) == 1  # only the first stream's copy was queued
