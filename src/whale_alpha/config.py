@@ -181,6 +181,25 @@ class Env(BaseSettings):
     DISCOVERY_RPC_MIN_INTERVAL_SECONDS: float = Field(0.12, ge=0)
     DISCOVERY_RPC_MAX_RETRIES: int = Field(3, ge=0)
 
+    # Rate-limit resilience for HTTP wallet-history / trending-token
+    # providers (Helius, Jupiter) — see utils/http_retry.py and
+    # integrations/wallet_discovery_source.fetch_wallet_swap_history. A 429
+    # here previously meant an immediate, permanent candidate rejection
+    # (NO_HISTORY_PROVIDER_OR_FETCH_FAILED) even for a wallet that might be
+    # perfectly good — this is the production fix.
+    DISCOVERY_HISTORY_MAX_CONCURRENCY: int = Field(5, ge=1)
+    DISCOVERY_HISTORY_MAX_RETRIES: int = Field(3, ge=0)
+    DISCOVERY_HISTORY_RETRY_BASE_SECONDS: float = Field(1.0, ge=0)
+    DISCOVERY_HISTORY_RETRY_MAX_SECONDS: float = Field(20.0, ge=0)
+    DISCOVERY_HISTORY_CACHE_TTL_SECONDS: float = Field(300, ge=0)
+    DISCOVERY_HISTORY_NEGATIVE_CACHE_TTL_SECONDS: float = Field(3600, ge=0)
+    # After a candidate's history fetch fails transiently this many times
+    # (across cycles — a fresh retry is only attempted once its computed
+    # backoff window, tracked per-candidate, has elapsed), it's permanently
+    # marked EVALUATED/NO_HISTORY instead of staying in the retry queue
+    # forever. See WalletCandidate.history_retry_count.
+    DISCOVERY_HISTORY_MAX_RETRIES_BEFORE_REJECT: int = Field(5, ge=0)
+
     # --- Trending-token bootstrap source (feature: discovery cold start) ---
     # Independent of anything already tracked — see
     # integrations/wallet_discovery_source.find_candidates_from_trending_tokens.
