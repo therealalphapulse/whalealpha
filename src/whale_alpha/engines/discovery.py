@@ -241,6 +241,58 @@ def select_wallets_to_retire_for_ceiling(
     return [wallet_id for wallet_id, _score in ranked[:surplus]]
 
 
+@dataclass(frozen=True)
+class HistoryFetchOutcome:
+    """Pure decision for what evaluate_candidates should do with one
+    candidate's wallet-history fetch result — see decide_history_fetch.
+
+    CONTINUE: history was retrieved; proceed to metrics/scoring as normal.
+    RETRY_QUEUED: a transient failure (429/5xx/network) and the candidate
+      hasn't exhausted its retry budget — `next_retry_at`/`new_retry_count`
+      tell the caller how to update the WalletCandidate row; the candidate
+      is left NEW/EVALUATED (not rejected) and re-picked up once
+      `next_retry_at` elapses.
+    PERMANENT_REJECT: either a permanent failure (no provider configured, a
+      definitive 4xx) or a transient failure that has now exhausted its
+      retry budget — evaluate_candidates marks the candidate
+      EVALUATED/NO_HISTORY and moves on.
+    """
+
+    outcome: str  # "CONTINUE" | "RETRY_QUEUED" | "PERMANENT_REJECT"
+    next_retry_at: datetime | None = None
+    new_retry_count: int = 0
+
+
+def decide_history_fetch_outcome(
+    *,
+    swaps_available: bool,
+    transient: bool,
+    history_retry_count: int,
+    now: datetime,
+    max_retries_before_reject: int,
+    retry_base_seconds: float,
+    retry_max_seconds: float,
+) -> HistoryFetchOutcome:
+    """Pure retry-queue decision (production fix — see utils/http_retry.py
+    and evaluate_candidates' docstring for the RETRY QUEUE section). Kept
+    free of I/O/DB/network so the backoff math and retry-budget cutoff are
+    unit-testable the same way evaluate_promotion/evaluate_retention are.
+
+    Candidate -> [swaps_available? CONTINUE] -> [transient & budget left?
+    RETRY_QUEUED, exponential backoff capped at 4x the configured max] ->
+    [else PERMANENT_REJECT].
+    """
+    if swaps_available:
+        return HistoryFetchOutcome("CONTINUE", None, history_retry_count)
+
+    if transient and history_retry_count < max_retries_before_reject:
+        new_count = history_retry_count + 1
+        backoff = min(retry_max_seconds * 4, retry_base_seconds * (2**new_count))
+        return HistoryFetchOutcome("RETRY_QUEUED", now + timedelta(seconds=backoff), new_count)
+
+    return HistoryFetchOutcome("PERMANENT_REJECT", None, history_retry_count)
+
+
 # --------------------------------------------------------------------------
 # Orchestration — I/O around the pure functions above.
 # --------------------------------------------------------------------------
@@ -512,21 +564,45 @@ async def evaluate_candidates(
 
     Tracks a per-source pass/reject breakdown and a rejection-reason tally
     for the structured discovery log (see run_discovery_cycle).
+
+    RETRY QUEUE (production fix, see utils/http_retry.py): a candidate whose
+    wallet-history fetch fails transiently (429/5xx/network — see
+    WalletHistoryFetch.transient) is never rejected outright. It's left in
+    place with `history_retry_count` incremented and `next_retry_at` set to
+    a short, exponentially-growing backoff window
+    (candidate -> retry queue -> retried once the window elapses -> history
+    retrieved -> evaluation continues normally), and is only permanently
+    marked EVALUATED/NO_HISTORY once
+    DISCOVERY_HISTORY_MAX_RETRIES_BEFORE_REJECT is exceeded. A permanent
+    failure (no HELIUS_API_KEY configured, or a definitive 4xx) still goes
+    straight to EVALUATED/NO_HISTORY — retrying those can never succeed.
     """
     config = DiscoveryConfig.from_env(env)
-    summary = {"evaluated": 0, "promoted": 0, "rejected": 0, "insufficient_data": 0}
+    summary = {
+        "evaluated": 0,
+        "promoted": 0,
+        "rejected": 0,
+        "insufficient_data": 0,
+        "queued_for_retry": 0,
+    }
     by_source: dict[str, Counter] = {}
     reason_summary: Counter = Counter()
+    rate_limit_hits = 0
+    history_cache_hits = 0
+    history_cache_lookups = 0
 
     def _source_counter(source: str) -> Counter:
         return by_source.setdefault(source, Counter())
 
-    reeval_cutoff = datetime.now(UTC) - timedelta(hours=env.DISCOVERY_CANDIDATE_MIN_REEVAL_HOURS)
+    now = datetime.now(UTC)
+    reeval_cutoff = now - timedelta(hours=env.DISCOVERY_CANDIDATE_MIN_REEVAL_HOURS)
     result = await session.execute(
         select(WalletCandidate)
         .where(
             WalletCandidate.status.in_((CandidateStatus.NEW, CandidateStatus.EVALUATED)),
-            (WalletCandidate.last_evaluated_at.is_(None)) | (WalletCandidate.last_evaluated_at < reeval_cutoff),
+            (WalletCandidate.last_evaluated_at.is_(None))
+            | (WalletCandidate.last_evaluated_at < reeval_cutoff)
+            | ((WalletCandidate.next_retry_at.is_not(None)) & (WalletCandidate.next_retry_at <= now)),
         )
         .order_by(WalletCandidate.first_seen_at.asc())
         .limit(env.DISCOVERY_CANDIDATE_BATCH_SIZE)
@@ -542,21 +618,67 @@ async def evaluate_candidates(
         log.warning("SOL/USD price unavailable — skipping candidate evaluation this cycle")
         return summary
 
-    for candidate in batch:
-        summary["evaluated"] += 1
-        _source_counter(candidate.source)["evaluated"] += 1
-        candidate.evaluation_count += 1
-        candidate.last_evaluated_at = datetime.now(UTC)
-
-        swaps = await fetch_wallet_swap_history(
-            http_client, env, candidate.address, sol_price_usd=sol_price_usd
+    # History fetches are independent per-candidate I/O — run them
+    # concurrently (bounded by fetch_wallet_swap_history's own
+    # DISCOVERY_HISTORY_MAX_CONCURRENCY semaphore, so this never floods the
+    # provider regardless of batch size) rather than one-at-a-time, then do
+    # the scoring/promotion pass sequentially below since promotion needs a
+    # consistent view of current_approved_count.
+    history_results = await asyncio.gather(
+        *(
+            fetch_wallet_swap_history(http_client, env, candidate.address, sol_price_usd=sol_price_usd)
+            for candidate in batch
         )
-        if swaps is None:
+    )
+
+    for candidate, history in zip(batch, history_results, strict=True):
+        history_cache_lookups += 1
+        if history.cache_hit:
+            history_cache_hits += 1
+
+        outcome = decide_history_fetch_outcome(
+            swaps_available=history.swaps is not None,
+            transient=history.transient,
+            history_retry_count=candidate.history_retry_count,
+            now=now,
+            max_retries_before_reject=env.DISCOVERY_HISTORY_MAX_RETRIES_BEFORE_REJECT,
+            retry_base_seconds=env.DISCOVERY_HISTORY_RETRY_BASE_SECONDS,
+            retry_max_seconds=env.DISCOVERY_HISTORY_RETRY_MAX_SECONDS,
+        )
+
+        if outcome.outcome == "RETRY_QUEUED":
+            # Rate-limited / provider hiccup — requeue for a short,
+            # exponentially-growing retry window instead of permanently
+            # rejecting a wallet we simply couldn't reach yet. Deliberately
+            # does NOT touch evaluation_count/last_evaluated_at so the
+            # multi-hour re-evaluation cutoff above isn't affected by
+            # retry attempts.
+            candidate.history_retry_count = outcome.new_retry_count
+            candidate.next_retry_at = outcome.next_retry_at
+            summary["queued_for_retry"] += 1
+            reason_summary["RATE_LIMIT_RETRY"] += 1
+            rate_limit_hits += 1
+            _source_counter(candidate.source)["queued_for_retry"] += 1
+            continue
+
+        if outcome.outcome == "PERMANENT_REJECT":
+            summary["evaluated"] += 1
             summary["insufficient_data"] += 1
+            _source_counter(candidate.source)["evaluated"] += 1
             reason_summary["NO_HISTORY_PROVIDER_OR_FETCH_FAILED"] += 1
+            candidate.evaluation_count += 1
+            candidate.last_evaluated_at = now
+            candidate.next_retry_at = None
             candidate.status = CandidateStatus.EVALUATED
             candidate.rejection_reason = "NO_HISTORY_PROVIDER_OR_FETCH_FAILED"
             continue
+
+        swaps = history.swaps
+        summary["evaluated"] += 1
+        _source_counter(candidate.source)["evaluated"] += 1
+        candidate.evaluation_count += 1
+        candidate.last_evaluated_at = now
+        candidate.next_retry_at = None
 
         wallet_age_days = await estimate_wallet_age_days(connection, candidate.address)
         computed = compute_wallet_metrics(swaps, wallet_age_days=wallet_age_days)
@@ -635,12 +757,19 @@ async def evaluate_candidates(
     await session.commit()
 
     if by_source:
+        cache_hit_ratio = round(history_cache_hits / history_cache_lookups, 3) if history_cache_lookups else 0.0
         log.info(
             "Discovery evaluation breakdown",
             by_source={source: dict(counts) for source, counts in by_source.items()},
             reason_summary=dict(reason_summary),
+            rate_limit_hits=rate_limit_hits,
+            history_cache_hit_ratio=cache_hit_ratio,
         )
 
+    summary["rate_limit_hits"] = rate_limit_hits
+    summary["history_cache_hit_ratio"] = (
+        round(history_cache_hits / history_cache_lookups, 3) if history_cache_lookups else 0.0
+    )
     return summary
 
 
@@ -681,9 +810,10 @@ async def rescore_tracked_wallets(
         fresh_metrics: WalletMetrics | None = None
 
         if sol_price_usd is not None:
-            swaps = await fetch_wallet_swap_history(
+            history = await fetch_wallet_swap_history(
                 http_client, env, wallet.address, sol_price_usd=sol_price_usd
             )
+            swaps = history.swaps
             if swaps is not None:
                 # wallet_age_days on the row is a point-in-time snapshot from
                 # the last time we actually measured it (promotion or a prior
@@ -842,6 +972,15 @@ async def run_discovery_cycle(
             summary["retired_ceiling"] = await enforce_population_ceiling(session, env, actor)
     except Exception as err:  # noqa: BLE001
         log.error("Discovery: population ceiling enforcement failed", err=str(err))
+
+    try:
+        async with session_factory() as session:
+            pending_retry = await session.execute(
+                select(WalletCandidate.id).where(WalletCandidate.next_retry_at.is_not(None))
+            )
+            summary["retry_queue_size"] = len(pending_retry.all())
+    except Exception as err:  # noqa: BLE001
+        log.error("Discovery: retry queue size check failed", err=str(err))
 
     try:
         async with session_factory() as session:
