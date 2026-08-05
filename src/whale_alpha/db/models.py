@@ -240,9 +240,26 @@ class WalletCandidate(Base):
     last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     promoted_wallet_id: Mapped[str | None] = mapped_column(ForeignKey("whale_wallets.id"), nullable=True)
 
+    # --- NEW (production fix: wallet-history retry queue, rate-limit
+    # resilience — see engines/discovery.evaluate_candidates and
+    # utils/http_retry.py) ---
+    # Counts transient (429/5xx/network) history-fetch failures only — a
+    # definitive "no provider configured"/"address not found" never
+    # increments this, since retrying those can never succeed.
+    # `next_retry_at` is a short, exponentially-growing backoff window
+    # (independent of the multi-hour `last_evaluated_at` re-evaluation
+    # cutoff above) — evaluate_candidates re-picks up a candidate once this
+    # elapses instead of waiting for the next full re-evaluation window.
+    # Once `history_retry_count` exceeds
+    # DISCOVERY_HISTORY_MAX_RETRIES_BEFORE_REJECT the candidate is
+    # permanently marked EVALUATED/NO_HISTORY instead of retried forever.
+    history_retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         Index("ix_wallet_candidates_status", "status"),
         Index("ix_wallet_candidates_last_evaluated_at", "last_evaluated_at"),
+        Index("ix_wallet_candidates_next_retry_at", "next_retry_at"),
     )
 
 
