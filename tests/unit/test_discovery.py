@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 from whale_alpha.engines.discovery import (
     DiscoveryConfig,
     _queue_new_candidates,
+    decide_history_fetch_outcome,
     evaluate_promotion,
     evaluate_retention,
     select_wallets_to_retire_for_ceiling,
@@ -344,3 +345,70 @@ def test_mutates_known_addresses_so_a_second_stream_cannot_double_queue():
     _, queued = _queue_new_candidates(session, second_stream, known_addresses=known, budget=10)
     assert queued == 0
     assert len(session.added) == 1  # only the first stream's copy was queued
+
+
+# --------------------------------------------------------------------------
+# decide_history_fetch_outcome — retry-queue decision logic (production fix:
+# a candidate whose wallet-history fetch fails transiently, e.g. Helius
+# returning 429, must be requeued for retry, never rejected outright).
+# --------------------------------------------------------------------------
+
+_RETRY_KWARGS = dict(
+    now=NOW,
+    max_retries_before_reject=5,
+    retry_base_seconds=1.0,
+    retry_max_seconds=20.0,
+)
+
+
+def test_history_available_continues_regardless_of_retry_count():
+    outcome = decide_history_fetch_outcome(
+        swaps_available=True, transient=False, history_retry_count=3, **_RETRY_KWARGS
+    )
+    assert outcome.outcome == "CONTINUE"
+    assert outcome.new_retry_count == 3  # untouched
+
+
+def test_transient_failure_under_budget_is_queued_for_retry_not_rejected():
+    outcome = decide_history_fetch_outcome(
+        swaps_available=False, transient=True, history_retry_count=0, **_RETRY_KWARGS
+    )
+    assert outcome.outcome == "RETRY_QUEUED"
+    assert outcome.new_retry_count == 1
+    assert outcome.next_retry_at is not None
+    assert outcome.next_retry_at > NOW
+
+
+def test_retry_backoff_grows_exponentially_with_retry_count():
+    first = decide_history_fetch_outcome(
+        swaps_available=False, transient=True, history_retry_count=0, **_RETRY_KWARGS
+    )
+    second = decide_history_fetch_outcome(
+        swaps_available=False, transient=True, history_retry_count=1, **_RETRY_KWARGS
+    )
+    assert (second.next_retry_at - NOW) > (first.next_retry_at - NOW)
+
+
+def test_retry_backoff_is_capped():
+    outcome = decide_history_fetch_outcome(
+        swaps_available=False, transient=True, history_retry_count=50, **{**_RETRY_KWARGS, "max_retries_before_reject": 100}
+    )
+    assert (outcome.next_retry_at - NOW) <= timedelta(seconds=20.0 * 4)
+
+
+def test_transient_failure_at_budget_is_permanently_rejected_not_retried_forever():
+    outcome = decide_history_fetch_outcome(
+        swaps_available=False, transient=True, history_retry_count=5, **_RETRY_KWARGS
+    )
+    assert outcome.outcome == "PERMANENT_REJECT"
+    assert outcome.next_retry_at is None
+
+
+def test_permanent_failure_is_rejected_immediately_even_with_full_retry_budget():
+    """No HELIUS_API_KEY configured, or a definitive 4xx — retrying can
+    never succeed, so this must never enter the retry queue regardless of
+    history_retry_count."""
+    outcome = decide_history_fetch_outcome(
+        swaps_available=False, transient=False, history_retry_count=0, **_RETRY_KWARGS
+    )
+    assert outcome.outcome == "PERMANENT_REJECT"
