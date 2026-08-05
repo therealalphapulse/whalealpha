@@ -51,6 +51,7 @@ are both provider-agnostic.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -64,9 +65,56 @@ from whale_alpha.integrations.solana_connection import (
     get_token_largest_accounts,
     get_wallet_first_activity_slot,
 )
+from whale_alpha.utils.http_retry import TTLCache, fetch_with_retry
 from whale_alpha.utils.logger import child_logger
 
 log = child_logger("walletDiscoverySource")
+
+# Process-wide concurrency cap + result cache for Helius wallet-history
+# lookups — see fetch_wallet_swap_history. Module-level (not per-call) so
+# every candidate in a batch shares the same budget/cache regardless of how
+# many concurrent tasks are fetching history at once.
+_helius_semaphore: asyncio.Semaphore | None = None
+_helius_semaphore_size: int | None = None
+_history_cache: TTLCache[list["WalletSwap"]] | None = None
+_history_negative_cache: TTLCache[bool] | None = None
+
+
+def _get_helius_semaphore(max_concurrency: int) -> asyncio.Semaphore:
+    global _helius_semaphore, _helius_semaphore_size
+    if _helius_semaphore is None or _helius_semaphore_size != max_concurrency:
+        _helius_semaphore = asyncio.Semaphore(max_concurrency)
+        _helius_semaphore_size = max_concurrency
+    return _helius_semaphore
+
+
+def _get_history_cache(ttl_seconds: float) -> TTLCache[list["WalletSwap"]]:
+    global _history_cache
+    if _history_cache is None:
+        _history_cache = TTLCache(ttl_seconds=ttl_seconds)
+    return _history_cache
+
+
+def _get_history_negative_cache(ttl_seconds: float) -> TTLCache[bool]:
+    global _history_negative_cache
+    if _history_negative_cache is None:
+        _history_negative_cache = TTLCache(ttl_seconds=ttl_seconds)
+    return _history_negative_cache
+
+
+@dataclass(frozen=True)
+class WalletHistoryFetch:
+    """Result of fetch_wallet_swap_history. `swaps` is None whenever no
+    usable history could be produced this call; `transient` then tells the
+    caller whether that's worth retrying (429/5xx/network error — see
+    utils/http_retry.py) or permanent (no provider configured, or the
+    provider gave a definitive 4xx like an invalid address). `cache_hit`
+    feeds the discovery cycle's cache-hit-ratio metric.
+    """
+
+    swaps: list[WalletSwap] | None
+    transient: bool
+    cache_hit: bool = False
 
 
 @dataclass(frozen=True)
@@ -158,19 +206,30 @@ async def find_candidates_from_trending_tokens(
         return []
 
     url = f"{env.JUPITER_TOKENS_API_BASE}/{env.DISCOVERY_TRENDING_CATEGORY}/{env.DISCOVERY_TRENDING_INTERVAL}"
-    try:
-        res = await client.get(
-            url,
-            params={"limit": str(max_tokens)},
-            headers={"x-api-key": api_key},
-            timeout=15.0,
+    result = await fetch_with_retry(
+        client,
+        "GET",
+        url,
+        params={"limit": str(max_tokens)},
+        headers={"x-api-key": api_key},
+        max_retries=env.DISCOVERY_HISTORY_MAX_RETRIES,
+        base_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_BASE_SECONDS,
+        max_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_MAX_SECONDS,
+    )
+    if result.response is None or result.response.status_code >= 400:
+        # Transient (429/5xx, retries exhausted) or permanent failure either
+        # way falls through to the Birdeye/DexScreener chain this cycle — see
+        # _queue_trending_bootstrap_candidates — so no retry queue needed here.
+        log.warning(
+            "Jupiter Tokens API request failed",
+            status=result.response.status_code if result.response else None,
+            transient=result.transient,
         )
-        if res.status_code >= 400:
-            log.warning("Jupiter Tokens API request failed", status=res.status_code, url=url)
-            return []
-        tokens = res.json()
+        return []
+    try:
+        tokens = result.response.json()
     except Exception as err:  # noqa: BLE001 — a provider hiccup shouldn't stop the discovery cycle
-        log.warning("Jupiter Tokens API request errored", err=str(err))
+        log.warning("Jupiter Tokens API response unparseable", err=str(err))
         return []
 
     if not isinstance(tokens, list):
@@ -203,11 +262,29 @@ async def fetch_wallet_swap_history(
     *,
     sol_price_usd: float,
     max_transactions: int = 100,
-) -> list[WalletSwap] | None:
-    """Returns parsed SWAP events for `address`, most recent first, or None if
-    no history provider is configured (HELIUS_API_KEY unset) or the request
-    fails. Callers must treat None as "insufficient data to score" rather
-    than "wallet has zero trades" — see discovery_metrics.py.
+) -> WalletHistoryFetch:
+    """Returns parsed SWAP events for `address`, most recent first, wrapped
+    in a WalletHistoryFetch so callers can tell "no data, don't bother
+    retrying" (no HELIUS_API_KEY, or a definitive 4xx — `transient=False`)
+    apart from "provider hiccup, worth retrying" (429/5xx/network error —
+    `transient=True`; see engines/discovery.py's retry-queue handling in
+    evaluate_candidates). Callers must treat `swaps is None` as "insufficient
+    data to score" rather than "wallet has zero trades" — see
+    discovery_metrics.py.
+
+    RATE LIMIT RESILIENCE (fixes a real production issue): previously a
+    single 429 from Helius meant the candidate was rejected outright with
+    NO_HISTORY_PROVIDER_OR_FETCH_FAILED, discarding a wallet that might be
+    perfectly good — free-tier Helius rate limits are hit constantly under
+    normal discovery load. Requests are now paced by a process-wide
+    semaphore (`env.DISCOVERY_HISTORY_MAX_CONCURRENCY`), retried with
+    exponential backoff + jitter honoring `Retry-After`
+    (`env.DISCOVERY_HISTORY_MAX_RETRIES` attempts per call — see
+    utils/http_retry.fetch_with_retry), and successful/negative results are
+    cached in-process (`env.DISCOVERY_HISTORY_CACHE_TTL_SECONDS` /
+    `env.DISCOVERY_HISTORY_NEGATIVE_CACHE_TTL_SECONDS`) so re-discovering the
+    same address from multiple sources in one cycle — or across
+    closely-spaced cycles — doesn't refetch it.
 
     ASSUMPTION (judgment call, same spirit as auto_trading.py's documented
     portfolio-value approximation): each swap's USD size is
@@ -219,23 +296,52 @@ async def fetch_wallet_swap_history(
     ROI/win-rate *ranking* signal, not for anything precision-sensitive.
     """
     if not env.HELIUS_API_KEY:
-        return None
+        return WalletHistoryFetch(swaps=None, transient=False)
+
+    cache = _get_history_cache(env.DISCOVERY_HISTORY_CACHE_TTL_SECONDS)
+    cached = cache.get(address)
+    if cached is not None:
+        return WalletHistoryFetch(swaps=cached, transient=False, cache_hit=True)
+
+    negative_cache = _get_history_negative_cache(env.DISCOVERY_HISTORY_NEGATIVE_CACHE_TTL_SECONDS)
+    if negative_cache.get(address):
+        return WalletHistoryFetch(swaps=None, transient=False, cache_hit=True)
 
     url = f"{env.HELIUS_API_BASE}/v0/addresses/{address}/transactions"
     params = {"api-key": env.HELIUS_API_KEY, "type": "SWAP", "limit": str(min(max_transactions, 100))}
 
+    result = await fetch_with_retry(
+        client,
+        "GET",
+        url,
+        params=params,
+        semaphore=_get_helius_semaphore(env.DISCOVERY_HISTORY_MAX_CONCURRENCY),
+        max_retries=env.DISCOVERY_HISTORY_MAX_RETRIES,
+        base_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_BASE_SECONDS,
+        max_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_MAX_SECONDS,
+    )
+
+    if result.response is None:
+        # Retries exhausted on a transient error (429/5xx/network) — do NOT
+        # negative-cache; the whole point is this address is worth trying
+        # again later (see the retry-queue handling in evaluate_candidates).
+        log.debug("Helius wallet history unavailable after retries", address=address, transient=result.transient)
+        return WalletHistoryFetch(swaps=None, transient=result.transient)
+
+    if result.response.status_code >= 400:
+        log.debug("Helius wallet history request failed", address=address, status=result.response.status_code)
+        negative_cache.set(address, True)
+        return WalletHistoryFetch(swaps=None, transient=False)
+
     try:
-        res = await client.get(url, params=params, timeout=15.0)
-        if res.status_code >= 400:
-            log.debug("Helius wallet history request failed", address=address, status=res.status_code)
-            return None
-        transactions = res.json()
-    except Exception as err:  # noqa: BLE001 — a single wallet's history failing shouldn't stop the batch
-        log.debug("Helius wallet history request errored", address=address, err=str(err))
-        return None
+        transactions = result.response.json()
+    except Exception as err:  # noqa: BLE001 — a malformed payload shouldn't stop the batch
+        log.debug("Helius wallet history response unparseable", address=address, err=str(err))
+        return WalletHistoryFetch(swaps=None, transient=False)
 
     if not isinstance(transactions, list):
-        return None
+        negative_cache.set(address, True)
+        return WalletHistoryFetch(swaps=None, transient=False)
 
     swaps: list[WalletSwap] = []
     for tx in transactions:
@@ -244,7 +350,9 @@ async def fetch_wallet_swap_history(
         swap = _extract_swap_for_wallet(cast("dict[str, Any]", tx), address, sol_price_usd)
         if swap is not None:
             swaps.append(swap)
-    return swaps
+
+    cache.set(address, swaps)
+    return WalletHistoryFetch(swaps=swaps, transient=False)
 
 
 def _extract_swap_for_wallet(
