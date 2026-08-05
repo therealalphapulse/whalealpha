@@ -98,6 +98,15 @@ class Env(BaseSettings):
     SIGNAL_WINDOW_MINUTES: int = Field(30, ge=1)
     SIGNAL_MIN_CONFIDENCE: float = Field(65, ge=0, le=100)
 
+    # --- AI-written signal explanations (engines/ai_insight.py) ---
+    # Purely cosmetic on top of the deterministic score/risk_level above —
+    # never used to gate whether a signal fires. Leave ANTHROPIC_API_KEY unset
+    # to keep the old templated ai_recommendation strings from signal.py.
+    ANTHROPIC_API_KEY: str | None = None
+    AI_INSIGHTS_ENABLED: bool = True
+    AI_INSIGHTS_MODEL: str = "claude-haiku-4-5"
+    AI_INSIGHTS_TIMEOUT_SECONDS: float = Field(8.0, ge=1)
+
     DEFAULT_MAX_SLIPPAGE_BPS: int = 150
     DEFAULT_MAX_DAILY_TRADES: int = 10
     DEFAULT_MAX_DAILY_EXPOSURE_USD: float = 500
