@@ -59,9 +59,36 @@ from whale_alpha.integrations.wallet_discovery_source import (
     DiscoveredCandidate,
     find_candidates_from_token_holders,
 )
+from whale_alpha.utils.http_retry import TTLCache, get_provider_client
 from whale_alpha.utils.logger import child_logger
 
 log = child_logger("freeMarketSources")
+
+# Every free-tier discovery-source provider below shares the same
+# resilience layer (semaphore, retry/backoff, circuit breaker, metrics —
+# see utils/http_retry.py) via one named ProviderClient each, plus its own
+# short-TTL positive/negative mint-list cache so re-polling the same
+# "latest launches" endpoint every DISCOVERY_INTERVAL_SECONDS doesn't
+# refetch identical results mid-cycle (e.g. pump.fun + Raydium both getting
+# checked from the same run_discovery_cycle pass).
+_mint_list_cache: TTLCache[list[str]] = TTLCache(ttl_seconds=60, max_entries=64)
+
+
+def _provider(env: Env, name: str):
+    return get_provider_client(
+        name,
+        max_concurrency=env.DISCOVERY_PROVIDER_MAX_CONCURRENCY,
+        failure_threshold=env.DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
+        cooldown_seconds=env.DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+    )
+
+
+def _provider_retry_kwargs(env: Env) -> dict[str, float | int]:
+    return {
+        "max_retries": env.DISCOVERY_PROVIDER_MAX_RETRIES,
+        "base_backoff_seconds": env.DISCOVERY_PROVIDER_RETRY_BASE_SECONDS,
+        "max_backoff_seconds": env.DISCOVERY_PROVIDER_RETRY_MAX_SECONDS,
+    }
 
 # Common wrapped/stable mints that show up as one side of nearly every pool
 # and are never themselves an interesting "candidate token" to source
@@ -135,19 +162,31 @@ async def find_candidates_from_pumpfun_launches(
     if not env.DISCOVERY_PUMPFUN_ENABLED:
         return []
 
-    url = f"{env.DISCOVERY_PUMPFUN_API_BASE}/coins"
-    try:
-        res = await client.get(
-            url,
-            params={"offset": "0", "limit": str(max_launches), "sort": "created_timestamp", "order": "DESC"},
-            timeout=15.0,
+    cached = _mint_list_cache.get("pumpfun_launches")
+    if cached is not None:
+        return await _candidates_for_mints(
+            connection, env, cached, source="pumpfun_launch", max_holders_per_token=max_holders_per_token
         )
-        if res.status_code >= 400:
-            log.warning("Pump.fun launches request failed", status=res.status_code)
-            return []
-        payload = res.json()
+
+    url = f"{env.DISCOVERY_PUMPFUN_API_BASE}/coins"
+    result = await _provider(env, "pumpfun").get(
+        client,
+        url,
+        params={"offset": "0", "limit": str(max_launches), "sort": "created_timestamp", "order": "DESC"},
+        **_provider_retry_kwargs(env),
+    )
+    if result.response is None or result.response.status_code >= 400:
+        log.warning(
+            "Pump.fun launches request failed",
+            status=result.response.status_code if result.response else None,
+            transient=result.transient,
+            circuit_open=result.circuit_open,
+        )
+        return []
+    try:
+        payload = result.response.json()
     except Exception as err:  # noqa: BLE001 — a provider hiccup shouldn't stop the discovery cycle
-        log.warning("Pump.fun launches request errored", err=str(err))
+        log.warning("Pump.fun launches response unparseable", err=str(err))
         return []
 
     entries = payload if isinstance(payload, list) else payload.get("coins") if isinstance(payload, dict) else None
@@ -162,6 +201,7 @@ async def find_candidates_from_pumpfun_launches(
         if mint:
             mints.append(mint)
 
+    _mint_list_cache.set("pumpfun_launches", mints)
     return await _candidates_for_mints(
         connection, env, mints, source="pumpfun_launch", max_holders_per_token=max_holders_per_token
     )
@@ -181,19 +221,31 @@ async def find_candidates_from_launchlab_launches(
     if not env.DISCOVERY_LAUNCHLAB_ENABLED:
         return []
 
-    url = f"{env.DISCOVERY_LAUNCHLAB_API_BASE}/list"
-    try:
-        res = await client.get(
-            url,
-            params={"sort": "new", "size": str(max_launches)},
-            timeout=15.0,
+    cached = _mint_list_cache.get("launchlab_launches")
+    if cached is not None:
+        return await _candidates_for_mints(
+            connection, env, cached, source="launchlab_launch", max_holders_per_token=max_holders_per_token
         )
-        if res.status_code >= 400:
-            log.warning("LaunchLab launches request failed", status=res.status_code)
-            return []
-        payload = res.json()
+
+    url = f"{env.DISCOVERY_LAUNCHLAB_API_BASE}/list"
+    result = await _provider(env, "launchlab").get(
+        client,
+        url,
+        params={"sort": "new", "size": str(max_launches)},
+        **_provider_retry_kwargs(env),
+    )
+    if result.response is None or result.response.status_code >= 400:
+        log.warning(
+            "LaunchLab launches request failed",
+            status=result.response.status_code if result.response else None,
+            transient=result.transient,
+            circuit_open=result.circuit_open,
+        )
+        return []
+    try:
+        payload = result.response.json()
     except Exception as err:  # noqa: BLE001
-        log.warning("LaunchLab launches request errored", err=str(err))
+        log.warning("LaunchLab launches response unparseable", err=str(err))
         return []
 
     entries = _unwrap_list(payload, ("data", "list", "items"))
@@ -208,6 +260,7 @@ async def find_candidates_from_launchlab_launches(
         if mint:
             mints.append(mint)
 
+    _mint_list_cache.set("launchlab_launches", mints)
     return await _candidates_for_mints(
         connection, env, mints, source="launchlab_launch", max_holders_per_token=max_holders_per_token
     )
@@ -227,25 +280,37 @@ async def find_candidates_from_raydium_new_pools(
     if not env.DISCOVERY_RAYDIUM_ENABLED:
         return []
 
-    url = f"{env.DISCOVERY_RAYDIUM_API_BASE}/pools/info/list"
-    try:
-        res = await client.get(
-            url,
-            params={
-                "poolType": "all",
-                "poolSortField": "default",
-                "sortType": "desc",
-                "pageSize": str(max_launches),
-                "page": "1",
-            },
-            timeout=15.0,
+    cached = _mint_list_cache.get("raydium_pools")
+    if cached is not None:
+        return await _candidates_for_mints(
+            connection, env, cached, source="raydium_new_pool", max_holders_per_token=max_holders_per_token
         )
-        if res.status_code >= 400:
-            log.warning("Raydium new pools request failed", status=res.status_code)
-            return []
-        payload = res.json()
+
+    url = f"{env.DISCOVERY_RAYDIUM_API_BASE}/pools/info/list"
+    result = await _provider(env, "raydium").get(
+        client,
+        url,
+        params={
+            "poolType": "all",
+            "poolSortField": "default",
+            "sortType": "desc",
+            "pageSize": str(max_launches),
+            "page": "1",
+        },
+        **_provider_retry_kwargs(env),
+    )
+    if result.response is None or result.response.status_code >= 400:
+        log.warning(
+            "Raydium new pools request failed",
+            status=result.response.status_code if result.response else None,
+            transient=result.transient,
+            circuit_open=result.circuit_open,
+        )
+        return []
+    try:
+        payload = result.response.json()
     except Exception as err:  # noqa: BLE001
-        log.warning("Raydium new pools request errored", err=str(err))
+        log.warning("Raydium new pools response unparseable", err=str(err))
         return []
 
     entries = _unwrap_list(payload, ("data", "list", "items"))
@@ -265,6 +330,7 @@ async def find_candidates_from_raydium_new_pools(
                 mints.append(candidate_mint)
                 break
 
+    _mint_list_cache.set("raydium_pools", mints)
     return await _candidates_for_mints(
         connection, env, mints, source="raydium_new_pool", max_holders_per_token=max_holders_per_token
     )
@@ -285,15 +351,28 @@ async def find_candidates_from_meteora_pools(
     if not env.DISCOVERY_METEORA_ENABLED:
         return []
 
+    cached = _mint_list_cache.get("meteora_pools")
+    if cached is not None:
+        return await _candidates_for_mints(
+            connection, env, cached, source="meteora_new_pool", max_holders_per_token=max_holders_per_token
+        )
+
     url = f"{env.DISCOVERY_METEORA_API_BASE}/pools"
+    result = await _provider(env, "meteora").get(
+        client, url, params={"limit": str(max_launches)}, **_provider_retry_kwargs(env)
+    )
+    if result.response is None or result.response.status_code >= 400:
+        log.warning(
+            "Meteora pools request failed",
+            status=result.response.status_code if result.response else None,
+            transient=result.transient,
+            circuit_open=result.circuit_open,
+        )
+        return []
     try:
-        res = await client.get(url, params={"limit": str(max_launches)}, timeout=15.0)
-        if res.status_code >= 400:
-            log.warning("Meteora pools request failed", status=res.status_code)
-            return []
-        payload = res.json()
+        payload = result.response.json()
     except Exception as err:  # noqa: BLE001
-        log.warning("Meteora pools request errored", err=str(err))
+        log.warning("Meteora pools response unparseable", err=str(err))
         return []
 
     entries = _unwrap_list(payload, ("data", "pools", "items"))
@@ -315,6 +394,7 @@ async def find_candidates_from_meteora_pools(
             if mint:
                 mints.append(mint)
 
+    _mint_list_cache.set("meteora_pools", mints)
     return await _candidates_for_mints(
         connection, env, mints, source="meteora_new_pool", max_holders_per_token=max_holders_per_token
     )
@@ -363,24 +443,34 @@ async def find_trending_mints_from_birdeye(client: httpx.AsyncClient, env: Env, 
     if not env.DISCOVERY_BIRDEYE_ENABLED:
         return []
 
+    cached = _mint_list_cache.get("birdeye_trending")
+    if cached is not None:
+        return cached
+
     url = f"{env.DISCOVERY_BIRDEYE_API_BASE}/defi/token_trending"
     headers = {"x-chain": "solana"}
     if env.BIRDEYE_API_KEY:
         headers["X-API-KEY"] = env.BIRDEYE_API_KEY
 
-    try:
-        res = await client.get(
-            url,
-            params={"sort_by": "volume24hUSD", "sort_type": "desc", "limit": str(max_tokens)},
-            headers=headers,
-            timeout=15.0,
+    result = await _provider(env, "birdeye").get(
+        client,
+        url,
+        params={"sort_by": "volume24hUSD", "sort_type": "desc", "limit": str(max_tokens)},
+        headers=headers,
+        **_provider_retry_kwargs(env),
+    )
+    if result.response is None or result.response.status_code >= 400:
+        log.info(
+            "Birdeye trending request failed, will fall through",
+            status=result.response.status_code if result.response else None,
+            transient=result.transient,
+            circuit_open=result.circuit_open,
         )
-        if res.status_code >= 400:
-            log.info("Birdeye trending request failed, will fall through", status=res.status_code)
-            return []
-        payload = res.json()
+        return []
+    try:
+        payload = result.response.json()
     except Exception as err:  # noqa: BLE001
-        log.info("Birdeye trending request errored, will fall through", err=str(err))
+        log.info("Birdeye trending response unparseable, will fall through", err=str(err))
         return []
 
     entries = _unwrap_list(payload, ("data", "tokens", "items"))
@@ -393,6 +483,7 @@ async def find_trending_mints_from_birdeye(client: httpx.AsyncClient, env: Env, 
             mint = _extract_mint(entry, "address", "mint")
             if mint:
                 mints.append(mint)
+    _mint_list_cache.set("birdeye_trending", mints)
     return mints
 
 
@@ -404,15 +495,24 @@ async def find_trending_mints_from_dexscreener(client: httpx.AsyncClient, env: E
     if not env.DISCOVERY_DEXSCREENER_ENABLED:
         return []
 
+    cached = _mint_list_cache.get("dexscreener_trending")
+    if cached is not None:
+        return cached
+
     url = f"{env.DISCOVERY_DEXSCREENER_API_BASE}/token-boosts/latest/v1"
+    result = await _provider(env, "dexscreener").get(client, url, **_provider_retry_kwargs(env))
+    if result.response is None or result.response.status_code >= 400:
+        log.info(
+            "DexScreener trending request failed, will fall through",
+            status=result.response.status_code if result.response else None,
+            transient=result.transient,
+            circuit_open=result.circuit_open,
+        )
+        return []
     try:
-        res = await client.get(url, timeout=15.0)
-        if res.status_code >= 400:
-            log.info("DexScreener trending request failed, will fall through", status=res.status_code)
-            return []
-        payload = res.json()
+        payload = result.response.json()
     except Exception as err:  # noqa: BLE001
-        log.info("DexScreener trending request errored, will fall through", err=str(err))
+        log.info("DexScreener trending response unparseable, will fall through", err=str(err))
         return []
 
     entries = _unwrap_list(payload, ("data", "pairs", "items"))
@@ -428,6 +528,7 @@ async def find_trending_mints_from_dexscreener(client: httpx.AsyncClient, env: E
         mint = _extract_mint(entry, "tokenAddress", "address", "mint")
         if mint:
             mints.append(mint)
+    _mint_list_cache.set("dexscreener_trending", mints)
     return mints
 
 
@@ -488,11 +589,11 @@ async def token_has_social_signal(client: httpx.AsyncClient, env: Env, token_min
         return False
 
     url = f"{env.DISCOVERY_DEXSCREENER_API_BASE}/latest/dex/tokens/{token_mint}"
+    result = await _provider(env, "dexscreener").get(client, url, **_provider_retry_kwargs(env))
+    if result.response is None or result.response.status_code >= 400:
+        return False
     try:
-        res = await client.get(url, timeout=10.0)
-        if res.status_code >= 400:
-            return False
-        payload = res.json()
+        payload = result.response.json()
     except Exception:  # noqa: BLE001 — enrichment only, never worth surfacing an error for
         return False
 
