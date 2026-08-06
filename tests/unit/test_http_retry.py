@@ -11,7 +11,15 @@ import asyncio
 import httpx
 import pytest
 
-from whale_alpha.utils.http_retry import TTLCache, fetch_with_retry
+from whale_alpha.utils.http_retry import (
+    CircuitBreaker,
+    ProviderClient,
+    TTLCache,
+    fetch_with_retry,
+    get_all_provider_metrics,
+    get_provider_client,
+    mask_headers_for_log,
+)
 
 
 class _FakeResponse:
@@ -123,3 +131,126 @@ async def test_ttl_cache_expires_after_ttl():
     cache.set("addr", "value")
     await asyncio.sleep(0.03)
     assert cache.get("addr") is None
+
+
+# --------------------------------------------------------------------------
+# CircuitBreaker — trips after repeated transient failures, fails fast
+# during cooldown, allows a half-open trial after it, closes again on
+# success. Used by ProviderClient (see below) so a provider that's clearly
+# down stops burning retry budget on every candidate in a batch.
+# --------------------------------------------------------------------------
+
+
+def test_circuit_breaker_starts_closed():
+    breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=60)
+    assert breaker.allow_request() is True
+    assert breaker.is_open is False
+
+
+def test_circuit_breaker_opens_after_consecutive_transient_failures():
+    breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=60)
+    for _ in range(3):
+        breaker.record_transient_failure()
+    assert breaker.is_open is True
+    assert breaker.allow_request() is False
+
+
+def test_circuit_breaker_success_resets_the_failure_count():
+    breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=60)
+    breaker.record_transient_failure()
+    breaker.record_transient_failure()
+    breaker.record_success()
+    breaker.record_transient_failure()
+    breaker.record_transient_failure()
+    # 2 consecutive failures after the reset — still under threshold of 3.
+    assert breaker.is_open is False
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_half_opens_after_cooldown():
+    breaker = CircuitBreaker(failure_threshold=1, cooldown_seconds=0.02)
+    breaker.record_transient_failure()
+    assert breaker.allow_request() is False
+    await asyncio.sleep(0.04)
+    assert breaker.allow_request() is True  # half-open trial permitted
+    breaker.record_success()
+    assert breaker.is_open is False
+
+
+# --------------------------------------------------------------------------
+# ProviderClient / get_provider_client — the recommended entry point for
+# every discovery-source provider (Jupiter, Birdeye, DexScreener, pump.fun,
+# LaunchLab, Raydium, Meteora): binds semaphore + circuit breaker + metrics.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_client_trips_breaker_and_skips_network_calls():
+    client = _FakeClient([_FakeResponse(500)] * 10)
+    provider = ProviderClient("test_provider_trip", max_concurrency=2, failure_threshold=3, cooldown_seconds=60)
+
+    for _ in range(3):
+        result = await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
+        assert result.response is None and result.transient is True
+
+    assert provider.breaker.is_open is True
+    calls_before = client.calls
+    skipped = await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
+    assert skipped.circuit_open is True
+    assert client.calls == calls_before  # no network call made once the breaker is open
+
+
+@pytest.mark.asyncio
+async def test_provider_client_tracks_metrics():
+    client = _FakeClient([_FakeResponse(200), _FakeResponse(429), _FakeResponse(200)])
+    provider = ProviderClient("test_provider_metrics", max_concurrency=2, failure_threshold=99, cooldown_seconds=60)
+
+    await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
+    await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
+
+    assert provider.metrics.requests == 2
+    assert provider.metrics.successes == 1
+    assert provider.metrics.failures == 1
+    assert provider.metrics.rate_limited == 1
+
+
+def test_get_provider_client_is_a_process_wide_singleton_per_name():
+    a = get_provider_client("shared_provider_test", max_concurrency=3)
+    b = get_provider_client("shared_provider_test", max_concurrency=99)  # ignored, already created
+    assert a is b
+
+
+@pytest.mark.asyncio
+async def test_get_all_provider_metrics_includes_registered_providers():
+    provider = get_provider_client("metrics_snapshot_test", max_concurrency=2)
+    client = _FakeClient([_FakeResponse(200)])
+    await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
+
+    snapshot = get_all_provider_metrics()
+    assert "metrics_snapshot_test" in snapshot
+    assert snapshot["metrics_snapshot_test"]["requests"] >= 1
+    assert "circuit_open" in snapshot["metrics_snapshot_test"]
+
+
+# --------------------------------------------------------------------------
+# Security: never log API keys or bearer tokens (query params or headers).
+# --------------------------------------------------------------------------
+
+
+def test_mask_url_strips_query_string_credentials():
+    from whale_alpha.utils.http_retry import _mask_url
+
+    masked = _mask_url("https://api.example.com/v0/x?api-key=SECRET123&limit=10")
+    assert "SECRET123" not in masked
+    assert masked == "https://api.example.com/v0/x"
+
+
+def test_mask_headers_for_log_redacts_authorization_and_api_key():
+    masked = mask_headers_for_log({"Authorization": "Bearer SECRET", "X-API-KEY": "abc123", "Accept": "application/json"})
+    assert masked["Authorization"] == "[REDACTED]"
+    assert masked["X-API-KEY"] == "[REDACTED]"
+    assert masked["Accept"] == "application/json"
+
+
+def test_mask_headers_for_log_handles_none():
+    assert mask_headers_for_log(None) == {}
