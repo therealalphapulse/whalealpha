@@ -200,6 +200,29 @@ class Env(BaseSettings):
     # forever. See WalletCandidate.history_retry_count.
     DISCOVERY_HISTORY_MAX_RETRIES_BEFORE_REJECT: int = Field(5, ge=0)
 
+    # Wallet-history fallback chain (Helius unreachable/rate-limited):
+    # Primary (Helius) -> stale cache -> RPC-reconstructed history -> retry
+    # queue. See integrations/wallet_discovery_source.fetch_wallet_swap_history.
+    DISCOVERY_HISTORY_STALE_CACHE_TTL_SECONDS: float = Field(21600, ge=0)  # 6h
+    DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED: bool = Field(True)
+    DISCOVERY_HISTORY_RPC_FALLBACK_MAX_SIGNATURES: int = Field(40, ge=1, le=200)
+    # Downstream scoring discount applied when history came from a fallback
+    # (stale cache or RPC reconstruction) rather than the primary provider —
+    # see evaluate_candidates' confidence adjustment.
+    DISCOVERY_HISTORY_FALLBACK_CONFIDENCE_MULTIPLIER: float = Field(0.7, ge=0, le=1)
+
+    # Shared HTTP retry/circuit-breaker layer for every discovery-source
+    # provider other than Helius wallet-history (Jupiter, Birdeye,
+    # DexScreener, pump.fun, LaunchLab, Raydium, Meteora) — see
+    # utils/http_retry.ProviderClient / get_provider_client.
+    DISCOVERY_PROVIDER_MAX_CONCURRENCY: int = Field(4, ge=1)
+    DISCOVERY_PROVIDER_MAX_RETRIES: int = Field(3, ge=0)
+    DISCOVERY_PROVIDER_RETRY_BASE_SECONDS: float = Field(1.0, ge=0)
+    DISCOVERY_PROVIDER_RETRY_MAX_SECONDS: float = Field(20.0, ge=0)
+    DISCOVERY_PROVIDER_CACHE_TTL_SECONDS: float = Field(120, ge=0)
+    DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD: int = Field(5, ge=1)
+    DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS: float = Field(60.0, ge=0)
+
     # --- Trending-token bootstrap source (feature: discovery cold start) ---
     # Independent of anything already tracked — see
     # integrations/wallet_discovery_source.find_candidates_from_trending_tokens.
