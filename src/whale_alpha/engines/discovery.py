@@ -101,6 +101,7 @@ from whale_alpha.services.admin.whale_wallet_admin_service import (
     Actor,
     WhaleWalletAdminService,
 )
+from whale_alpha.utils.http_retry import get_all_provider_metrics
 from whale_alpha.utils.logger import child_logger
 
 log = child_logger("discoveryEngine")
@@ -626,7 +627,9 @@ async def evaluate_candidates(
     # consistent view of current_approved_count.
     history_results = await asyncio.gather(
         *(
-            fetch_wallet_swap_history(http_client, env, candidate.address, sol_price_usd=sol_price_usd)
+            fetch_wallet_swap_history(
+                http_client, env, candidate.address, sol_price_usd=sol_price_usd, connection=connection
+            )
             for candidate in batch
         )
     )
@@ -695,6 +698,15 @@ async def evaluate_candidates(
             metrics=computed.metrics, behavior=behavior, trade_count_30d=computed.trade_count_30d
         )
         enriched_confidence = max(0.0, min(100.0, result_.confidence + behavior_confidence_bonus(behavior)))
+        if history.partial:
+            # History came from a fallback (stale cache or RPC
+            # reconstruction), not the primary Helius fetch — discount
+            # confidence rather than treat it as equivalent to fresh,
+            # fully-parsed history. Never fabricates data, just trusts it
+            # less; see WalletHistoryFetch's docstring and
+            # fetch_wallet_swap_history's fallback-chain docs.
+            enriched_confidence *= env.DISCOVERY_HISTORY_FALLBACK_CONFIDENCE_MULTIPLIER
+            reason_summary[f"PARTIAL_HISTORY_{history.source}"] += 1
 
         candidate.last_score = result_.score
         candidate.last_confidence = enriched_confidence
@@ -776,6 +788,7 @@ async def evaluate_candidates(
 async def rescore_tracked_wallets(
     session: AsyncSession,
     http_client: httpx.AsyncClient,
+    connection: AsyncClient,
     env: Env,
     actor: Actor,
 ) -> dict[str, int]:
@@ -811,7 +824,7 @@ async def rescore_tracked_wallets(
 
         if sol_price_usd is not None:
             history = await fetch_wallet_swap_history(
-                http_client, env, wallet.address, sol_price_usd=sol_price_usd
+                http_client, env, wallet.address, sol_price_usd=sol_price_usd, connection=connection
             )
             swaps = history.swaps
             if swaps is not None:
@@ -941,7 +954,7 @@ async def run_discovery_cycle(
 
     try:
         async with session_factory() as session:
-            rescore_summary = await rescore_tracked_wallets(session, http_client, env, actor)
+            rescore_summary = await rescore_tracked_wallets(session, http_client, solana_connection, env, actor)
             summary.update(rescore_summary)
     except Exception as err:  # noqa: BLE001
         log.error("Discovery: re-scoring pass failed", err=str(err))
@@ -994,6 +1007,10 @@ async def run_discovery_cycle(
                 )
     except Exception as err:  # noqa: BLE001
         log.error("Discovery: population count check failed", err=str(err))
+
+    provider_metrics = get_all_provider_metrics()
+    if provider_metrics:
+        log.info("Discovery provider metrics", providers=provider_metrics)
 
     log.info("Discovery cycle completed", **summary)
 
