@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -513,6 +514,87 @@ async def get_wallet_first_activity_slot(connection: AsyncClient, address: str) 
     if oldest_signature is None:
         return None
     return oldest_signature.slot
+
+
+async def get_wallet_recent_transactions(
+    connection: AsyncClient,
+    address: str,
+    *,
+    max_signatures: int = 40,
+    min_interval_seconds: float = 0.12,
+    max_retries: int = 3,
+) -> list[dict[str, Any]]:
+    """Best-effort transaction history via plain RPC (`getSignaturesForAddress`
+    + `getTransaction`, jsonParsed) — the wallet-history fallback used when
+    Helius Enhanced Transactions is unavailable/rate-limited (see
+    integrations/wallet_discovery_source.py's PRIMARY -> stale cache -> RPC
+    fallback -> retry queue chain). Returns each transaction's raw
+    jsonParsed `meta`/`transaction` payload as a plain dict; this module has
+    no notion of a "swap" — wallet_discovery_source.py diffs the pre/post
+    token & SOL balances itself to reconstruct BUY/SELL events.
+
+    Routes through whatever RPC provider `connection` currently has as
+    primary — the same Helius RPC / DRPC / Alchemy / Ankr failover this repo
+    already uses for every other RPC call (see `_FailoverAsyncClient`
+    above), so this genuinely is a *different* data path from the Helius
+    Enhanced Transactions HTTP API even when Helius RPC happens to be that
+    failover's primary — a REST-API outage/rate-limit and a JSON-RPC one are
+    independent failure modes.
+
+    Paced/retried exactly like every other RPC call in this module (see
+    `_rate_limited_rpc_call`) — one fallback lookup here is up to
+    `1 + max_signatures` RPC calls, so `max_signatures` is deliberately
+    capped low by default; this is a resilience fallback, not a full history
+    backfill.
+
+    Never fabricates: a signature or transaction that fails to fetch/parse
+    is skipped, not synthesized. Returns `[]` (never raises) so one wallet's
+    RPC hiccup can't stop the discovery cycle, matching every other function
+    in this module.
+    """
+    try:
+        pubkey = Pubkey.from_string(address)
+    except Exception:  # noqa: BLE001 — malformed address, nothing to reconstruct
+        return []
+
+    try:
+        sigs_resp = await _rate_limited_rpc_call(
+            connection.get_signatures_for_address,
+            pubkey,
+            limit=max_signatures,
+            min_interval_seconds=min_interval_seconds,
+            max_retries=max_retries,
+        )
+    except Exception as err:  # noqa: BLE001 — one wallet's history failing shouldn't stop the batch
+        log.debug("RPC history fallback: get_signatures_for_address failed", address=address, err=str(err))
+        return []
+
+    signatures = [entry.signature for entry in (sigs_resp.value or []) if not entry.err]
+    transactions: list[dict[str, Any]] = []
+    for signature in signatures:
+        try:
+            tx_resp = await _rate_limited_rpc_call(
+                connection.get_transaction,
+                signature,
+                max_supported_transaction_version=0,
+                encoding="jsonParsed",
+                min_interval_seconds=min_interval_seconds,
+                max_retries=max_retries,
+            )
+        except Exception as err:  # noqa: BLE001 — skip this one signature, keep going
+            log.debug(
+                "RPC history fallback: get_transaction failed", address=address, signature=str(signature), err=str(err)
+            )
+            continue
+        if tx_resp is None or tx_resp.value is None:
+            continue
+        try:
+            parsed = json.loads(tx_resp.value.to_json())
+        except Exception:  # noqa: BLE001 — unparseable payload, skip rather than guess
+            continue
+        if isinstance(parsed, dict):
+            transactions.append(parsed)
+    return transactions
 
 
 async def get_token_balance(connection: AsyncClient, owner_address: str, mint: str) -> tuple[int, int]:
