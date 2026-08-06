@@ -64,8 +64,9 @@ from whale_alpha.integrations.price_feed import SOL_MINT
 from whale_alpha.integrations.solana_connection import (
     get_token_largest_accounts,
     get_wallet_first_activity_slot,
+    get_wallet_recent_transactions,
 )
-from whale_alpha.utils.http_retry import TTLCache, fetch_with_retry
+from whale_alpha.utils.http_retry import TTLCache, fetch_with_retry, get_provider_client
 from whale_alpha.utils.logger import child_logger
 
 log = child_logger("walletDiscoverySource")
@@ -102,6 +103,22 @@ def _get_history_negative_cache(ttl_seconds: float) -> TTLCache[bool]:
     return _history_negative_cache
 
 
+_history_stale_cache: TTLCache[list["WalletSwap"]] | None = None
+
+
+def _get_history_stale_cache(ttl_seconds: float) -> TTLCache[list["WalletSwap"]]:
+    """Long-TTL cache written on every successful fetch (from any source —
+    primary or a fallback) and read only as Fallback 1 when the primary is
+    unavailable — see fetch_wallet_swap_history's fallback chain. Separate
+    from `_history_cache` (the short-TTL "skip a refetch this cycle" cache)
+    because the two serve different purposes: that one exists to avoid
+    duplicate work, this one exists to have *something* to fall back to."""
+    global _history_stale_cache
+    if _history_stale_cache is None:
+        _history_stale_cache = TTLCache(ttl_seconds=ttl_seconds)
+    return _history_stale_cache
+
+
 @dataclass(frozen=True)
 class WalletHistoryFetch:
     """Result of fetch_wallet_swap_history. `swaps` is None whenever no
@@ -110,11 +127,24 @@ class WalletHistoryFetch:
     utils/http_retry.py) or permanent (no provider configured, or the
     provider gave a definitive 4xx like an invalid address). `cache_hit`
     feeds the discovery cycle's cache-hit-ratio metric.
+
+    `source` records which layer of the PRIMARY -> stale cache -> RPC
+    fallback -> retry queue chain actually produced `swaps` ("HELIUS",
+    "CACHE_STALE", or "RPC_FALLBACK"). `partial` is True whenever `source`
+    isn't "HELIUS" — a fallback result is real on-chain/cached data, never
+    fabricated, but is lower-fidelity (a stale snapshot, or a cruder RPC-only
+    reconstruction — see `_extract_swap_from_rpc_transaction`) and downstream
+    scoring should discount confidence accordingly rather than treat it as
+    equivalent to a fresh Helius fetch (see
+    engines/discovery.py::evaluate_candidates' confidence adjustment,
+    `env.DISCOVERY_HISTORY_FALLBACK_CONFIDENCE_MULTIPLIER`).
     """
 
     swaps: list[WalletSwap] | None
     transient: bool
     cache_hit: bool = False
+    source: str = "HELIUS"
+    partial: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,15 +236,19 @@ async def find_candidates_from_trending_tokens(
         return []
 
     url = f"{env.JUPITER_TOKENS_API_BASE}/{env.DISCOVERY_TRENDING_CATEGORY}/{env.DISCOVERY_TRENDING_INTERVAL}"
-    result = await fetch_with_retry(
+    result = await get_provider_client(
+        "jupiter_trending",
+        max_concurrency=env.DISCOVERY_PROVIDER_MAX_CONCURRENCY,
+        failure_threshold=env.DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
+        cooldown_seconds=env.DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+    ).get(
         client,
-        "GET",
         url,
         params={"limit": str(max_tokens)},
         headers={"x-api-key": api_key},
-        max_retries=env.DISCOVERY_HISTORY_MAX_RETRIES,
-        base_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_BASE_SECONDS,
-        max_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_MAX_SECONDS,
+        max_retries=env.DISCOVERY_PROVIDER_MAX_RETRIES,
+        base_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_BASE_SECONDS,
+        max_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_MAX_SECONDS,
     )
     if result.response is None or result.response.status_code >= 400:
         # Transient (429/5xx, retries exhausted) or permanent failure either
@@ -261,16 +295,44 @@ async def fetch_wallet_swap_history(
     address: str,
     *,
     sol_price_usd: float,
+    connection: AsyncClient | None = None,
     max_transactions: int = 100,
 ) -> WalletHistoryFetch:
     """Returns parsed SWAP events for `address`, most recent first, wrapped
     in a WalletHistoryFetch so callers can tell "no data, don't bother
-    retrying" (no HELIUS_API_KEY, or a definitive 4xx — `transient=False`)
-    apart from "provider hiccup, worth retrying" (429/5xx/network error —
-    `transient=True`; see engines/discovery.py's retry-queue handling in
-    evaluate_candidates). Callers must treat `swaps is None` as "insufficient
-    data to score" rather than "wallet has zero trades" — see
+    retrying" (`transient=False`) apart from "provider hiccup, worth
+    retrying" (`transient=True`; see engines/discovery.py's retry-queue
+    handling in evaluate_candidates). Callers must treat `swaps is None` as
+    "insufficient data to score" rather than "wallet has zero trades" — see
     discovery_metrics.py.
+
+    PROVIDER FALLBACK CHAIN (production fix — closes the single-point-of-
+    failure on Helius): when the primary provider can't produce history this
+    call, three fallbacks are tried in order before giving up:
+
+      PRIMARY (Helius Enhanced Transactions, `_fetch_from_helius`)
+        ↓ unavailable (no HELIUS_API_KEY, rate-limited, erroring, or down)
+      FALLBACK 1 — existing cached history, even past its normal "fresh"
+        TTL (`DISCOVERY_HISTORY_STALE_CACHE_TTL_SECONDS`, default 6h).
+        Stale real data beats none.
+        ↓ no cache entry
+      FALLBACK 2 — reconstruct swaps directly from Solana RPC
+        (`get_wallet_recent_transactions`, routed through the existing
+        Helius RPC/DRPC/Alchemy/Ankr failover in solana_connection.py —
+        see `_fetch_via_rpc_fallback`). Only attempted if
+        `DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED` and a `connection` was
+        passed in.
+        ↓ nothing reconstructable either
+      FALLBACK 3 — retry queue. This function returns the primary's own
+        `transient` flag unchanged; engines/discovery.py's
+        `decide_history_fetch_outcome` is what actually queues the
+        candidate for a later retry instead of rejecting it outright.
+
+    Every fallback returns `partial=True` and a `source` other than
+    "HELIUS" — this NEVER fabricates or estimates history: each layer
+    either returns real cached/on-chain data or nothing at all. Downstream
+    scoring (evaluate_candidates) discounts confidence for partial results
+    rather than treating them as equivalent to a fresh Helius fetch.
 
     RATE LIMIT RESILIENCE (fixes a real production issue): previously a
     single 429 from Helius meant the candidate was rejected outright with
@@ -285,6 +347,60 @@ async def fetch_wallet_swap_history(
     `env.DISCOVERY_HISTORY_NEGATIVE_CACHE_TTL_SECONDS`) so re-discovering the
     same address from multiple sources in one cycle — or across
     closely-spaced cycles — doesn't refetch it.
+    """
+    cache = _get_history_cache(env.DISCOVERY_HISTORY_CACHE_TTL_SECONDS)
+    cached = cache.get(address)
+    if cached is not None:
+        return WalletHistoryFetch(swaps=cached, transient=False, cache_hit=True, source="HELIUS")
+
+    negative_cache = _get_history_negative_cache(env.DISCOVERY_HISTORY_NEGATIVE_CACHE_TTL_SECONDS)
+    if negative_cache.get(address):
+        return WalletHistoryFetch(swaps=None, transient=False, cache_hit=True, source="HELIUS")
+
+    primary = await _fetch_from_helius(client, env, address, sol_price_usd=sol_price_usd, max_transactions=max_transactions)
+    if primary.swaps is not None:
+        cache.set(address, primary.swaps)
+        _get_history_stale_cache(env.DISCOVERY_HISTORY_STALE_CACHE_TTL_SECONDS).set(address, primary.swaps)
+        return primary
+
+    if primary.transient is False and env.HELIUS_API_KEY:
+        # A definitive Helius failure for this specific address (bad
+        # address, unparseable payload) — not "no key configured", which
+        # isn't address-specific. Negative-cache it; the fallbacks below
+        # still get a chance, but there's no point re-hitting Helius for
+        # this address again soon.
+        negative_cache.set(address, True)
+
+    # PRIMARY unavailable — try the fallback chain.
+    stale = _get_history_stale_cache(env.DISCOVERY_HISTORY_STALE_CACHE_TTL_SECONDS).get(address)
+    if stale is not None:
+        log.debug("Wallet history fallback: served from stale cache", address=address)
+        return WalletHistoryFetch(swaps=stale, transient=False, source="CACHE_STALE", partial=True)
+
+    if env.DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED and connection is not None:
+        rpc_swaps = await _fetch_via_rpc_fallback(connection, env, address, sol_price_usd=sol_price_usd)
+        if rpc_swaps:
+            _get_history_stale_cache(env.DISCOVERY_HISTORY_STALE_CACHE_TTL_SECONDS).set(address, rpc_swaps)
+            log.debug("Wallet history fallback: reconstructed via RPC", address=address, swap_count=len(rpc_swaps))
+            return WalletHistoryFetch(swaps=rpc_swaps, transient=False, source="RPC_FALLBACK", partial=True)
+
+    # Fallback 3 (retry queue) is the caller's responsibility — return the
+    # primary result's own transient/permanent classification unchanged.
+    return primary
+
+
+async def _fetch_from_helius(
+    client: httpx.AsyncClient,
+    env: Env,
+    address: str,
+    *,
+    sol_price_usd: float,
+    max_transactions: int,
+) -> WalletHistoryFetch:
+    """PRIMARY wallet-history provider — see fetch_wallet_swap_history's
+    fallback-chain docstring for how a failure here is handled. No caching
+    here (the wrapper owns both the fresh and stale caches, since fallback
+    results need to populate the stale cache too).
 
     ASSUMPTION (judgment call, same spirit as auto_trading.py's documented
     portfolio-value approximation): each swap's USD size is
@@ -296,16 +412,7 @@ async def fetch_wallet_swap_history(
     ROI/win-rate *ranking* signal, not for anything precision-sensitive.
     """
     if not env.HELIUS_API_KEY:
-        return WalletHistoryFetch(swaps=None, transient=False)
-
-    cache = _get_history_cache(env.DISCOVERY_HISTORY_CACHE_TTL_SECONDS)
-    cached = cache.get(address)
-    if cached is not None:
-        return WalletHistoryFetch(swaps=cached, transient=False, cache_hit=True)
-
-    negative_cache = _get_history_negative_cache(env.DISCOVERY_HISTORY_NEGATIVE_CACHE_TTL_SECONDS)
-    if negative_cache.get(address):
-        return WalletHistoryFetch(swaps=None, transient=False, cache_hit=True)
+        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS")
 
     url = f"{env.HELIUS_API_BASE}/v0/addresses/{address}/transactions"
     params = {"api-key": env.HELIUS_API_KEY, "type": "SWAP", "limit": str(min(max_transactions, 100))}
@@ -326,22 +433,20 @@ async def fetch_wallet_swap_history(
         # negative-cache; the whole point is this address is worth trying
         # again later (see the retry-queue handling in evaluate_candidates).
         log.debug("Helius wallet history unavailable after retries", address=address, transient=result.transient)
-        return WalletHistoryFetch(swaps=None, transient=result.transient)
+        return WalletHistoryFetch(swaps=None, transient=result.transient, source="HELIUS")
 
     if result.response.status_code >= 400:
         log.debug("Helius wallet history request failed", address=address, status=result.response.status_code)
-        negative_cache.set(address, True)
-        return WalletHistoryFetch(swaps=None, transient=False)
+        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS")
 
     try:
         transactions = result.response.json()
     except Exception as err:  # noqa: BLE001 — a malformed payload shouldn't stop the batch
         log.debug("Helius wallet history response unparseable", address=address, err=str(err))
-        return WalletHistoryFetch(swaps=None, transient=False)
+        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS")
 
     if not isinstance(transactions, list):
-        negative_cache.set(address, True)
-        return WalletHistoryFetch(swaps=None, transient=False)
+        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS")
 
     swaps: list[WalletSwap] = []
     for tx in transactions:
@@ -351,8 +456,51 @@ async def fetch_wallet_swap_history(
         if swap is not None:
             swaps.append(swap)
 
-    cache.set(address, swaps)
-    return WalletHistoryFetch(swaps=swaps, transient=False)
+    return WalletHistoryFetch(swaps=swaps, transient=False, source="HELIUS")
+
+
+async def _fetch_via_rpc_fallback(
+    connection: AsyncClient,
+    env: Env,
+    address: str,
+    *,
+    sol_price_usd: float,
+) -> list[WalletSwap]:
+    """FALLBACK 2 in fetch_wallet_swap_history's chain — reconstructs a
+    best-effort swap history directly from raw Solana RPC transactions
+    (`get_wallet_recent_transactions`) when Helius Enhanced Transactions is
+    unavailable. Deliberately conservative: only classifies a transaction as
+    a swap when the wallet's own token balance AND native SOL balance both
+    moved in a consistent direction (see `_extract_swap_from_rpc_transaction`)
+    — anything ambiguous is skipped rather than guessed, so this never
+    fabricates a trade that didn't happen.
+
+    Cruder than the Helius parser (which uses Helius's own pre-computed
+    `events.swap`): no DEX-program identification, no multi-hop-route
+    awareness, and it can miscount a transaction that happens to move both
+    balances for an unrelated reason (e.g. a token transfer bundled with an
+    account-rent-reclaim in the same tx) as a swap. That's why every result
+    from this path is flagged `partial=True`/`source="RPC_FALLBACK"` by the
+    caller — a real signal, but a lower-confidence one.
+    """
+    try:
+        raw_transactions = await get_wallet_recent_transactions(
+            connection,
+            address,
+            max_signatures=env.DISCOVERY_HISTORY_RPC_FALLBACK_MAX_SIGNATURES,
+            min_interval_seconds=env.DISCOVERY_RPC_MIN_INTERVAL_SECONDS,
+            max_retries=env.DISCOVERY_RPC_MAX_RETRIES,
+        )
+    except Exception as err:  # noqa: BLE001 — fallback failing shouldn't stop the batch
+        log.debug("RPC history fallback errored", address=address, err=str(err))
+        return []
+
+    swaps: list[WalletSwap] = []
+    for tx in raw_transactions:
+        swap = _extract_swap_from_rpc_transaction(tx, address, sol_price_usd)
+        if swap is not None:
+            swaps.append(swap)
+    return swaps
 
 
 def _extract_swap_for_wallet(
@@ -418,6 +566,122 @@ def _extract_swap_for_wallet(
             timestamp=datetime.fromtimestamp(int(timestamp), tz=UTC),
         )
     return None
+
+
+def _extract_swap_from_rpc_transaction(
+    transaction: dict[str, Any], wallet_address: str, sol_price_usd: float
+) -> WalletSwap | None:
+    """FALLBACK 2's parser — classifies one raw, jsonParsed Solana RPC
+    transaction (from `get_wallet_recent_transactions`) as a BUY or SELL
+    from `wallet_address`'s perspective, using `meta.preTokenBalances` /
+    `postTokenBalances` (token side) and `meta.preBalances` / `postBalances`
+    (native SOL side) — the same information Helius's own enhanced parser is
+    ultimately built on top of, just without Helius's DEX-program
+    identification or multi-hop-route handling.
+
+    ASSUMPTION (flagged, same convention as `_extract_swap_for_wallet` and
+    the rest of this module): direction comes from the wallet's own non-SOL
+    token balance delta; size is approximated from the *absolute* native SOL
+    balance delta at `wallet_address`'s own account index (which nets out
+    the transaction fee automatically, since the fee payer's SOL balance
+    already reflects it). A transaction is only classified as a swap when
+    the wallet has both a non-zero token delta AND a non-zero SOL delta in
+    a consistent direction — anything else (a plain SPL transfer, a account
+    close/rent-reclaim, an NFT mint, etc.) returns None rather than guessing.
+    Verify against live RPC responses before trusting this at higher
+    confidence than `partial=True` already implies — see
+    `_fetch_via_rpc_fallback`'s docstring.
+    """
+    timestamp = transaction.get("blockTime")
+    if not timestamp:
+        return None
+
+    message = ((transaction.get("transaction") or {}).get("message")) or {}
+    account_keys = message.get("accountKeys") or []
+
+    def _key(entry: Any) -> str | None:
+        if isinstance(entry, dict):
+            return entry.get("pubkey")
+        return entry if isinstance(entry, str) else None
+
+    keys = [_key(entry) for entry in account_keys]
+    if wallet_address not in keys:
+        return None
+    wallet_index = keys.index(wallet_address)
+
+    meta = transaction.get("meta") or {}
+    if meta.get("err") is not None:
+        return None  # failed transaction — no actual swap happened
+
+    pre_balances = meta.get("preBalances") or []
+    post_balances = meta.get("postBalances") or []
+    if wallet_index >= len(pre_balances) or wallet_index >= len(post_balances):
+        return None
+    try:
+        sol_delta_lamports = int(post_balances[wallet_index]) - int(pre_balances[wallet_index])
+    except (TypeError, ValueError):
+        return None
+    if sol_delta_lamports == 0:
+        return None
+
+    def _ui_amount(entry: dict[str, Any] | None) -> float:
+        if entry is None:
+            return 0.0
+        try:
+            return float((entry.get("uiTokenAmount") or {}).get("uiAmount") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    pre_token_by_index = {
+        b.get("accountIndex"): b
+        for b in (meta.get("preTokenBalances") or [])
+        if isinstance(b, dict) and b.get("owner") == wallet_address
+    }
+    post_token_by_index = {
+        b.get("accountIndex"): b
+        for b in (meta.get("postTokenBalances") or [])
+        if isinstance(b, dict) and b.get("owner") == wallet_address
+    }
+
+    token_mint: str | None = None
+    token_delta = 0.0
+    for account_index, post_entry in post_token_by_index.items():
+        delta = _ui_amount(post_entry) - _ui_amount(pre_token_by_index.get(account_index))
+        mint = post_entry.get("mint")
+        if delta != 0 and mint and mint != SOL_MINT:
+            token_mint, token_delta = mint, delta
+            break
+    if token_mint is None:
+        # A token account that existed pre-tx and vanished post-tx (fully
+        # sold + closed) never appears in postTokenBalances at all.
+        for account_index, pre_entry in pre_token_by_index.items():
+            if account_index in post_token_by_index:
+                continue
+            pre_amount = _ui_amount(pre_entry)
+            mint = pre_entry.get("mint")
+            if pre_amount > 0 and mint and mint != SOL_MINT:
+                token_mint, token_delta = mint, -pre_amount
+                break
+
+    if token_mint is None or token_delta == 0:
+        return None
+    # Direction must agree: received tokens + spent SOL = BUY; sent tokens +
+    # received SOL = SELL. Anything else isn't a clean swap — skip it.
+    if token_delta > 0 and sol_delta_lamports >= 0:
+        return None
+    if token_delta < 0 and sol_delta_lamports <= 0:
+        return None
+
+    amount_usd = (abs(sol_delta_lamports) / 1e9) * sol_price_usd
+    if amount_usd <= 0:
+        return None
+
+    return WalletSwap(
+        side="BUY" if token_delta > 0 else "SELL",
+        token_mint=token_mint,
+        amount_usd=amount_usd,
+        timestamp=datetime.fromtimestamp(int(timestamp), tz=UTC),
+    )
 
 
 async def estimate_wallet_age_days(connection: AsyncClient, address: str) -> int | None:
