@@ -167,7 +167,7 @@ async def expand_wallet_graph(
     for wallet in batch:
         try:
             history = await fetch_wallet_swap_history(
-                http_client, env, wallet.address, sol_price_usd=sol_price_usd
+                http_client, env, wallet.address, sol_price_usd=sol_price_usd, connection=connection
             )
         except Exception as err:  # noqa: BLE001 — one wallet's history failing shouldn't stop the batch
             log.debug("Graph expansion: swap history fetch failed", address=wallet.address, err=str(err))
