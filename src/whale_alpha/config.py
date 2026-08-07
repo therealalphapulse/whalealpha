@@ -296,6 +296,56 @@ class Env(BaseSettings):
     # repeated co-trading across several is not.
     DISCOVERY_GRAPH_MIN_COOCCURRENCE: int = Field(2, ge=1)
 
+    # --- Blockchain-first Discovery Engine (Phase 1 refactor) ---
+    # See integrations/chain_scanner.py. This is now the PRIMARY wallet
+    # discovery source: it scans recent Solana blocks directly via RPC and
+    # extracts trader wallet addresses from swap/migration transactions
+    # (Jupiter, Raydium AMM/CLMM/CPMM, Pump.fun bonding-curve + PumpSwap
+    # migrations, LaunchLab). Every other candidate-sourcing HTTP API below
+    # (DISCOVERY_PUMPFUN_ENABLED, DISCOVERY_TRENDING_ENABLED, Birdeye,
+    # DexScreener, ...) is gated off discovery by DISCOVERY_API_SOURCES_ENABLED
+    # (default False) — those provider integrations are kept in place
+    # unmodified for later enrichment use, they're just no longer part of
+    # the wallet *discovery* pipeline per the Phase 1 requirement that only
+    # the chain itself may surface a new candidate wallet.
+    DISCOVERY_BLOCKCHAIN_SCAN_ENABLED: bool = True
+    # Master gate for every non-blockchain (HTTP market-data API) candidate
+    # source that predates this refactor (_ON_CHAIN_LAUNCH_SOURCES,
+    # the Jupiter/Birdeye/DexScreener trending fallback chain). False by
+    # default: those functions remain fully intact and reusable, but
+    # discover_candidates no longer calls them to source new wallets.
+    DISCOVERY_API_SOURCES_ENABLED: bool = False
+    # How many new slots to fetch per discovery cycle. Deliberately small —
+    # never "scan the whole chain" — so one cycle's RPC usage is bounded
+    # regardless of how far behind the scanner has fallen.
+    DISCOVERY_BLOCK_SCAN_BATCH_SIZE: int = Field(20, ge=1, le=200)
+    # Hard ceiling on how many slots one cycle will attempt to catch up by,
+    # even if the persisted checkpoint is very stale (e.g. the process was
+    # down for hours) — protects free RPC tiers from a huge backlog replay;
+    # the scanner just catches up gradually over several cycles instead.
+    DISCOVERY_BLOCK_SCAN_MAX_CATCHUP_SLOTS: int = Field(400, ge=1)
+    # Where to start on the very first run (no persisted checkpoint yet):
+    # current tip minus this many slots, rather than genesis.
+    DISCOVERY_BLOCK_SCAN_INITIAL_LOOKBACK_SLOTS: int = Field(50, ge=1)
+    # Concurrent in-flight getBlock RPC calls (asyncio.Semaphore) within one
+    # batch — bounds burst RPC usage independently of batch size.
+    DISCOVERY_BLOCK_SCAN_CONCURRENCY: int = Field(4, ge=1)
+    DISCOVERY_BLOCK_SCAN_MAX_RETRIES: int = Field(3, ge=0)
+    DISCOVERY_BLOCK_SCAN_RETRY_BASE_SECONDS: float = Field(1.0, ge=0)
+    DISCOVERY_BLOCK_SCAN_RETRY_MAX_SECONDS: float = Field(20.0, ge=0)
+    # Short-TTL cache for the chain-tip (`getSlot`) lookup — avoids an extra
+    # RPC round trip if it's queried more than once within the same cycle.
+    DISCOVERY_BLOCK_SCAN_TIP_CACHE_TTL_SECONDS: float = Field(10, ge=0)
+    # Per-block cap on how many distinct trader wallets are extracted — a
+    # single busy block can contain thousands of swaps; this keeps one
+    # block from dominating a whole cycle's candidate budget.
+    DISCOVERY_BLOCK_SCAN_MAX_WALLETS_PER_BLOCK: int = Field(200, ge=1)
+    # Extra, comma-separated Solana program IDs to treat as swap programs,
+    # in addition to the built-in Jupiter/Raydium/Pump.fun/LaunchLab set
+    # (see integrations/chain_scanner.SWAP_PROGRAM_IDS) — lets ops track a
+    # newly-launched DEX without a code change/deploy.
+    DISCOVERY_BLOCK_SCAN_EXTRA_PROGRAM_IDS: str = ""
+
     @field_validator(
         "SOLANA_RPC_URL",
         "JUPITER_API_BASE",
