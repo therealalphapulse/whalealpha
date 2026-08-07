@@ -451,3 +451,27 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (Index("ix_audit_logs_actor_id_created_at", "actor_id", "created_at"),)
+
+
+class DiscoveryScanProgress(Base):
+    """Blockchain-first discovery engine — Phase 1. Persists the last Solana
+    slot the block scanner has fully processed, so it can page through
+    recent blocks in bounded batches (never the whole chain at once — see
+    integrations/chain_scanner.py) and resume exactly where it left off
+    after a restart instead of re-scanning or silently skipping slots.
+
+    One row per `cluster` (mainnet-beta / devnet / testnet), so switching
+    `SOLANA_CLUSTER` doesn't corrupt another cluster's progress. In
+    practice this repo only ever runs one cluster at a time, but keeping
+    `cluster` as the natural key costs nothing and avoids a footgun.
+    """
+
+    __tablename__ = "discovery_scan_progress"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
+    cluster: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    last_processed_slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
