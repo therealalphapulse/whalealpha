@@ -381,13 +381,37 @@ class ProviderClient:
         url: str,
         **kwargs: Any,
     ) -> HttpFetchResult:
+        return await self._request(client, "GET", url, **kwargs)
+
+    async def post(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        **kwargs: Any,
+    ) -> HttpFetchResult:
+        """Same resilience path as `.get()` (semaphore + circuit breaker +
+        retry/backoff/Retry-After + metrics) for POST requests — added for
+        the blockchain-first discovery engine's JSON-RPC calls
+        (`getBlock`/`getSlot` are POST-only per the Solana JSON-RPC spec),
+        see integrations/chain_scanner.py. Purely additive: `.get()`'s
+        behavior/signature is unchanged.
+        """
+        return await self._request(client, "POST", url, **kwargs)
+
+    async def _request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> HttpFetchResult:
         if not self.breaker.allow_request():
             self.metrics.circuit_open_skips += 1
             log.debug("Provider circuit open, skipping request", provider=self.name, url=_mask_url(url))
             return HttpFetchResult(response=None, transient=True, circuit_open=True)
 
         start = time.monotonic()
-        result = await fetch_with_retry(client, "GET", url, semaphore=self.semaphore, **kwargs)
+        result = await fetch_with_retry(client, method, url, semaphore=self.semaphore, **kwargs)
         elapsed = time.monotonic() - start
 
         self.metrics.requests += 1
