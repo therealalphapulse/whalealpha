@@ -8,19 +8,27 @@ Pipeline (see docs/ARCHITECTURE.md for the full data-flow diagram):
 
     Candidate sourcing — MULTIPLE independent, priority-ordered streams, see
     discover_candidates below:
+      0. Blockchain-first on-chain scan (integrations/chain_scanner.py) —
+         PRIMARY source as of the Phase 1 refactor. Scans recent Solana
+         blocks directly via RPC and extracts trader wallets straight out
+         of swap/migration transactions (Jupiter, Raydium AMM/CLMM/CPMM,
+         LaunchLab, Pump.fun bonding-curve + PumpSwap migrations). Needs no
+         tracked wallets, Signals, or market-data API key — the chain
+         itself is the source of truth for candidate discovery now.
       1. Real-time on-chain launch discovery (pump.fun, LaunchLab, Raydium,
-         Meteora — integrations/free_market_sources.py). Needs no tracked
-         wallets, Signals, or API key; this is what actually eliminates the
-         cold-start loop from zero.
+         Meteora HTTP endpoints — integrations/free_market_sources.py) and
       2. Trending-token provider fallback chain (Jupiter -> Birdeye ->
-         DexScreener), also independent of anything already tracked.
+         DexScreener) and
       3. The legacy signaled-token-holders stream
          (integrations.wallet_discovery_source.find_candidates_from_token_holders)
-         — co-buyers of tokens our own tracked whales' Signals already
-         picked. High precision, but alone can never bootstrap from zero.
+         are all now gated behind DISCOVERY_API_SOURCES_ENABLED (default
+         False, Phase 1) — market-data APIs no longer discover new wallets;
+         these remain in place, unmodified, for later re-use as
+         *enrichment* only.
       4. Wallet Graph Expansion (engines/wallet_graph.py, its own phase in
          run_discovery_cycle) — every promoted wallet becomes a discovery
-         node; repeated co-trading relationships raise confidence.
+         node; repeated co-trading relationships raise confidence. RPC-only,
+         unaffected by DISCOVERY_API_SOURCES_ENABLED.
     One failing/disabled source never stops the others — see
     discover_candidates and run_discovery_cycle's per-phase try/except.
               |
@@ -87,7 +95,7 @@ from whale_alpha.engines.discovery_metrics import ComputedMetrics, compute_walle
 from whale_alpha.engines.scoring import MIN_APPROVED_SCORE, WalletMetrics, score_wallet
 from whale_alpha.engines.wallet_graph import expand_wallet_graph
 from whale_alpha.engines.wallet_labels import assign_labels
-from whale_alpha.integrations import free_market_sources, price_feed
+from whale_alpha.integrations import chain_scanner, free_market_sources, price_feed
 from whale_alpha.integrations.solana_connection import is_valid_solana_address
 from whale_alpha.integrations.wallet_discovery_source import (
     DiscoveredCandidate,
@@ -339,38 +347,43 @@ async def discover_candidates(
     of genuinely new candidates queued (see run_discovery_cycle for the
     structured log this feeds).
 
-    Priority order (see docs/ARCHITECTURE.md and the Phase 1 refactor
-    prompt for the full rationale):
+    Priority order (Phase 1 — blockchain-first refactor; see
+    docs/ARCHITECTURE.md and integrations/chain_scanner.py for the full
+    rationale):
 
-      1. Real-time on-chain launch discovery (_ON_CHAIN_LAUNCH_SOURCES:
-         pump.fun, LaunchLab, Raydium, Meteora) — fresh liquidity events and
-         their early accumulators. Needs no tracked wallets, no Signals, no
-         API key. This is what actually closes the cold-start loop from
-         absolute zero, not just the trending-token bootstrap alone.
+      0. Blockchain-first on-chain scan (`integrations.chain_scanner.
+         scan_new_blocks`, gated by DISCOVERY_BLOCKCHAIN_SCAN_ENABLED,
+         default on) — scans the next bounded batch of recent Solana
+         blocks directly via RPC and pulls trader wallets straight out of
+         swap/migration transactions (Jupiter, Raydium AMM/CLMM/CPMM,
+         LaunchLab, Pump.fun bonding-curve + PumpSwap migrations). This is
+         now the PRIMARY source: the chain itself, not a third-party
+         market-data API, decides which addresses get evaluated. Needs no
+         tracked wallets, no Signals, no API key, and (unlike every source
+         below) makes no external HTTP call to a market-data provider at
+         all — see that module's docstring.
 
-      2. Trending-token provider fallback chain (Jupiter -> Birdeye ->
-         DexScreener, see integrations/free_market_sources.py). Also
-         independent of anything already tracked.
-
-      3. The legacy signaled-token-holders stream
-         (`_queue_candidates_from_signaled_tokens`) — co-buyers of tokens
-         our own tracked whales already picked. High-precision, but by
-         itself can never produce a first candidate from zero tracked
-         wallets: zero wallets -> zero Signals -> zero token mints to
-         search. Kept running as ONE source among many, not the primary
-         one, per the hybrid architecture.
+      1-3. Legacy HTTP-API-based sources — on-chain *launch* discovery via
+         pump.fun/LaunchLab/Raydium/Meteora's public REST endpoints
+         (_ON_CHAIN_LAUNCH_SOURCES), the Jupiter/Birdeye/DexScreener
+         trending-token fallback chain, and the signaled-token-holders
+         stream. Per the Phase 1 requirement that market-data APIs no
+         longer discover wallets, these are now gated behind
+         `DISCOVERY_API_SOURCES_ENABLED` (default False) and skipped
+         entirely when it's off — left fully intact, unmodified, so they
+         remain available to power *enrichment* (not discovery) in a later
+         phase without having to be rewritten.
 
       4. Wallet Graph Expansion (engines/wallet_graph.py) runs as its own
          phase in run_discovery_cycle, not here — it needs already-APPROVED
          wallets to expand from, so it naturally only contributes once the
-         population above zero exists.
+         population above zero exists. It is itself RPC-only (no market
+         data API), so it is unaffected by DISCOVERY_API_SOURCES_ENABLED.
 
     Each source draws from one shared, priority-ordered budget
     (`DISCOVERY_CANDIDATE_BATCH_SIZE`): higher-priority sources get first
     claim on it, and whatever they don't use rolls over to the next source,
-    rather than a fixed even split — so on a quiet on-chain-launch cycle the
-    trending/legacy streams still get to use the leftover budget, and on a
-    busy one the on-chain streams aren't artificially capped.
+    rather than a fixed even split.
     """
     existing_wallets = await session.execute(select(WhaleWallet.address))
     existing_candidates = await session.execute(select(WalletCandidate.address))
@@ -378,6 +391,31 @@ async def discover_candidates(
 
     remaining = env.DISCOVERY_CANDIDATE_BATCH_SIZE
     per_source_queued: dict[str, int] = {}
+
+    if remaining > 0 and env.DISCOVERY_BLOCKCHAIN_SCAN_ENABLED:
+        try:
+            scan_result = await chain_scanner.scan_new_blocks(session, http_client, env, known_addresses)
+        except Exception as err:  # noqa: BLE001 — the primary source failing must never crash the cycle
+            log.error("Discovery: blockchain scan failed, continuing with the rest", err=str(err))
+        else:
+            found, queued = _queue_new_candidates(session, scan_result.candidates, known_addresses, remaining)
+            per_source_queued["blockchain_scan"] = queued
+            remaining -= queued
+            log.info(
+                "Discovery source cycle",
+                source="blockchain_scan",
+                found=found,
+                queued=queued,
+                slots_scanned=scan_result.slots_scanned,
+                blocks_found=scan_result.blocks_found,
+                from_slot=scan_result.from_slot,
+                to_slot=scan_result.to_slot,
+            )
+
+    if not env.DISCOVERY_API_SOURCES_ENABLED:
+        if sum(per_source_queued.values()):
+            await session.commit()
+        return per_source_queued
 
     for source_key, source_fn in _ON_CHAIN_LAUNCH_SOURCES:
         if remaining <= 0:
