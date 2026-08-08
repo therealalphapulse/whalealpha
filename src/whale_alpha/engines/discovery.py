@@ -99,6 +99,7 @@ from whale_alpha.integrations import chain_scanner, free_market_sources, price_f
 from whale_alpha.integrations.solana_connection import is_valid_solana_address
 from whale_alpha.integrations.wallet_discovery_source import (
     DiscoveredCandidate,
+    WalletHistoryFetch,
     estimate_wallet_age_days,
     fetch_wallet_swap_history,
     find_candidates_from_token_holders,
@@ -155,6 +156,63 @@ class DiscoveryConfig:
 class PromotionDecision:
     approved: bool
     reason: str | None  # populated when NOT approved; explains the disqualifying gate
+
+
+@dataclass
+class DiscoveryFunnelStats:
+    """Mutable per-cycle counters for the candidate-sourcing funnel
+    (Helius 429-pressure audit addition) — accumulated across every source
+    in discover_candidates via `_queue_new_candidates`'s optional `stats`
+    kwarg, then folded into run_discovery_cycle's "DISCOVERY CYCLE COMPLETE"
+    summary log. Deliberately a plain mutable dataclass (not a pure
+    return value) since it's threaded through several sequential source
+    calls in one cycle, the same shape as the existing `by_source`/
+    `reason_summary` Counters in evaluate_candidates.
+    """
+
+    candidates_raw: int = 0
+    duplicates_removed: int = 0  # same address seen more than once THIS cycle, across sources
+    already_known: int = 0  # address already existed in the DB before this cycle started
+    invalid_address: int = 0
+
+
+@dataclass
+class DiscoveryHistoryStats:
+    """Mutable per-cycle Helius/RPC-fallback wallet-history counters
+    (Helius 429-pressure audit addition) — accumulated across both
+    evaluate_candidates and rescore_tracked_wallets (both call
+    fetch_wallet_swap_history) via each function's optional `history_stats`
+    kwarg, then summed into run_discovery_cycle's summary log. See
+    WalletHistoryFetch's new `helius_rate_limited`/`rpc_fallback_attempted`
+    fields for what feeds these.
+    """
+
+    helius_requests: int = 0  # a fresh (non-cache-hit) Helius HTTP attempt was made
+    helius_429: int = 0  # that attempt observed at least one 429 (before/after retries)
+    helius_success: int = 0  # a fresh Helius attempt returned usable swap history
+    rpc_fallback: int = 0  # FALLBACK 2 (RPC reconstruction) was attempted
+    rpc_fallback_success: int = 0  # FALLBACK 2 produced usable swap history
+
+    def record(self, history: WalletHistoryFetch, *, helius_configured: bool) -> None:
+        if not history.cache_hit and helius_configured:
+            self.helius_requests += 1
+            if history.source == "HELIUS" and history.swaps is not None:
+                self.helius_success += 1
+        if history.helius_rate_limited:
+            self.helius_429 += 1
+        if history.rpc_fallback_attempted:
+            self.rpc_fallback += 1
+            if history.source == "RPC_FALLBACK":
+                self.rpc_fallback_success += 1
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "helius_requests": self.helius_requests,
+            "helius_429": self.helius_429,
+            "helius_success": self.helius_success,
+            "rpc_fallback": self.rpc_fallback,
+            "rpc_fallback_success": self.rpc_fallback_success,
+        }
 
 
 def evaluate_promotion(
@@ -339,13 +397,25 @@ _ON_CHAIN_LAUNCH_SOURCES = (
 
 
 async def discover_candidates(
-    session: AsyncSession, http_client: httpx.AsyncClient, connection: AsyncClient, env: Env
+    session: AsyncSession,
+    http_client: httpx.AsyncClient,
+    connection: AsyncClient,
+    env: Env,
+    *,
+    funnel_stats: DiscoveryFunnelStats | None = None,
 ) -> dict[str, int]:
     """Sources new candidate addresses from every enabled discovery stream,
     in priority order, and queues them in WalletCandidate — skipping
     anything already tracked or already queued. Returns a per-source count
     of genuinely new candidates queued (see run_discovery_cycle for the
     structured log this feeds).
+
+    `funnel_stats` is optional (Helius 429-pressure audit addition): when a
+    DiscoveryFunnelStats is passed in, every raw candidate from every
+    source is tallied into it (candidates_raw/duplicates_removed/
+    already_known/invalid_address) for run_discovery_cycle's consolidated
+    per-cycle summary. Omitting it (the default) preserves this function's
+    original behavior exactly for any other caller.
 
     Priority order (Phase 1 — blockchain-first refactor; see
     docs/ARCHITECTURE.md and integrations/chain_scanner.py for the full
@@ -388,6 +458,10 @@ async def discover_candidates(
     existing_wallets = await session.execute(select(WhaleWallet.address))
     existing_candidates = await session.execute(select(WalletCandidate.address))
     known_addresses = {row[0] for row in existing_wallets.all()} | {row[0] for row in existing_candidates.all()}
+    # Snapshot of what was known BEFORE this cycle sourced anything — lets
+    # _queue_new_candidates tell "already in the DB" apart from "duplicate
+    # within this cycle" for the funnel metrics (see DiscoveryFunnelStats).
+    already_known_at_cycle_start = set(known_addresses)
 
     remaining = env.DISCOVERY_CANDIDATE_BATCH_SIZE
     per_source_queued: dict[str, int] = {}
@@ -398,7 +472,14 @@ async def discover_candidates(
         except Exception as err:  # noqa: BLE001 — the primary source failing must never crash the cycle
             log.error("Discovery: blockchain scan failed, continuing with the rest", err=str(err))
         else:
-            found, queued = _queue_new_candidates(session, scan_result.candidates, known_addresses, remaining)
+            found, queued = _queue_new_candidates(
+                session,
+                scan_result.candidates,
+                known_addresses,
+                remaining,
+                stats=funnel_stats,
+                already_known_at_cycle_start=already_known_at_cycle_start,
+            )
             per_source_queued["blockchain_scan"] = queued
             remaining -= queued
             log.info(
@@ -431,14 +512,28 @@ async def discover_candidates(
         except Exception as err:  # noqa: BLE001 — one provider failing must never stop the others
             log.warning("Discovery source failed, continuing with the rest", source=source_key, err=str(err))
             candidates = []
-        found, queued = _queue_new_candidates(session, candidates, known_addresses, remaining)
+        found, queued = _queue_new_candidates(
+            session,
+            candidates,
+            known_addresses,
+            remaining,
+            stats=funnel_stats,
+            already_known_at_cycle_start=already_known_at_cycle_start,
+        )
         per_source_queued[source_key] = queued
         remaining -= queued
         log.info("Discovery source cycle", source=source_key, found=found, queued=queued)
 
     if remaining > 0 and env.DISCOVERY_TRENDING_ENABLED:
         found, queued = await _queue_trending_bootstrap_candidates(
-            session, http_client, connection, env, known_addresses, budget=remaining
+            session,
+            http_client,
+            connection,
+            env,
+            known_addresses,
+            budget=remaining,
+            stats=funnel_stats,
+            already_known_at_cycle_start=already_known_at_cycle_start,
         )
         remaining -= queued
         # find_candidates_from_trending_tokens / the fallback chain both tag
@@ -451,7 +546,13 @@ async def discover_candidates(
 
     if remaining > 0:
         queued = await _queue_candidates_from_signaled_tokens(
-            session, connection, env, known_addresses, budget=remaining
+            session,
+            connection,
+            env,
+            known_addresses,
+            budget=remaining,
+            stats=funnel_stats,
+            already_known_at_cycle_start=already_known_at_cycle_start,
         )
         per_source_queued["token_holder_of_signaled_token"] = queued
         remaining -= queued
@@ -469,6 +570,8 @@ async def _queue_candidates_from_signaled_tokens(
     known_addresses: set[str],
     *,
     budget: int,
+    stats: DiscoveryFunnelStats | None = None,
+    already_known_at_cycle_start: set[str] | None = None,
 ) -> int:
     """Priority 3 — the legacy stream: other large holders of tokens our
     own tracked whales' Signals already picked. See discover_candidates'
@@ -494,7 +597,14 @@ async def _queue_candidates_from_signaled_tokens(
             min_interval_seconds=env.DISCOVERY_RPC_MIN_INTERVAL_SECONDS,
             max_retries=env.DISCOVERY_RPC_MAX_RETRIES,
         )
-        _, newly_queued = _queue_new_candidates(session, candidates, known_addresses, budget - queued)
+        _, newly_queued = _queue_new_candidates(
+            session,
+            candidates,
+            known_addresses,
+            budget - queued,
+            stats=stats,
+            already_known_at_cycle_start=already_known_at_cycle_start,
+        )
         queued += newly_queued
     return queued
 
@@ -507,6 +617,8 @@ async def _queue_trending_bootstrap_candidates(
     known_addresses: set[str],
     *,
     budget: int,
+    stats: DiscoveryFunnelStats | None = None,
+    already_known_at_cycle_start: set[str] | None = None,
 ) -> tuple[int, int]:
     """Priority 2 — Jupiter Tokens API V2 first (unchanged, existing
     behavior); if that yields nothing (no key configured, or the request
@@ -524,7 +636,14 @@ async def _queue_trending_bootstrap_candidates(
         max_holders_per_token=env.DISCOVERY_MAX_HOLDERS_PER_TOKEN,
     )
     if jupiter_candidates:
-        found, queued = _queue_new_candidates(session, jupiter_candidates, known_addresses, budget)
+        found, queued = _queue_new_candidates(
+            session,
+            jupiter_candidates,
+            known_addresses,
+            budget,
+            stats=stats,
+            already_known_at_cycle_start=already_known_at_cycle_start,
+        )
         return found, queued
 
     fallback_candidates = await free_market_sources.find_trending_tokens_multi_provider(
@@ -535,7 +654,14 @@ async def _queue_trending_bootstrap_candidates(
         max_holders_per_token=env.DISCOVERY_MAX_HOLDERS_PER_TOKEN,
         jupiter_mints=None,
     )
-    return _queue_new_candidates(session, fallback_candidates, known_addresses, budget)
+    return _queue_new_candidates(
+        session,
+        fallback_candidates,
+        known_addresses,
+        budget,
+        stats=stats,
+        already_known_at_cycle_start=already_known_at_cycle_start,
+    )
 
 
 def _queue_new_candidates(
@@ -543,6 +669,9 @@ def _queue_new_candidates(
     candidates: list[DiscoveredCandidate],
     known_addresses: set[str],
     budget: int,
+    *,
+    stats: DiscoveryFunnelStats | None = None,
+    already_known_at_cycle_start: set[str] | None = None,
 ) -> tuple[int, int]:
     """Shared dedup/validation/insert logic for every sourcing stream — adds
     a WalletCandidate row (in-session, not yet committed) for each address
@@ -553,14 +682,34 @@ def _queue_new_candidates(
     validation), `queued` is how many actually became new rows; the gap
     between them is what the "Rejected: Duplicate" bucket in the discovery
     log reflects.
+
+    `stats`/`already_known_at_cycle_start` are optional (Helius 429-pressure
+    audit addition, see DiscoveryFunnelStats): when provided, every raw
+    candidate is tallied into the per-cycle discovery-funnel metrics (see
+    run_discovery_cycle's "DISCOVERY CYCLE COMPLETE" summary), distinguishing
+    an address that was ALREADY in the database before this cycle started
+    (`already_known`) from one that's a genuine duplicate seen more than
+    once within this cycle's own sourcing pass (`duplicates_removed`) —
+    both currently collapse into the same `known_addresses in` check, but
+    are surfaced separately for observability since they mean different
+    things operationally.
     """
     queued = 0
     for candidate in candidates:
+        if stats is not None:
+            stats.candidates_raw += 1
         if queued >= budget:
-            break
+            continue
         if candidate.address in known_addresses:
+            if stats is not None:
+                if already_known_at_cycle_start is not None and candidate.address in already_known_at_cycle_start:
+                    stats.already_known += 1
+                else:
+                    stats.duplicates_removed += 1
             continue
         if not is_valid_solana_address(candidate.address):
+            if stats is not None:
+                stats.invalid_address += 1
             continue
         known_addresses.add(candidate.address)
         session.add(
@@ -586,6 +735,8 @@ async def evaluate_candidates(
     connection: AsyncClient,
     env: Env,
     actor: Actor,
+    *,
+    history_stats: DiscoveryHistoryStats | None = None,
 ) -> dict[str, int]:
     """Fetches history + scores a batch of un-evaluated/stale candidates,
     promoting the ones that clear evaluate_promotion() into whale_wallets
@@ -603,6 +754,10 @@ async def evaluate_candidates(
 
     Tracks a per-source pass/reject breakdown and a rejection-reason tally
     for the structured discovery log (see run_discovery_cycle).
+
+    `history_stats` is optional (Helius 429-pressure audit addition, see
+    DiscoveryHistoryStats): when provided, every history fetch this batch
+    makes is tallied into it for run_discovery_cycle's per-cycle summary.
 
     RETRY QUEUE (production fix, see utils/http_retry.py): a candidate whose
     wallet-history fetch fails transiently (429/5xx/network — see
@@ -658,24 +813,38 @@ async def evaluate_candidates(
         return summary
 
     # History fetches are independent per-candidate I/O — run them
-    # concurrently (bounded by fetch_wallet_swap_history's own
-    # DISCOVERY_HISTORY_MAX_CONCURRENCY semaphore, so this never floods the
-    # provider regardless of batch size) rather than one-at-a-time, then do
-    # the scoring/promotion pass sequentially below since promotion needs a
-    # consistent view of current_approved_count.
-    history_results = await asyncio.gather(
-        *(
-            fetch_wallet_swap_history(
-                http_client, env, candidate.address, sol_price_usd=sol_price_usd, connection=connection
+    # concurrently in small chunks (DISCOVERY_HISTORY_FETCH_CHUNK_SIZE,
+    # Helius 429-pressure audit addition) rather than scheduling the whole
+    # batch (up to DISCOVERY_CANDIDATE_BATCH_SIZE candidates) at once every
+    # cycle. Real HTTP concurrency against Helius itself was already capped
+    # by fetch_wallet_swap_history's own DISCOVERY_HISTORY_MAX_CONCURRENCY
+    # semaphore regardless of how many tasks were scheduled at once, so this
+    # doesn't change how many requests can be in flight — it makes the
+    # *shape* of one cycle's Helius usage predictable/chunked rather than a
+    # single big burst of scheduled tasks, and keeps memory/scheduling
+    # overhead flat as DISCOVERY_CANDIDATE_BATCH_SIZE grows. Scoring/
+    # promotion below still runs sequentially over the whole batch since
+    # promotion needs a consistent view of current_approved_count.
+    history_results: list[WalletHistoryFetch] = []
+    chunk_size = max(1, env.DISCOVERY_HISTORY_FETCH_CHUNK_SIZE)
+    for i in range(0, len(batch), chunk_size):
+        chunk = batch[i : i + chunk_size]
+        chunk_results = await asyncio.gather(
+            *(
+                fetch_wallet_swap_history(
+                    http_client, env, candidate.address, sol_price_usd=sol_price_usd, connection=connection
+                )
+                for candidate in chunk
             )
-            for candidate in batch
         )
-    )
+        history_results.extend(chunk_results)
 
     for candidate, history in zip(batch, history_results, strict=True):
         history_cache_lookups += 1
         if history.cache_hit:
             history_cache_hits += 1
+        if history_stats is not None:
+            history_stats.record(history, helius_configured=bool(env.HELIUS_API_KEY))
 
         outcome = decide_history_fetch_outcome(
             swaps_available=history.swaps is not None,
@@ -820,6 +989,14 @@ async def evaluate_candidates(
     summary["history_cache_hit_ratio"] = (
         round(history_cache_hits / history_cache_lookups, 3) if history_cache_lookups else 0.0
     )
+    # Surfaced separately (Helius 429-pressure audit addition) so
+    # run_discovery_cycle's consolidated summary can report "accepted"
+    # (cleared every quality gate) distinctly from "rejected" (failed a
+    # quality gate) — AT_MAX_TRACKED_WALLETS candidates are counted in
+    # summary["rejected"] above for backward compatibility (unchanged
+    # behavior/semantics of that existing counter) but are NOT a quality
+    # rejection, they cleared every gate and were simply unlucky on timing.
+    summary["at_max_tracked_wallets"] = reason_summary.get("AT_MAX_TRACKED_WALLETS", 0)
     return summary
 
 
@@ -829,20 +1006,47 @@ async def rescore_tracked_wallets(
     connection: AsyncClient,
     env: Env,
     actor: Actor,
+    *,
+    history_stats: DiscoveryHistoryStats | None = None,
 ) -> dict[str, int]:
     """Periodically re-fetches history and re-scores already-APPROVED
     wallets (oldest-scored first), retiring ones that go dormant or stay
     unprofitable. See evaluate_retention() for the retirement rules.
+
+    `history_stats` is optional (Helius 429-pressure audit addition, see
+    DiscoveryHistoryStats): when provided, every history fetch this pass
+    makes is tallied into it for run_discovery_cycle's per-cycle summary.
+
+    MINIMUM RESCORE INTERVAL (Helius 429-pressure fix, production audit):
+    DISCOVERY_RESCORE_MIN_INTERVAL_MINUTES (default 60) filters the query
+    below to wallets that haven't been rescored within that window.
+    Without this floor, once the APPROVED population is >= 
+    DISCOVERY_RESCORE_BATCH_SIZE, EVERY approved wallet gets a fresh
+    Helius/RPC history fetch on EVERY discovery cycle
+    (DISCOVERY_INTERVAL_SECONDS, 15 min by default) regardless of whether
+    it actually traded again — this was the dominant, sustained source of
+    Helius request volume as the tracked population scaled toward the
+    500-1500 wallet target, and the direct root cause of the production
+    429s this fixes (see this module's and integrations/chain_scanner.py's
+    module docstrings, and the Phase-1-audit report). Set to 0 to restore
+    the old every-cycle-refetch-everything behavior.
     """
     config = DiscoveryConfig.from_env(env)
     summary = {"rescored": 0, "retired_inactive": 0, "retired_low_score": 0}
 
-    result = await session.execute(
+    now = datetime.now(UTC)
+    query = (
         select(WhaleWallet)
         .where(WhaleWallet.status == WalletStatus.APPROVED)
         .order_by(WhaleWallet.last_scored_at.asc().nulls_first())
         .limit(env.DISCOVERY_RESCORE_BATCH_SIZE)
     )
+    if env.DISCOVERY_RESCORE_MIN_INTERVAL_MINUTES > 0:
+        rescore_cutoff = now - timedelta(minutes=env.DISCOVERY_RESCORE_MIN_INTERVAL_MINUTES)
+        query = query.where(
+            (WhaleWallet.last_scored_at.is_(None)) | (WhaleWallet.last_scored_at < rescore_cutoff)
+        )
+    result = await session.execute(query)
     batch = list(result.scalars())
     if not batch:
         return summary
@@ -853,7 +1057,6 @@ async def rescore_tracked_wallets(
     sol_price_usd = await price_feed.get_sol_price_usd(http_client, env)
 
     admin_service = WhaleWalletAdminService(session)
-    now = datetime.now(UTC)
 
     for wallet in batch:
         fresh_score: float | None = None
@@ -864,6 +1067,8 @@ async def rescore_tracked_wallets(
             history = await fetch_wallet_swap_history(
                 http_client, env, wallet.address, sol_price_usd=sol_price_usd, connection=connection
             )
+            if history_stats is not None:
+                history_stats.record(history, helius_configured=bool(env.HELIUS_API_KEY))
             swaps = history.swaps
             if swaps is not None:
                 # wallet_age_days on the row is a point-in-time snapshot from
@@ -968,16 +1173,25 @@ async def run_discovery_cycle(
     http_client: httpx.AsyncClient,
     solana_connection: AsyncClient,
 ) -> None:
-    log.info("Discovery cycle started")
+    cycle_started_at = datetime.now(UTC)
+    log.info("Discovery cycle started", started_at=cycle_started_at.isoformat())
 
     async with session_factory() as session:
         actor = await _system_actor(session)
 
     summary: dict[str, object] = {}
+    # Helius 429-pressure audit addition: accumulated across every phase
+    # below (discover_candidates / evaluate_candidates / rescore_tracked_wallets)
+    # into ONE consolidated "DISCOVERY CYCLE COMPLETE" summary log at the
+    # end of this function — see DiscoveryFunnelStats/DiscoveryHistoryStats.
+    funnel_stats = DiscoveryFunnelStats()
+    history_stats = DiscoveryHistoryStats()
 
     try:
         async with session_factory() as session:
-            by_source_queued = await discover_candidates(session, http_client, solana_connection, env)
+            by_source_queued = await discover_candidates(
+                session, http_client, solana_connection, env, funnel_stats=funnel_stats
+            )
             summary["candidates_queued"] = sum(by_source_queued.values())
             summary["candidates_by_source"] = by_source_queued
     except Exception as err:  # noqa: BLE001 — one phase failing shouldn't block the others
@@ -985,14 +1199,18 @@ async def run_discovery_cycle(
 
     try:
         async with session_factory() as session:
-            eval_summary = await evaluate_candidates(session, http_client, solana_connection, env, actor)
+            eval_summary = await evaluate_candidates(
+                session, http_client, solana_connection, env, actor, history_stats=history_stats
+            )
             summary.update(eval_summary)
     except Exception as err:  # noqa: BLE001
         log.error("Discovery: candidate evaluation failed", err=str(err))
 
     try:
         async with session_factory() as session:
-            rescore_summary = await rescore_tracked_wallets(session, http_client, solana_connection, env, actor)
+            rescore_summary = await rescore_tracked_wallets(
+                session, http_client, solana_connection, env, actor, history_stats=history_stats
+            )
             summary.update(rescore_summary)
     except Exception as err:  # noqa: BLE001
         log.error("Discovery: re-scoring pass failed", err=str(err))
@@ -1009,7 +1227,7 @@ async def run_discovery_cycle(
                     session, http_client, solana_connection, env, known_addresses
                 )
                 _, graph_queued = _queue_new_candidates(
-                    session, graph_candidates, known_addresses, budget=len(graph_candidates)
+                    session, graph_candidates, known_addresses, budget=len(graph_candidates), stats=funnel_stats
                 )
                 if graph_queued:
                     await session.commit()
@@ -1050,7 +1268,54 @@ async def run_discovery_cycle(
     if provider_metrics:
         log.info("Discovery provider metrics", providers=provider_metrics)
 
-    log.info("Discovery cycle completed", **summary)
+    cycle_completed_at = datetime.now(UTC)
+    duration_seconds = round((cycle_completed_at - cycle_started_at).total_seconds(), 2)
+
+    # --- ONE consolidated per-cycle summary (production observability fix) ---
+    # evaluated/promoted/rejected/at_max_tracked_wallets default to 0 (via
+    # .get) since evaluate_candidates returns early with only the base
+    # summary dict when there's nothing to evaluate, and the whole phase is
+    # skipped entirely (never merged into `summary`) if it raised.
+    evaluated = int(summary.get("evaluated", 0) or 0)
+    promoted = int(summary.get("promoted", 0) or 0)  # == "inserted": every promotion creates one new WhaleWallet row
+    quality_rejected = int(summary.get("rejected", 0) or 0)
+    at_max_tracked = int(summary.get("at_max_tracked_wallets", 0) or 0)
+    # "accepted" = cleared every Phase-1 quality gate in evaluate_promotion
+    # (engines/scoring.py), whether or not there was tracked-wallet capacity
+    # to actually insert it this cycle; "rejected" below is quality-gate
+    # rejections only, with the capacity-only bucket subtracted back out —
+    # see evaluate_candidates' AT_MAX_TRACKED_WALLETS branch and summary
+    # field. Both are derived, not new independent counters, so they can
+    # never disagree with the (unchanged) evaluated/promoted/rejected
+    # counters logged in "Discovery evaluation breakdown" above.
+    accepted = promoted + at_max_tracked
+    rejected = max(0, quality_rejected - at_max_tracked)
+    updated = int(summary.get("rescored", 0) or 0)
+
+    log.info(
+        "DISCOVERY CYCLE COMPLETE",
+        cycle_started_at=cycle_started_at.isoformat(),
+        cycle_completed_at=cycle_completed_at.isoformat(),
+        duration_seconds=duration_seconds,
+        candidates_by_source=summary.get("candidates_by_source", {}),
+        candidates_raw=funnel_stats.candidates_raw,
+        duplicates_removed=funnel_stats.duplicates_removed,
+        already_known=funnel_stats.already_known,
+        invalid_address=funnel_stats.invalid_address,
+        candidates_queued=summary.get("candidates_queued", 0),
+        evaluated=evaluated,
+        **history_stats.as_dict(),
+        rejected=rejected,
+        accepted=accepted,
+        inserted=promoted,
+        updated=updated,
+        tracked_total=summary.get("tracked_wallets", 0),
+        retired_inactive=summary.get("retired_inactive", 0),
+        retired_low_score=summary.get("retired_low_score", 0),
+        retired_ceiling=summary.get("retired_ceiling", 0),
+        retry_queue_size=summary.get("retry_queue_size", 0),
+        graph_candidates_queued=summary.get("graph_candidates_queued", 0),
+    )
 
 
 def start_discovery_loop(
