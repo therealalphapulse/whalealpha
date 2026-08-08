@@ -122,6 +122,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from whale_alpha.integrations import wallet_discovery_source as wds
+from whale_alpha.utils import http_retry
 
 
 class _FallbackTestEnv:
@@ -138,6 +139,12 @@ class _FallbackTestEnv:
     DISCOVERY_HISTORY_RPC_FALLBACK_MAX_SIGNATURES = 10
     DISCOVERY_RPC_MIN_INTERVAL_SECONDS = 0.0
     DISCOVERY_RPC_MAX_RETRIES = 0
+    # High threshold/short cooldown so these tests' repeated 429s never trip
+    # the Helius circuit breaker mid-test and change which code path (real
+    # HTTP call vs. circuit-open skip) produces the (identical, either way)
+    # transient=True outcome the assertions below check for.
+    DISCOVERY_HISTORY_CIRCUIT_FAILURE_THRESHOLD = 1000
+    DISCOVERY_HISTORY_CIRCUIT_COOLDOWN_SECONDS = 0.01
 
 
 class _Always429:
@@ -152,14 +159,20 @@ class _Always429:
 def _reset_module_caches():
     """These caches are process-global module state (see http_retry.TTLCache
     usage in wallet_discovery_source.py) — reset between tests so one test's
-    cached/negative-cached address doesn't leak into the next."""
+    cached/negative-cached address doesn't leak into the next. Also resets
+    the shared "helius_history" ProviderClient (utils/http_retry.py) so one
+    test's simulated 429s never leave the circuit breaker open/tripped for
+    the next test.
+    """
     wds._history_cache = None
     wds._history_negative_cache = None
     wds._history_stale_cache = None
+    http_retry._provider_clients.pop("helius_history", None)
     yield
     wds._history_cache = None
     wds._history_negative_cache = None
     wds._history_stale_cache = None
+    http_retry._provider_clients.pop("helius_history", None)
 
 
 @pytest.mark.asyncio
@@ -205,8 +218,157 @@ async def test_rpc_fallback_used_when_helius_unavailable():
     assert result.transient is False  # a usable (if partial) result — not queued for retry
 
 
+class _CountingAlways429:
+    """Same as _Always429 but counts real HTTP calls made — used to prove
+    the Helius circuit breaker actually stops calling out once open, rather
+    than just returning the same transient=True outcome for a different
+    reason (production audit: Helius 429-pressure fix).
+    """
+
+    def __init__(self):
+        self.call_count = 0
+
+    async def request(self, method, url, timeout=None, **kwargs):
+        self.call_count += 1
+
+        class _R:
+            status_code = 429
+            headers = {}
+
+        return _R()
+
+
 @pytest.mark.asyncio
-async def test_stale_cache_is_checked_before_rpc_fallback_is_invoked_again():
+async def test_helius_circuit_breaker_opens_after_consecutive_failures_and_stops_calling_out():
+    env = _FallbackTestEnv()
+    env.DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED = False
+    env.DISCOVERY_HISTORY_CIRCUIT_FAILURE_THRESHOLD = 3
+    env.DISCOVERY_HISTORY_CIRCUIT_COOLDOWN_SECONDS = 60.0  # long enough not to reset mid-test
+    client = _CountingAlways429()
+
+    for _ in range(3):
+        result = await wds.fetch_wallet_swap_history(
+            client, env, "WALLET_CIRCUIT_BREAKER", sol_price_usd=150.0, connection=None
+        )
+        assert result.transient is True
+
+    calls_before_open = client.call_count
+    assert calls_before_open == 3  # one real HTTP attempt per failure up to the threshold
+
+    # One more call, past the threshold — the breaker should now be open,
+    # so this must NOT make a real HTTP request, but the caller-visible
+    # outcome (transient=True, eligible for the retry queue) is identical.
+    result = await wds.fetch_wallet_swap_history(
+        client, env, "WALLET_CIRCUIT_BREAKER", sol_price_usd=150.0, connection=None
+    )
+    assert result.transient is True
+    assert result.helius_rate_limited is True
+    assert client.call_count == calls_before_open  # no new HTTP call made — this is the actual fix
+
+
+@pytest.mark.asyncio
+async def test_helius_429_sets_the_rate_limited_flag_used_for_discovery_metrics():
+    env = _FallbackTestEnv()
+    env.DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED = False
+    result = await wds.fetch_wallet_swap_history(
+        _Always429(), env, "WALLET_429_FLAG", sol_price_usd=150.0, connection=None
+    )
+    assert result.helius_rate_limited is True
+
+
+@pytest.mark.asyncio
+async def test_rpc_fallback_still_works_after_the_helius_circuit_breaker_opens():
+    """Proves the circuit breaker only short-circuits the Helius HTTP call
+    itself — FALLBACK 2 (RPC reconstruction) must keep working exactly as
+    before, satisfying the "keep RPC fallback intact" requirement.
+    """
+    env = _FallbackTestEnv()
+    env.DISCOVERY_HISTORY_CIRCUIT_FAILURE_THRESHOLD = 2
+    env.DISCOVERY_HISTORY_CIRCUIT_COOLDOWN_SECONDS = 60.0
+    client = _CountingAlways429()
+
+    async def fake_rpc_transactions(connection, address, **kwargs):
+        return [
+            {
+                "blockTime": 1_725_000_000,
+                "transaction": {"message": {"accountKeys": [{"pubkey": address}]}},
+                "meta": {
+                    "err": None,
+                    "preBalances": [5_000_000_000],
+                    "postBalances": [3_000_000_000],
+                    "preTokenBalances": [],
+                    "postTokenBalances": [
+                        {"accountIndex": 0, "owner": address, "mint": "TOKEN_MINT", "uiTokenAmount": {"uiAmount": 400.0}}
+                    ],
+                },
+            }
+        ]
+
+    with patch.object(wds, "get_wallet_recent_transactions", AsyncMock(side_effect=fake_rpc_transactions)):
+        # Trip the breaker first.
+        for _ in range(2):
+            await wds.fetch_wallet_swap_history(
+                client, env, "WALLET_BREAKER_THEN_FALLBACK", sol_price_usd=150.0, connection=object()
+            )
+        assert client.call_count == 2
+
+        # Now the breaker is open — RPC fallback must still produce a
+        # usable result, exactly like a live 429 would.
+        result = await wds.fetch_wallet_swap_history(
+            client, env, "WALLET_BREAKER_THEN_FALLBACK", sol_price_usd=150.0, connection=object()
+        )
+
+    assert client.call_count == 2  # confirms the breaker really was open (no 3rd HTTP attempt)
+    # First call already reconstructed history via RPC and stashed it in the
+    # stale-result cache (see test_stale_cache_is_checked_before_rpc_fallback_is_invoked_again),
+    # so this 3rd call is served from there rather than invoking RPC again —
+    # either way, a usable (non-empty, non-transient) result reached the
+    # caller despite the Helius circuit breaker being open, which is the
+    # property this test exists to prove.
+    assert result.source in ("RPC_FALLBACK", "CACHE_STALE")
+    assert result.swaps is not None and len(result.swaps) == 1
+    assert result.transient is False
+
+
+@pytest.mark.asyncio
+async def test_rpc_fallback_attempted_flag_reflects_an_attempt_even_when_it_yields_nothing():
+    env = _FallbackTestEnv()
+
+    async def fake_rpc_transactions_no_swaps(connection, address, **kwargs):
+        return []  # RPC fallback attempted, but nothing classifiable as a swap
+
+    with patch.object(wds, "get_wallet_recent_transactions", AsyncMock(side_effect=fake_rpc_transactions_no_swaps)):
+        result = await wds.fetch_wallet_swap_history(
+            _Always429(), env, "WALLET_FALLBACK_EMPTY", sol_price_usd=150.0, connection=object()
+        )
+
+    assert result.rpc_fallback_attempted is True
+    assert result.source == "HELIUS"  # fell through to the retry-queue classification, not a "success" source
+    assert result.transient is True
+
+
+@pytest.mark.asyncio
+async def test_successful_helius_fetch_does_not_set_rate_limited_or_fallback_flags():
+    env = _FallbackTestEnv()
+
+    class _Always200:
+        async def request(self, method, url, timeout=None, **kwargs):
+            class _R:
+                status_code = 200
+                headers = {}
+
+                def json(self):
+                    return []
+
+            return _R()
+
+    result = await wds.fetch_wallet_swap_history(
+        _Always200(), env, "WALLET_HAPPY_PATH", sol_price_usd=150.0, connection=None
+    )
+    assert result.source == "HELIUS"
+    assert result.swaps == []
+    assert result.helius_rate_limited is False
+    assert result.rpc_fallback_attempted is False
     env = _FallbackTestEnv()
 
     call_count = {"n": 0}
