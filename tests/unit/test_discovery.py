@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 from whale_alpha.engines.discovery import (
     DiscoveryConfig,
+    DiscoveryFunnelStats,
+    DiscoveryHistoryStats,
     _queue_new_candidates,
     decide_history_fetch_outcome,
     evaluate_promotion,
@@ -19,7 +21,7 @@ from whale_alpha.engines.discovery import (
     start_discovery_loop,
 )
 from whale_alpha.engines.scoring import MIN_APPROVED_SCORE, WalletMetrics
-from whale_alpha.integrations.wallet_discovery_source import DiscoveredCandidate
+from whale_alpha.integrations.wallet_discovery_source import DiscoveredCandidate, WalletHistoryFetch
 
 NOW = datetime(2026, 8, 1, tzinfo=UTC)
 
@@ -345,6 +347,148 @@ def test_mutates_known_addresses_so_a_second_stream_cannot_double_queue():
     _, queued = _queue_new_candidates(session, second_stream, known_addresses=known, budget=10)
     assert queued == 0
     assert len(session.added) == 1  # only the first stream's copy was queued
+
+
+# --------------------------------------------------------------------------
+# DiscoveryFunnelStats / DiscoveryHistoryStats — per-cycle observability
+# metrics (Helius 429-pressure production audit). No DB/network: pure
+# dataclass + _queue_new_candidates logic only.
+# --------------------------------------------------------------------------
+
+
+def test_funnel_stats_distinguishes_already_known_from_duplicates_within_one_cycle():
+    """already_known = existed in the DB before this cycle started;
+    duplicates_removed = the SAME address returned by more than one source
+    within this cycle. These must not be conflated — they mean different
+    things operationally (see DiscoveryFunnelStats' docstring)."""
+    session = _FakeSession()
+    addrs = _addrs(3)
+    pre_existing_wallet, new_addr, seen_twice = addrs
+    known_addresses = {pre_existing_wallet}  # simulates a wallet already tracked before this cycle
+    already_known_at_cycle_start = set(known_addresses)
+    stats = DiscoveryFunnelStats()
+
+    # Source 1: one already-known wallet resurfaces, one genuinely new one.
+    source_one = [
+        DiscoveredCandidate(address=pre_existing_wallet, source="blockchain_scan"),
+        DiscoveredCandidate(address=new_addr, source="blockchain_scan"),
+        DiscoveredCandidate(address=seen_twice, source="blockchain_scan"),
+    ]
+    _queue_new_candidates(
+        session,
+        source_one,
+        known_addresses,
+        budget=10,
+        stats=stats,
+        already_known_at_cycle_start=already_known_at_cycle_start,
+    )
+
+    # Source 2 (later in the same cycle): re-reports the same brand-new
+    # wallet source 1 already queued this cycle — a genuine in-cycle dup,
+    # not an "already known from the DB" case.
+    source_two = [DiscoveredCandidate(address=seen_twice, source="trending_token_holder")]
+    _queue_new_candidates(
+        session,
+        source_two,
+        known_addresses,
+        budget=10,
+        stats=stats,
+        already_known_at_cycle_start=already_known_at_cycle_start,
+    )
+
+    assert stats.candidates_raw == 4
+    assert stats.already_known == 1  # pre_existing_wallet
+    assert stats.duplicates_removed == 1  # seen_twice, on its second appearance
+    assert stats.invalid_address == 0
+    assert {c.address for c in session.added} == {new_addr, seen_twice}
+
+
+def test_funnel_stats_counts_invalid_addresses_separately():
+    session = _FakeSession()
+    stats = DiscoveryFunnelStats()
+    candidates = [DiscoveredCandidate(address="not-a-real-solana-address", source="blockchain_scan")]
+    _queue_new_candidates(session, candidates, known_addresses=set(), budget=10, stats=stats)
+    assert stats.candidates_raw == 1
+    assert stats.invalid_address == 1
+    assert stats.already_known == 0
+    assert stats.duplicates_removed == 0
+
+
+def test_history_stats_records_a_fresh_successful_helius_fetch():
+    stats = DiscoveryHistoryStats()
+    history = WalletHistoryFetch(swaps=[], transient=False, source="HELIUS", cache_hit=False)
+    stats.record(history, helius_configured=True)
+    assert stats.as_dict() == {
+        "helius_requests": 1,
+        "helius_429": 0,
+        "helius_success": 1,
+        "rpc_fallback": 0,
+        "rpc_fallback_success": 0,
+    }
+
+
+def test_history_stats_records_a_429_and_subsequent_successful_rpc_fallback():
+    stats = DiscoveryHistoryStats()
+    history = WalletHistoryFetch(
+        swaps=[object()],
+        transient=False,
+        source="RPC_FALLBACK",
+        partial=True,
+        cache_hit=False,
+        helius_rate_limited=True,
+        rpc_fallback_attempted=True,
+    )
+    stats.record(history, helius_configured=True)
+    assert stats.as_dict() == {
+        "helius_requests": 1,
+        "helius_429": 1,
+        "helius_success": 0,  # source is RPC_FALLBACK, not a Helius success
+        "rpc_fallback": 1,
+        "rpc_fallback_success": 1,
+    }
+
+
+def test_history_stats_a_cache_hit_does_not_count_as_a_fresh_helius_request():
+    stats = DiscoveryHistoryStats()
+    history = WalletHistoryFetch(swaps=[], transient=False, source="HELIUS", cache_hit=True)
+    stats.record(history, helius_configured=True)
+    assert stats.helius_requests == 0
+    assert stats.helius_success == 0
+
+
+def test_history_stats_without_helius_configured_never_counts_requests():
+    stats = DiscoveryHistoryStats()
+    history = WalletHistoryFetch(swaps=None, transient=False, source="HELIUS", cache_hit=False)
+    stats.record(history, helius_configured=False)
+    assert stats.helius_requests == 0
+
+
+def test_history_stats_accumulate_across_multiple_record_calls():
+    stats = DiscoveryHistoryStats()
+    stats.record(
+        WalletHistoryFetch(swaps=[], transient=False, source="HELIUS", cache_hit=False), helius_configured=True
+    )
+    stats.record(
+        WalletHistoryFetch(swaps=None, transient=True, source="HELIUS", cache_hit=False, helius_rate_limited=True),
+        helius_configured=True,
+    )
+    stats.record(
+        WalletHistoryFetch(
+            swaps=[object()],
+            transient=False,
+            source="RPC_FALLBACK",
+            cache_hit=False,
+            rpc_fallback_attempted=True,
+        ),
+        helius_configured=True,
+    )
+    assert stats.as_dict() == {
+        "helius_requests": 3,
+        "helius_429": 1,
+        "helius_success": 1,
+        "rpc_fallback": 1,
+        "rpc_fallback_success": 1,
+    }
 
 
 # --------------------------------------------------------------------------
