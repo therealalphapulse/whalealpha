@@ -51,7 +51,6 @@ are both provider-agnostic.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -66,27 +65,20 @@ from whale_alpha.integrations.solana_connection import (
     get_wallet_first_activity_slot,
     get_wallet_recent_transactions,
 )
-from whale_alpha.utils.http_retry import TTLCache, fetch_with_retry, get_provider_client
+from whale_alpha.utils.http_retry import TTLCache, get_provider_client
 from whale_alpha.utils.logger import child_logger
 
 log = child_logger("walletDiscoverySource")
 
-# Process-wide concurrency cap + result cache for Helius wallet-history
-# lookups — see fetch_wallet_swap_history. Module-level (not per-call) so
-# every candidate in a batch shares the same budget/cache regardless of how
-# many concurrent tasks are fetching history at once.
-_helius_semaphore: asyncio.Semaphore | None = None
-_helius_semaphore_size: int | None = None
+# Process-wide result cache for Helius wallet-history lookups — see
+# fetch_wallet_swap_history. Module-level (not per-call) so every candidate
+# in a batch shares the same cache regardless of how many concurrent tasks
+# are fetching history at once. Concurrency bounding + circuit breaking for
+# the underlying Helius HTTP calls themselves now lives in
+# utils/http_retry.get_provider_client("helius_history", ...) — see
+# _fetch_from_helius — rather than a hand-rolled semaphore here.
 _history_cache: TTLCache[list["WalletSwap"]] | None = None
 _history_negative_cache: TTLCache[bool] | None = None
-
-
-def _get_helius_semaphore(max_concurrency: int) -> asyncio.Semaphore:
-    global _helius_semaphore, _helius_semaphore_size
-    if _helius_semaphore is None or _helius_semaphore_size != max_concurrency:
-        _helius_semaphore = asyncio.Semaphore(max_concurrency)
-        _helius_semaphore_size = max_concurrency
-    return _helius_semaphore
 
 
 def _get_history_cache(ttl_seconds: float) -> TTLCache[list["WalletSwap"]]:
@@ -145,6 +137,15 @@ class WalletHistoryFetch:
     cache_hit: bool = False
     source: str = "HELIUS"
     partial: bool = False
+    # --- NEW (Helius 429-pressure audit/fix) ---
+    # Per-call observability flags consumed by engines/discovery.py to build
+    # the per-cycle Helius/RPC-fallback metrics (helius_requests/helius_429/
+    # helius_success/rpc_fallback/rpc_fallback_success — see
+    # run_discovery_cycle's structured "DISCOVERY CYCLE COMPLETE" summary).
+    # Both default False so every existing call site constructing this
+    # dataclass (all keyword-only) is unaffected.
+    helius_rate_limited: bool = False  # a 429 was observed on THIS call, whatever the eventual outcome
+    rpc_fallback_attempted: bool = False  # FALLBACK 2 was invoked this call, whatever the outcome
 
 
 @dataclass(frozen=True)
@@ -375,14 +376,42 @@ async def fetch_wallet_swap_history(
     stale = _get_history_stale_cache(env.DISCOVERY_HISTORY_STALE_CACHE_TTL_SECONDS).get(address)
     if stale is not None:
         log.debug("Wallet history fallback: served from stale cache", address=address)
-        return WalletHistoryFetch(swaps=stale, transient=False, source="CACHE_STALE", partial=True)
+        return WalletHistoryFetch(
+            swaps=stale,
+            transient=False,
+            source="CACHE_STALE",
+            partial=True,
+            helius_rate_limited=primary.helius_rate_limited,
+        )
 
     if env.DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED and connection is not None:
         rpc_swaps = await _fetch_via_rpc_fallback(connection, env, address, sol_price_usd=sol_price_usd)
         if rpc_swaps:
             _get_history_stale_cache(env.DISCOVERY_HISTORY_STALE_CACHE_TTL_SECONDS).set(address, rpc_swaps)
             log.debug("Wallet history fallback: reconstructed via RPC", address=address, swap_count=len(rpc_swaps))
-            return WalletHistoryFetch(swaps=rpc_swaps, transient=False, source="RPC_FALLBACK", partial=True)
+            return WalletHistoryFetch(
+                swaps=rpc_swaps,
+                transient=False,
+                source="RPC_FALLBACK",
+                partial=True,
+                helius_rate_limited=primary.helius_rate_limited,
+                rpc_fallback_attempted=True,
+            )
+        # RPC fallback was attempted but reconstructed nothing usable
+        # (no signatures, nothing classifiable as a swap, or the RPC calls
+        # themselves failed) — still worth recording as an attempt for the
+        # per-cycle rpc_fallback/rpc_fallback_success metrics, even though
+        # the caller falls through to the retry queue below exactly as
+        # before this fix.
+        primary = WalletHistoryFetch(
+            swaps=primary.swaps,
+            transient=primary.transient,
+            cache_hit=primary.cache_hit,
+            source=primary.source,
+            partial=primary.partial,
+            helius_rate_limited=primary.helius_rate_limited,
+            rpc_fallback_attempted=True,
+        )
 
     # Fallback 3 (retry queue) is the caller's responsibility — return the
     # primary result's own transient/permanent classification unchanged.
@@ -417,36 +446,67 @@ async def _fetch_from_helius(
     url = f"{env.HELIUS_API_BASE}/v0/addresses/{address}/transactions"
     params = {"api-key": env.HELIUS_API_KEY, "type": "SWAP", "limit": str(min(max_transactions, 100))}
 
-    result = await fetch_with_retry(
+    # --- Helius 429-pressure fix (production audit) ---
+    # Previously this went through a hand-rolled module-level semaphore
+    # (_get_helius_semaphore) with retry/backoff only — no circuit breaker,
+    # unlike every OTHER discovery-source provider (Jupiter, Birdeye,
+    # DexScreener, pump.fun, LaunchLab, Raydium, Meteora — all already route
+    # through get_provider_client). Routing Helius through the same
+    # ProviderClient closes that gap using EXISTING infrastructure rather
+    # than inventing a new one: same semaphore-bounded concurrency as
+    # before (still governed by DISCOVERY_HISTORY_MAX_CONCURRENCY), PLUS a
+    # circuit breaker that opens after DISCOVERY_HISTORY_CIRCUIT_FAILURE_THRESHOLD
+    # consecutive transient failures and fails fast (no network call at all)
+    # for DISCOVERY_HISTORY_CIRCUIT_COOLDOWN_SECONDS. During a sustained 429
+    # burst this is what actually stops hammering Helius — every candidate
+    # after the threshold gets an immediate transient=True (routed to the
+    # RETRY QUEUE exactly like a real 429 would be, see
+    # engines/discovery.evaluate_candidates) instead of each one separately
+    # burning through its own retry budget against a provider that's
+    # already known to be rate-limiting. PLUS free per-provider metrics
+    # (requests/successes/failures/rate_limited/retries/circuit_open) via
+    # utils.http_retry.get_all_provider_metrics(), which feeds the new
+    # per-cycle Helius metrics in the discovery summary log.
+    provider = get_provider_client(
+        "helius_history",
+        max_concurrency=env.DISCOVERY_HISTORY_MAX_CONCURRENCY,
+        failure_threshold=env.DISCOVERY_HISTORY_CIRCUIT_FAILURE_THRESHOLD,
+        cooldown_seconds=env.DISCOVERY_HISTORY_CIRCUIT_COOLDOWN_SECONDS,
+    )
+    result = await provider.get(
         client,
-        "GET",
         url,
         params=params,
-        semaphore=_get_helius_semaphore(env.DISCOVERY_HISTORY_MAX_CONCURRENCY),
         max_retries=env.DISCOVERY_HISTORY_MAX_RETRIES,
         base_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_BASE_SECONDS,
         max_backoff_seconds=env.DISCOVERY_HISTORY_RETRY_MAX_SECONDS,
     )
+
+    if result.circuit_open:
+        log.debug("Helius circuit open, skipping request this call", address=address)
+        return WalletHistoryFetch(swaps=None, transient=True, source="HELIUS", helius_rate_limited=True)
 
     if result.response is None:
         # Retries exhausted on a transient error (429/5xx/network) — do NOT
         # negative-cache; the whole point is this address is worth trying
         # again later (see the retry-queue handling in evaluate_candidates).
         log.debug("Helius wallet history unavailable after retries", address=address, transient=result.transient)
-        return WalletHistoryFetch(swaps=None, transient=result.transient, source="HELIUS")
+        return WalletHistoryFetch(
+            swaps=None, transient=result.transient, source="HELIUS", helius_rate_limited=result.rate_limited
+        )
 
     if result.response.status_code >= 400:
         log.debug("Helius wallet history request failed", address=address, status=result.response.status_code)
-        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS")
+        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS", helius_rate_limited=result.rate_limited)
 
     try:
         transactions = result.response.json()
     except Exception as err:  # noqa: BLE001 — a malformed payload shouldn't stop the batch
         log.debug("Helius wallet history response unparseable", address=address, err=str(err))
-        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS")
+        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS", helius_rate_limited=result.rate_limited)
 
     if not isinstance(transactions, list):
-        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS")
+        return WalletHistoryFetch(swaps=None, transient=False, source="HELIUS", helius_rate_limited=result.rate_limited)
 
     swaps: list[WalletSwap] = []
     for tx in transactions:
@@ -456,7 +516,7 @@ async def _fetch_from_helius(
         if swap is not None:
             swaps.append(swap)
 
-    return WalletHistoryFetch(swaps=swaps, transient=False, source="HELIUS")
+    return WalletHistoryFetch(swaps=swaps, transient=False, source="HELIUS", helius_rate_limited=result.rate_limited)
 
 
 async def _fetch_via_rpc_fallback(
