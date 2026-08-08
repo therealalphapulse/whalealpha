@@ -200,6 +200,35 @@ class Env(BaseSettings):
     # forever. See WalletCandidate.history_retry_count.
     DISCOVERY_HISTORY_MAX_RETRIES_BEFORE_REJECT: int = Field(5, ge=0)
 
+    # --- Helius 429-pressure fix (production audit) ---
+    # Circuit breaker for the Helius Enhanced Transactions provider (see
+    # integrations.wallet_discovery_source._fetch_from_helius), same shape
+    # as DISCOVERY_PROVIDER_CIRCUIT_* below but scoped to Helius alone so it
+    # can be tuned independently of the other market-data providers. Opens
+    # after this many *consecutive* transient (429/5xx/network) failures and
+    # fails fast (no HTTP call at all) for the cooldown window — this is
+    # what actually stops repeatedly hammering Helius during a sustained 429
+    # burst, on top of (not instead of) the existing per-call retry/backoff.
+    DISCOVERY_HISTORY_CIRCUIT_FAILURE_THRESHOLD: int = Field(5, ge=1)
+    DISCOVERY_HISTORY_CIRCUIT_COOLDOWN_SECONDS: float = Field(45.0, ge=0)
+    # Minimum time an already-APPROVED wallet must wait between two
+    # Helius/RPC history re-fetches in engines.discovery.rescore_tracked_wallets.
+    # Without this floor, every approved wallet in the rescore batch gets a
+    # fresh history fetch EVERY discovery cycle (DISCOVERY_INTERVAL_SECONDS,
+    # 15 min by default) regardless of whether it actually traded again —
+    # this is the dominant source of sustained Helius request volume once
+    # the tracked population approaches DISCOVERY_RESCORE_BATCH_SIZE (100
+    # wallets/cycle by default), and the direct root cause of the repeated
+    # 429s this fixes. 0 disables the floor (restores the old
+    # every-cycle-refetch behavior for ops who explicitly want that).
+    DISCOVERY_RESCORE_MIN_INTERVAL_MINUTES: float = Field(60, ge=0)
+    # Caps how many wallet-history fetches evaluate_candidates fires
+    # concurrently at once within a batch (in addition to, not instead of,
+    # DISCOVERY_HISTORY_MAX_CONCURRENCY's HTTP-level cap on Helius itself) —
+    # keeps API usage predictable/chunked rather than scheduling the whole
+    # DISCOVERY_CANDIDATE_BATCH_SIZE at once every cycle.
+    DISCOVERY_HISTORY_FETCH_CHUNK_SIZE: int = Field(10, ge=1)
+
     # Wallet-history fallback chain (Helius unreachable/rate-limited):
     # Primary (Helius) -> stale cache -> RPC-reconstructed history -> retry
     # queue. See integrations/wallet_discovery_source.fetch_wallet_swap_history.
