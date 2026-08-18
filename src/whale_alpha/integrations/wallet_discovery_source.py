@@ -77,11 +77,11 @@ log = child_logger("walletDiscoverySource")
 # the underlying Helius HTTP calls themselves now lives in
 # utils/http_retry.get_provider_client("helius_history", ...) — see
 # _fetch_from_helius — rather than a hand-rolled semaphore here.
-_history_cache: TTLCache[list["WalletSwap"]] | None = None
+_history_cache: TTLCache[list[WalletSwap]] | None = None
 _history_negative_cache: TTLCache[bool] | None = None
 
 
-def _get_history_cache(ttl_seconds: float) -> TTLCache[list["WalletSwap"]]:
+def _get_history_cache(ttl_seconds: float) -> TTLCache[list[WalletSwap]]:
     global _history_cache
     if _history_cache is None:
         _history_cache = TTLCache(ttl_seconds=ttl_seconds)
@@ -95,10 +95,10 @@ def _get_history_negative_cache(ttl_seconds: float) -> TTLCache[bool]:
     return _history_negative_cache
 
 
-_history_stale_cache: TTLCache[list["WalletSwap"]] | None = None
+_history_stale_cache: TTLCache[list[WalletSwap]] | None = None
 
 
-def _get_history_stale_cache(ttl_seconds: float) -> TTLCache[list["WalletSwap"]]:
+def _get_history_stale_cache(ttl_seconds: float) -> TTLCache[list[WalletSwap]]:
     """Long-TTL cache written on every successful fetch (from any source —
     primary or a fallback) and read only as Fallback 1 when the primary is
     unavailable — see fetch_wallet_swap_history's fallback chain. Separate
