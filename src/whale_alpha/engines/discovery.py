@@ -68,8 +68,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 from solana.rpc.async_api import AsyncClient
@@ -737,7 +739,7 @@ async def evaluate_candidates(
     actor: Actor,
     *,
     history_stats: DiscoveryHistoryStats | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | float]:
     """Fetches history + scores a batch of un-evaluated/stale candidates,
     promoting the ones that clear evaluate_promotion() into whale_wallets
     (capacity permitting) and marking the rest EVALUATED/REJECTED so they
@@ -772,20 +774,20 @@ async def evaluate_candidates(
     straight to EVALUATED/NO_HISTORY — retrying those can never succeed.
     """
     config = DiscoveryConfig.from_env(env)
-    summary = {
+    summary: dict[str, int | float] = {
         "evaluated": 0,
         "promoted": 0,
         "rejected": 0,
         "insufficient_data": 0,
         "queued_for_retry": 0,
     }
-    by_source: dict[str, Counter] = {}
-    reason_summary: Counter = Counter()
+    by_source: dict[str, Counter[str]] = {}
+    reason_summary: Counter[str] = Counter()
     rate_limit_hits = 0
     history_cache_hits = 0
     history_cache_lookups = 0
 
-    def _source_counter(source: str) -> Counter:
+    def _source_counter(source: str) -> Counter[str]:
         return by_source.setdefault(source, Counter())
 
     now = datetime.now(UTC)
@@ -884,6 +886,7 @@ async def evaluate_candidates(
             continue
 
         swaps = history.swaps
+        assert swaps is not None, "outcome == CONTINUE implies swaps_available was True"
         summary["evaluated"] += 1
         _source_counter(candidate.source)["evaluated"] += 1
         candidate.evaluation_count += 1
@@ -1169,7 +1172,7 @@ def _metrics_to_json(computed: ComputedMetrics) -> dict[str, float | int]:
 
 async def run_discovery_cycle(
     env: Env,
-    session_factory: async_sessionmaker,
+    session_factory: async_sessionmaker[AsyncSession],
     http_client: httpx.AsyncClient,
     solana_connection: AsyncClient,
 ) -> None:
@@ -1179,7 +1182,7 @@ async def run_discovery_cycle(
     async with session_factory() as session:
         actor = await _system_actor(session)
 
-    summary: dict[str, object] = {}
+    summary: dict[str, Any] = {}
     # Helius 429-pressure audit addition: accumulated across every phase
     # below (discover_candidates / evaluate_candidates / rescore_tracked_wallets)
     # into ONE consolidated "DISCOVERY CYCLE COMPLETE" summary log at the
@@ -1320,10 +1323,10 @@ async def run_discovery_cycle(
 
 def start_discovery_loop(
     env: Env,
-    session_factory: async_sessionmaker,
+    session_factory: async_sessionmaker[AsyncSession],
     http_client: httpx.AsyncClient,
     solana_connection: AsyncClient,
-):
+) -> Callable[[], Awaitable[None]]:
     """Same asyncio-task-and-sleep-loop shape as engines/scheduler.py and
     engines/price_alerts.py — see those modules' docstrings for why (and
     for the arq/celery-beat upgrade path once running multiple workers).
