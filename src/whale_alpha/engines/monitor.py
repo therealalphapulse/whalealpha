@@ -10,7 +10,7 @@ verbatim as a TODO from the original.
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,7 +40,7 @@ class EventBuffer:
             return list(self._events)
 
     def _prune(self) -> None:
-        cutoff = datetime.now(timezone.utc) - _MAX_AGE
+        cutoff = datetime.now(UTC) - _MAX_AGE
         self._events = [e for e in self._events if e.observed_at >= cutoff]
 
 

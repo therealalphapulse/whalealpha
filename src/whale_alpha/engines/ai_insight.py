@@ -99,6 +99,8 @@ async def enrich_signal(
     try:
         parsed = json.loads(text)
         narrative = parsed["narrative"]
+        if not isinstance(narrative, str):
+            raise TypeError("narrative field was not a string")
     except (json.JSONDecodeError, KeyError, TypeError) as err:
         log.warning("AI insight returned unparseable output, using templated fallback", err=str(err))
         return fallback

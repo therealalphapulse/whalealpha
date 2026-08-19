@@ -11,7 +11,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from whale_alpha.db.models import Trade, TradeStatus, User
@@ -19,9 +19,11 @@ from whale_alpha.db.models import Trade, TradeStatus, User
 router = Router(name="trading")
 
 
-def register_trading_commands(session_factory: async_sessionmaker) -> Router:
+def register_trading_commands(session_factory: async_sessionmaker[AsyncSession]) -> Router:
     @router.message(Command("portfolio"))
     async def portfolio_handler(message: Message) -> None:
+        if message.from_user is None:
+            return
         telegram_id = str(message.from_user.id)
         async with session_factory() as session:
             result = await session.execute(select(User).where(User.telegram_id == telegram_id))
@@ -51,6 +53,8 @@ def register_trading_commands(session_factory: async_sessionmaker) -> Router:
 
     @router.message(Command("autotrading"))
     async def autotrading_handler(message: Message) -> None:
+        if message.from_user is None:
+            return
         telegram_id = str(message.from_user.id)
         async with session_factory() as session:
             result = await session.execute(
