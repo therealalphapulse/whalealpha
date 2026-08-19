@@ -32,7 +32,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 from solders.keypair import Keypair
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.config import Env
 from whale_alpha.db.models import Role, User
@@ -70,7 +70,7 @@ def _parse_secret_key(text: str) -> bytes | None:
         return None
 
 
-async def _get_or_create_user(session_factory: async_sessionmaker, telegram_id: str) -> User:
+async def _get_or_create_user(session_factory: async_sessionmaker[AsyncSession], telegram_id: str) -> User:
     async with session_factory() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
@@ -82,7 +82,7 @@ async def _get_or_create_user(session_factory: async_sessionmaker, telegram_id: 
         return user
 
 
-def register_wallet_commands(session_factory: async_sessionmaker, env: Env) -> Router:
+def register_wallet_commands(session_factory: async_sessionmaker[AsyncSession], env: Env) -> Router:
     @router.message(Command("connectwallet"))
     async def connectwallet_handler(message: Message, state: FSMContext) -> None:
         if message.chat.type != "private":
@@ -112,6 +112,8 @@ def register_wallet_commands(session_factory: async_sessionmaker, env: Env) -> R
     @router.message(StateFilter(ConnectWalletStates.waiting_for_key), F.text)
     async def receive_key_handler(message: Message, state: FSMContext) -> None:
         raw_text = message.text or ""
+        if message.from_user is None:
+            return
         telegram_id = str(message.from_user.id)
 
         secret_bytes = _parse_secret_key(raw_text)
@@ -143,6 +145,9 @@ def register_wallet_commands(session_factory: async_sessionmaker, env: Env) -> R
         user = await _get_or_create_user(session_factory, telegram_id)
         async with session_factory() as session:
             db_user = await session.get(User, user.id)
+            if db_user is None:
+                await message.answer("❌ Something went wrong saving your wallet — please try /connectwallet again.")
+                return
             db_user.encrypted_wallet_key = encrypted
             db_user.wallet_public_key = public_key
             await session.commit()
@@ -158,6 +163,8 @@ def register_wallet_commands(session_factory: async_sessionmaker, env: Env) -> R
 
     @router.message(Command("disconnectwallet"))
     async def disconnectwallet_handler(message: Message) -> None:
+        if message.from_user is None:
+            return
         telegram_id = str(message.from_user.id)
         async with session_factory() as session:
             result = await session.execute(select(User).where(User.telegram_id == telegram_id))

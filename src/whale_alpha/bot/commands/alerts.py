@@ -16,7 +16,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.config import Env
 from whale_alpha.db.models import AlertDirection, PriceAlert, Role, User
@@ -26,7 +26,7 @@ from whale_alpha.integrations.solana_connection import is_valid_solana_address
 router = Router(name="alerts")
 
 
-async def _get_or_create_user(session_factory: async_sessionmaker, telegram_id: str) -> User:
+async def _get_or_create_user(session_factory: async_sessionmaker[AsyncSession], telegram_id: str) -> User:
     async with session_factory() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
@@ -39,7 +39,7 @@ async def _get_or_create_user(session_factory: async_sessionmaker, telegram_id: 
 
 
 def register_alert_commands(
-    session_factory: async_sessionmaker, env: Env, http_client: httpx.AsyncClient
+    session_factory: async_sessionmaker[AsyncSession], env: Env, http_client: httpx.AsyncClient
 ) -> Router:
     @router.message(Command("alert"))
     async def alert_handler(message: Message) -> None:
@@ -76,6 +76,8 @@ def register_alert_commands(
             await message.answer("⚠️ Couldn't fetch a current price for that mint — double check the address.")
             return
 
+        if message.from_user is None:
+            return
         user = await _get_or_create_user(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             alert = PriceAlert(
@@ -98,6 +100,8 @@ def register_alert_commands(
 
     @router.message(Command("alerts"))
     async def alerts_list_handler(message: Message) -> None:
+        if message.from_user is None:
+            return
         user = await _get_or_create_user(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             result = await session.execute(
@@ -129,6 +133,8 @@ def register_alert_commands(
             return
         alert_id = args[0]
 
+        if message.from_user is None:
+            return
         user = await _get_or_create_user(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             alert = await session.get(PriceAlert, alert_id)
@@ -142,18 +148,28 @@ def register_alert_commands(
 
     @router.message(Command("mute"))
     async def mute_handler(message: Message) -> None:
+        if message.from_user is None:
+            return
         user = await _get_or_create_user(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             db_user = await session.get(User, user.id)
+            if db_user is None:
+                await message.answer("❌ Something went wrong — please try again.")
+                return
             db_user.notify_signals = False
             await session.commit()
         await message.answer("🔇 Signal notifications muted. Use /unmute to turn them back on.")
 
     @router.message(Command("unmute"))
     async def unmute_handler(message: Message) -> None:
+        if message.from_user is None:
+            return
         user = await _get_or_create_user(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             db_user = await session.get(User, user.id)
+            if db_user is None:
+                await message.answer("❌ Something went wrong — please try again.")
+                return
             db_user.notify_signals = True
             await session.commit()
         await message.answer("🔔 Signal notifications re-enabled.")
