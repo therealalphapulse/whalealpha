@@ -34,7 +34,7 @@ _REDACT_KEYS = {
 _CENSOR = "[REDACTED]"
 
 
-def _redact_processor(_logger: Any, _method_name: str, event_dict: dict) -> dict:
+def _redact_processor(_logger: Any, _method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
     def scrub(obj: Any) -> Any:
         if isinstance(obj, dict):
             return {
@@ -45,7 +45,8 @@ def _redact_processor(_logger: Any, _method_name: str, event_dict: dict) -> dict
             return [scrub(v) for v in obj]
         return obj
 
-    return scrub(event_dict)
+    result: dict[str, Any] = scrub(event_dict)
+    return result
 
 
 def configure_logging(log_level: str, node_env: str) -> None:

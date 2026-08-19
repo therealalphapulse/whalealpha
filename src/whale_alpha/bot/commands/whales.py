@@ -10,7 +10,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.db.models import WalletStatus, WhaleWallet
 
@@ -21,7 +21,7 @@ def _short(address: str) -> str:
     return f"{address[:4]}...{address[-4:]}"
 
 
-def register_whales_command(session_factory: async_sessionmaker) -> Router:
+def register_whales_command(session_factory: async_sessionmaker[AsyncSession]) -> Router:
     @router.message(Command("whales"))
     async def whales_handler(message: Message) -> None:
         async with session_factory() as session:

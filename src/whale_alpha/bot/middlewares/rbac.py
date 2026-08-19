@@ -17,7 +17,8 @@ kwarg). We mirror the same *behavior* — every downstream handler can read
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Update
