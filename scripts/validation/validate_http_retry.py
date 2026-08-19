@@ -1,21 +1,23 @@
-import asyncio, sys, time
+import asyncio
 import os
+import sys
+import time
+
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _THIS_DIR)
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "..", "src"))
 import _stub_httpx  # noqa: F401 — registers the httpx stub before real import
 import _stub_structlog  # noqa: F401 — registers the structlog stub before real import
+import httpx
 
 from whale_alpha.utils.http_retry import (  # the REAL, shipped module
-    fetch_with_retry,
-    TTLCache,
     CircuitBreaker,
-    ProviderClient,
-    get_provider_client,
-    get_all_provider_metrics,
+    TTLCache,
     _mask_url,
+    fetch_with_retry,
+    get_all_provider_metrics,
+    get_provider_client,
 )
-import httpx
 
 
 class FakeResp:
@@ -111,7 +113,7 @@ async def main():
     r_skipped = await pc.get(flaky_client, "https://api.example.com/data", max_retries=0, base_backoff_seconds=0.01)
     assert r_skipped.circuit_open is True
     assert len(flaky_client.calls) == calls_before  # NO network call made
-    print(f"[PASS] ProviderClient: circuit opened after 3x 500s, 4th call skipped network entirely (circuit_open=True)")
+    print("[PASS] ProviderClient: circuit opened after 3x 500s, 4th call skipped network entirely (circuit_open=True)")
     print(f"       metrics: {pc.metrics.as_dict()}")
 
     # 9. get_provider_client registry + get_all_provider_metrics
@@ -121,7 +123,7 @@ async def main():
     all_metrics = get_all_provider_metrics()
     assert "jupiter_trending" in all_metrics
     assert "demo_provider" in all_metrics
-    print(f"[PASS] get_all_provider_metrics() (fed into run_discovery_cycle's structured log):")
+    print("[PASS] get_all_provider_metrics() (fed into run_discovery_cycle's structured log):")
     for name, m in all_metrics.items():
         print(f"         {name}: {m}")
 

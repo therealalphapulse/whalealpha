@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import httpx
 from aiogram import Bot
 from solana.rpc.async_api import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.config import Env
 from whale_alpha.db.models import Signal
@@ -56,11 +57,11 @@ EVALUATION_INTERVAL_SECONDS = 30
 
 def start_scheduler(
     env: Env,
-    session_factory: async_sessionmaker,
+    session_factory: async_sessionmaker[AsyncSession],
     bot: Bot,
     http_client: httpx.AsyncClient,
     solana_connection: AsyncClient,
-):
+) -> Callable[[], Awaitable[None]]:
     async def _loop() -> None:
         while True:
             await asyncio.sleep(EVALUATION_INTERVAL_SECONDS)
@@ -81,7 +82,7 @@ def start_scheduler(
 
 async def _evaluate_all_tokens(
     env: Env,
-    session_factory: async_sessionmaker,
+    session_factory: async_sessionmaker[AsyncSession],
     bot: Bot,
     http_client: httpx.AsyncClient,
     solana_connection: AsyncClient,
