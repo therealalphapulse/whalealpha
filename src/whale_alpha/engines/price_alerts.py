@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import httpx
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.config import Env
 from whale_alpha.db.models import PriceAlert, User
@@ -35,8 +36,8 @@ log = child_logger("priceAlerts")
 
 
 def start_price_alert_loop(
-    env: Env, session_factory: async_sessionmaker, bot: Bot, http_client: httpx.AsyncClient
-):
+    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, http_client: httpx.AsyncClient
+) -> Callable[[], Awaitable[None]]:
     async def _loop() -> None:
         while True:
             await asyncio.sleep(env.PRICE_ALERT_INTERVAL_SECONDS)
@@ -64,7 +65,7 @@ def _direction_matches(direction: str, pct_change: float) -> bool:
 
 
 async def _check_all_alerts(
-    env: Env, session_factory: async_sessionmaker, bot: Bot, http_client: httpx.AsyncClient
+    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, http_client: httpx.AsyncClient
 ) -> None:
     async with session_factory() as session:
         result = await session.execute(select(PriceAlert).where(PriceAlert.active.is_(True)))

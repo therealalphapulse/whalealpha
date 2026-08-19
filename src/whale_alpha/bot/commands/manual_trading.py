@@ -21,7 +21,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.config import Env
 from whale_alpha.db.models import Trade, TradeSide, TradeSource, TradeStatus, User
@@ -38,7 +38,7 @@ router = Router(name="manual_trading")
 log = child_logger("manualTrading")
 
 
-async def _get_connected_user(session_factory: async_sessionmaker, telegram_id: str) -> User | None:
+async def _get_connected_user(session_factory: async_sessionmaker[AsyncSession], telegram_id: str) -> User | None:
     async with session_factory() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
@@ -48,7 +48,7 @@ async def _get_connected_user(session_factory: async_sessionmaker, telegram_id: 
 
 
 def register_manual_trading_commands(
-    session_factory: async_sessionmaker, env: Env, http_client: httpx.AsyncClient
+    session_factory: async_sessionmaker[AsyncSession], env: Env, http_client: httpx.AsyncClient
 ) -> Router:
     @router.message(Command("buy"))
     async def buy_handler(message: Message) -> None:
@@ -79,6 +79,8 @@ def register_manual_trading_commands(
             await message.answer("usd_amount must be greater than 0.")
             return
 
+        if message.from_user is None:
+            return
         user = await _get_connected_user(session_factory, str(message.from_user.id))
         if user is None:
             await message.answer("No wallet connected. Use /connectwallet first.")
@@ -151,6 +153,8 @@ def register_manual_trading_commands(
             await message.answer("That doesn't look like a valid Solana token mint address.")
             return
 
+        if message.from_user is None:
+            return
         user = await _get_connected_user(session_factory, str(message.from_user.id))
         if user is None:
             await message.answer("No wallet connected. Use /connectwallet first.")
