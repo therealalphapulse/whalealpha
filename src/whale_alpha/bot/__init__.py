@@ -22,10 +22,10 @@ import httpx
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.types import Message
+from aiogram.types import ErrorEvent, Message
 from redis.asyncio import Redis
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.bot.commands.admin import register_admin_commands
 from whale_alpha.bot.commands.alerts import register_alert_commands
@@ -43,7 +43,7 @@ log = child_logger("bot")
 
 
 def create_bot(
-    env: Env, redis: Redis, session_factory: async_sessionmaker, http_client: httpx.AsyncClient
+    env: Env, redis: Redis, session_factory: async_sessionmaker[AsyncSession], http_client: httpx.AsyncClient
 ) -> tuple[Bot, Dispatcher]:
     bot = Bot(token=env.TELEGRAM_BOT_TOKEN)
     dp = Dispatcher(storage=RedisStorage(redis))
@@ -53,6 +53,8 @@ def create_bot(
 
     @dp.message(Command("start"))
     async def start_handler(message: Message, is_admin: bool = False) -> None:
+        if message.from_user is None:
+            return
         telegram_id = str(message.from_user.id)
         async with session_factory() as session:
             result = await session.execute(select(User).where(User.telegram_id == telegram_id))
@@ -86,7 +88,7 @@ def create_bot(
     dp.include_router(register_admin_commands(session_factory))
 
     @dp.errors()
-    async def error_handler(event) -> None:
+    async def error_handler(event: ErrorEvent) -> None:
         log.error("Unhandled bot error", err=str(event.exception))
 
     return bot, dp

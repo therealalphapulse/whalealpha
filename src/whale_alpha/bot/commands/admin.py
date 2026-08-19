@@ -11,7 +11,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from whale_alpha.db.models import Role, User
 from whale_alpha.integrations.solana_connection import is_valid_solana_address
@@ -20,7 +20,7 @@ from whale_alpha.services.admin.whale_wallet_admin_service import Actor, WhaleWa
 router = Router(name="admin")
 
 
-async def _actor_for(session_factory: async_sessionmaker, telegram_id: str) -> Actor:
+async def _actor_for(session_factory: async_sessionmaker[AsyncSession], telegram_id: str) -> Actor:
     async with session_factory() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
@@ -32,7 +32,7 @@ async def _actor_for(session_factory: async_sessionmaker, telegram_id: str) -> A
         return Actor(id=user.id, role=user.role)
 
 
-def register_admin_commands(session_factory: async_sessionmaker) -> Router:
+def register_admin_commands(session_factory: async_sessionmaker[AsyncSession]) -> Router:
     @router.message(Command("addwhale"))
     async def addwhale_handler(message: Message, is_admin: bool = False) -> None:
         if not is_admin:
@@ -49,6 +49,8 @@ def register_admin_commands(session_factory: async_sessionmaker) -> Router:
             )
             return
 
+        if message.from_user is None:
+            return
         actor = await _actor_for(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             service = WhaleWalletAdminService(session)
@@ -70,6 +72,8 @@ def register_admin_commands(session_factory: async_sessionmaker) -> Router:
             await message.answer("Usage: /approvewhale <wallet_id>")
             return
 
+        if message.from_user is None:
+            return
         actor = await _actor_for(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             service = WhaleWalletAdminService(session)
@@ -90,6 +94,8 @@ def register_admin_commands(session_factory: async_sessionmaker) -> Router:
             await message.answer("Usage: /removewhale <wallet_id>")
             return
 
+        if message.from_user is None:
+            return
         actor = await _actor_for(session_factory, str(message.from_user.id))
         async with session_factory() as session:
             service = WhaleWalletAdminService(session)
