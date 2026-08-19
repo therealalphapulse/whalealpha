@@ -1,11 +1,13 @@
-import asyncio, sys, types
+import asyncio
 import os
+import sys
+
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _THIS_DIR)
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "..", "src"))
-import _stub_httpx        # noqa: F401
-import _stub_structlog    # noqa: F401
-import _stub_deps2        # noqa: F401
+import _stub_deps2  # noqa: F401
+import _stub_httpx  # noqa: F401
+import _stub_structlog  # noqa: F401
 
 import whale_alpha.integrations.wallet_discovery_source as wds  # REAL module, module ref for monkeypatching
 
@@ -47,7 +49,7 @@ async def main():
     env.DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED = False
     result_a = await wds.fetch_wallet_swap_history(client, env, "WALLET_A", sol_price_usd=150.0, connection=None)
     assert result_a.swaps is None and result_a.transient is True
-    print(f"[PASS] Scenario A: Helius 429, no cache, RPC fallback disabled -> transient=True (goes to retry queue)")
+    print("[PASS] Scenario A: Helius 429, no cache, RPC fallback disabled -> transient=True (goes to retry queue)")
 
     # --- Scenario B: Helius rate-limited, RPC fallback enabled + connection supplied, RPC produces real swaps
     env.DISCOVERY_HISTORY_RPC_FALLBACK_ENABLED = True

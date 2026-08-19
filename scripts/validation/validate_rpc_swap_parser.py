@@ -1,18 +1,17 @@
-import sys
 import os
+import sys
+
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _THIS_DIR)
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "..", "src"))
-import _stub_httpx        # noqa: F401
-import _stub_structlog    # noqa: F401
-import _stub_deps2        # noqa: F401
+import _stub_deps2  # noqa: F401
+import _stub_httpx  # noqa: F401
+import _stub_structlog  # noqa: F401
 
 from whale_alpha.integrations.wallet_discovery_source import (  # REAL module
-    _extract_swap_from_rpc_transaction,
     WalletHistoryFetch,
-    WalletSwap,
+    _extract_swap_from_rpc_transaction,
 )
-from whale_alpha.integrations.price_feed import SOL_MINT  # REAL module/constant
 
 print("=" * 70)
 print("TASK 2 — RPC-fallback swap parser RUNTIME VALIDATION (real function)")
