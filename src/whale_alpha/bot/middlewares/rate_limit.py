@@ -7,7 +7,8 @@ original: 15 requests per 10-second window.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Update

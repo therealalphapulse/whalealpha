@@ -1,4 +1,5 @@
-import types, sys
+import sys
+import types
 
 structlog = types.ModuleType("structlog")
 

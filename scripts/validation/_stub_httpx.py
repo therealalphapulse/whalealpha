@@ -5,7 +5,8 @@ constructed and driven entirely by the validation script, while every line
 of retry/backoff/circuit-breaker/cache logic executed is the actual,
 unmodified `whale_alpha/utils/http_retry.py` shipped in this patch.
 """
-import types, sys
+import sys
+import types
 
 httpx = types.ModuleType("httpx")
 

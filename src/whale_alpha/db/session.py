@@ -9,8 +9,8 @@ that's what Railway's `${{Postgres.DATABASE_URL}}` reference produces.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -32,7 +32,7 @@ def create_engine(env: Env) -> AsyncEngine:
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(engine, expire_on_commit=False)
+    return async_sessionmaker[AsyncSession](engine, expire_on_commit=False)
 
 
 @asynccontextmanager

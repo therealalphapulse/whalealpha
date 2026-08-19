@@ -4,7 +4,8 @@ third-party/heavy-config edges are faked (registered directly in
 sys.modules); `whale_alpha`, `whale_alpha.integrations`, `whale_alpha.utils`
 are all real, trivial packages and are left to import normally from disk.
 """
-import types, sys
+import sys
+import types
 
 config_mod = types.ModuleType("whale_alpha.config")
 class Env:
