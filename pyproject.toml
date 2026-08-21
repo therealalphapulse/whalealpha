@@ -51,12 +51,7 @@ src = ["src", "tests", "scripts"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "BLE"]
 ignore = ["E501", "UP007", "UP017", "UP035", "UP037", "UP042", "UP046"]
-per-file-ignores = {
-    "scripts/validation/validate_fallback_chain.py" = ["E402"],
-    "scripts/validation/validate_http_retry.py" = ["E402"],
-    "scripts/validation/validate_rpc_swap_parser.py" = ["E402"],
-    "tests/unit/test_wallet_discovery_source.py" = ["E402"],
-}
+per-file-ignores = { "scripts/validation/validate_fallback_chain.py" = ["E402"], "scripts/validation/validate_http_retry.py" = ["E402"], "scripts/validation/validate_rpc_swap_parser.py" = ["E402"], "tests/unit/test_wallet_discovery_source.py" = ["E402"] }
 
 [tool.mypy]
 python_version = "3.12"
