@@ -252,6 +252,29 @@ class Env(BaseSettings):
     DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD: int = Field(5, ge=1)
     DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS: float = Field(60.0, ge=0)
 
+    # --- High-potential token hunter --------------------------------------
+    # Whale Alpha is intelligence-only in this mode. Legacy trading routers
+    # are disabled by default and must be explicitly opted into (never set in
+    # the production hunter deployment).
+    ENABLE_LEGACY_TRADING: bool = False
+    TOKEN_HUNTER_ENABLED: bool = True
+    TOKEN_HUNTER_INTERVAL_SECONDS: float = Field(45, ge=10)
+    TOKEN_HUNTER_STARTUP_DELAY_SECONDS: float = Field(5, ge=0)
+    TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE: int = Field(40, ge=1, le=200)
+    TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE: int = Field(120, ge=1, le=500)
+    TOKEN_HUNTER_PROVIDER_MAX_CONCURRENCY: int = Field(3, ge=1)
+    TOKEN_HUNTER_MAX_AGE_MINUTES: float = Field(720, ge=1)
+    TOKEN_HUNTER_MAX_ENRICHED_AGE_MINUTES: float = Field(360, ge=1)
+    TOKEN_HUNTER_MIN_MARKET_CAP_USD: float = Field(10_000, ge=0)
+    TOKEN_HUNTER_MAX_MARKET_CAP_USD: float = Field(5_000_000, ge=1)
+    TOKEN_HUNTER_MIN_LIQUIDITY_USD: float = Field(8_000, ge=0)
+    TOKEN_HUNTER_MIN_VOLUME_5M_USD: float = Field(3_000, ge=0)
+    TOKEN_HUNTER_MIN_TXNS_5M: int = Field(6, ge=1)
+    TOKEN_HUNTER_MIN_BUYS_5M: int = Field(3, ge=1)
+    TOKEN_HUNTER_MIN_LIQUIDITY_MC_RATIO: float = Field(0.03, ge=0, le=1)
+    TOKEN_HUNTER_ALERT_MIN_SCORE: float = Field(82, ge=0, le=100)
+    TOKEN_HUNTER_ALERT_COOLDOWN_MINUTES: float = Field(120, ge=0)
+
     # --- Trending-token bootstrap source (feature: discovery cold start) ---
     # Independent of anything already tracked — see
     # integrations/wallet_discovery_source.find_candidates_from_trending_tokens.

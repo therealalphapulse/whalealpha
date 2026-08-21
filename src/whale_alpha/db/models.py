@@ -453,6 +453,73 @@ class AuditLog(Base):
     __table_args__ = (Index("ix_audit_logs_actor_id_created_at", "actor_id", "created_at"),)
 
 
+class TokenOpportunity(Base):
+    """Persisted token-hunter observation and alert/outcome record."""
+
+    __tablename__ = "token_opportunities"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
+    mint: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    symbol: Mapped[str | None] = mapped_column(String, nullable=True)
+    detection_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="SCORED", nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    age_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    liquidity_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_5m_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    volume_1h_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    buys_5m: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sells_5m: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    buys_1h: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sells_1h: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    score_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String, nullable=True)
+    risk_flags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    key_reasons: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    alert_status: Mapped[str] = mapped_column(String, default="NOT_ATTEMPTED", nullable=False)
+    alert_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alert_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alert_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    mc_after_5m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mc_after_15m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mc_after_30m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mc_after_1h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_mc_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_mc_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_drawdown_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    snapshots: Mapped[list["TokenSnapshot"]] = relationship(back_populates="opportunity", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_token_opportunities_status_detected_at", "status", "detected_at"),
+        Index("ix_token_opportunities_score", "score"),
+    )
+
+
+class TokenSnapshot(Base):
+    """Compact market snapshot used for outcome analysis."""
+
+    __tablename__ = "token_snapshots"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
+    opportunity_id: Mapped[str] = mapped_column(ForeignKey("token_opportunities.id", ondelete="CASCADE"), nullable=False)
+    opportunity: Mapped[TokenOpportunity] = relationship(back_populates="snapshots")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    market_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    liquidity_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_5m_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+    __table_args__ = (Index("ix_token_snapshots_opportunity_observed_at", "opportunity_id", "observed_at"),)
+
+
 class DiscoveryScanProgress(Base):
     """Blockchain-first discovery engine — Phase 1. Persists the last Solana
     slot the block scanner has fully processed, so it can page through

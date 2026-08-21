@@ -66,25 +66,21 @@ def create_bot(
         admin_lines = "\n*Admin:* /addwhale /approvewhale /removewhale" if is_admin else ""
         await message.answer(
             "🐋 *Welcome to Whale Alpha*\n\n"
-            "Track elite Solana wallets, get high-confidence signals when multiple "
-            "whales accumulate the same token, and trade manually or with rule-based "
-            "auto trading.\n\n"
-            "/whales — browse the curated whale database\n"
-            "/connectwallet — connect a wallet to trade with\n"
-            "/buy /sell — manual trading\n"
-            "/portfolio — your trade history\n"
-            "/autotrading — view/configure auto-trading rules\n"
-            "/alert /alerts — set % price-move alerts\n"
-            "/mute /unmute — toggle whale-signal DMs\n"
+            "Whale Alpha is now an intelligence-only early opportunity detector. "
+            "It finds very young Solana tokens showing multiple independent signs of strength, "
+            "scores them 0–100, and sends only high-potential opportunities.\n\n"
+            "/whales — browse the legacy whale database\n"
+            "/mute /unmute — toggle legacy whale-signal DMs\n"
             f"{admin_lines}",
             parse_mode="Markdown",
         )
 
     dp.include_router(register_whales_command(session_factory))
-    dp.include_router(register_trading_commands(session_factory))
-    dp.include_router(register_wallet_commands(session_factory, env))
-    dp.include_router(register_manual_trading_commands(session_factory, env, http_client))
-    dp.include_router(register_alert_commands(session_factory, env, http_client))
+    if env.ENABLE_LEGACY_TRADING:
+        dp.include_router(register_trading_commands(session_factory))
+        dp.include_router(register_wallet_commands(session_factory, env))
+        dp.include_router(register_manual_trading_commands(session_factory, env, http_client))
+        dp.include_router(register_alert_commands(session_factory, env, http_client))
     dp.include_router(register_admin_commands(session_factory))
 
     @dp.errors()
