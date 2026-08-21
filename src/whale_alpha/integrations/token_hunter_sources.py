@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import asyncio
 import httpx
 from whale_alpha.config import Env
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot
@@ -71,6 +72,12 @@ def _mint(entry: dict[str, Any], *keys: str) -> str | None:
             address = value.get("address")
             if isinstance(address, str) and address and address not in _IGNORED_MINTS:
                 return address
+    for key in ("token_x", "token_y"):
+        token = entry.get(key)
+        if isinstance(token, dict):
+            address = token.get("address")
+            if isinstance(address, str) and address and address not in _IGNORED_MINTS:
+                return address
     pool_mints = entry.get("pool_token_mints") or entry.get("poolTokenMints")
     if isinstance(pool_mints, list):
         for value in pool_mints:
@@ -98,13 +105,19 @@ def _dict(value: Any) -> dict[str, Any]:
 
 
 def _created_at_ms(entry: dict[str, Any]) -> int | None:
-    for key in ("pairCreatedAt", "createdAt", "created_at"):
+    for key in (
+        "pairCreatedAt",
+        "createdAt",
+        "created_at",
+        "created_timestamp",
+        "createTime",
+        "create_time",
+        "poolCreatedAt",
+        "pool_created_at",
+    ):
         value = _int(entry.get(key))
         if value:
             return value if value > 10**12 else value * 1000
-    value = _int(entry.get("created_timestamp"))
-    if value:
-        return value if value > 10**12 else value * 1000
     return None
 
 
@@ -190,6 +203,24 @@ async def _fetch_candidates(
     return candidates
 
 
+def _base(env: Env, provider: str) -> str:
+    base = getattr(env, f"DISCOVERY_{provider.upper()}_API_BASE").rstrip("/")
+    legacy = {
+        "pumpfun": "https://frontend-api.pump.fun",
+        "launchlab": "https://api-v3.raydium.io/launchlab",
+        "meteora": "https://amm-v2.meteora.ag",
+    }
+    current = {
+        "pumpfun": "https://frontend-api-v3.pump.fun",
+        "launchlab": "https://launch-mint-v1.raydium.io",
+        "meteora": "https://damm-v2.datapi.meteora.ag",
+    }
+    if base == legacy.get(provider):
+        log.warning("Obsolete discovery provider endpoint configured; using current endpoint", provider=provider, configured=base, effective=current[provider])
+        return current[provider]
+    return base
+
+
 async def discover_token_candidates(
     client: httpx.AsyncClient, env: Env
 ) -> dict[str, list[DiscoveryCandidate]]:
@@ -207,30 +238,30 @@ async def discover_token_candidates(
         _cache.set(key, candidates)
         sources[name] = candidates
 
+    tasks = []
     if env.DISCOVERY_PUMPFUN_ENABLED:
-        await cached(
+        tasks.append(cached(
             "pumpfun",
             "pumpfun",
-            f"{env.DISCOVERY_PUMPFUN_API_BASE}/coins",
+            f"{_base(env, "pumpfun")}/coins/latest",
             {
                 "offset": "0",
                 "limit": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE),
-                "sort": "created_timestamp",
-                "order": "DESC",
+                "includeNsfw": "false",
             },
-        )
+        ))
     if env.DISCOVERY_LAUNCHLAB_ENABLED:
-        await cached(
+        tasks.append(cached(
             "launchlab",
             "launchlab",
-            f"{env.DISCOVERY_LAUNCHLAB_API_BASE}/list",
-            {"sort": "new", "size": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)},
-        )
+            f"{_base(env, "launchlab")}/get/list",
+            {"sort": "new"},
+        ))
     if env.DISCOVERY_RAYDIUM_ENABLED:
-        await cached(
+        tasks.append(cached(
             "raydium",
             "raydium",
-            f"{env.DISCOVERY_RAYDIUM_API_BASE}/pools/info/list",
+            f"{env.DISCOVERY_RAYDIUM_API_BASE.rstrip("/")}/pools/info/list",
             {
                 "poolType": "all",
                 "poolSortField": "default",
@@ -238,18 +269,22 @@ async def discover_token_candidates(
                 "pageSize": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE),
                 "page": "1",
             },
-        )
+        ))
     if env.DISCOVERY_METEORA_ENABLED:
-        await cached(
+        tasks.append(cached(
             "meteora",
             "meteora",
-            f"{env.DISCOVERY_METEORA_API_BASE}/pools",
-            {"limit": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)},
-        )
+            f"{_base(env, "meteora")}/pools",
+            {"page": "1", "page_size": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE), "sort_by": "pool_created_at:desc"},
+        ))
     if env.DISCOVERY_DEXSCREENER_ENABLED:
-        await cached(
+        tasks.append(cached(
             "dexscreener", "dexscreener", f"{env.DISCOVERY_DEXSCREENER_API_BASE}/token-boosts/latest/v1"
-        )
+        ))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            log.warning("Token discovery provider task failed; continuing", err=str(result))
     return sources
 
 

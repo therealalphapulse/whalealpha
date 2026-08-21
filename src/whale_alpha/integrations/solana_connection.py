@@ -488,6 +488,53 @@ def _is_rate_limited_error(err: Exception) -> bool:
     return "429" in text or "Too Many Requests" in text
 
 
+async def get_token_first_seen_at_ms(connection: AsyncClient, mint: str) -> int | None:
+    """Return a bounded on-chain first-seen timestamp for a Solana mint.
+
+    ``getSignaturesForAddress`` is newest-first and capped at 1,000 rows per call.
+    We page a small bounded number of times and only accept the oldest signature
+    when the final page is complete, so a truncated history cannot masquerade as
+    the mint's true creation time and accidentally bypass the maximum-age gate.
+    """
+    try:
+        pubkey = Pubkey.from_string(mint)
+        before = None
+        oldest = None
+        for _ in range(3):
+            kwargs: dict[str, Any] = {
+                "limit": 1000,
+                "min_interval_seconds": 0.12,
+                "max_retries": 3,
+            }
+            if before is not None:
+                kwargs["before"] = before
+            resp = await _rate_limited_rpc_call(
+                connection.get_signatures_for_address,
+                pubkey,
+                **kwargs,
+            )
+            values = list(resp.value or [])
+            if not values:
+                return None
+            oldest = values[-1]
+            if len(values) < 1000:
+                break
+            before = oldest.signature
+        else:
+            return None
+    except Exception as err:  # noqa: BLE001 — best-effort fallback
+        log.debug("RPC token age lookup failed", mint=mint, err=str(err))
+        return None
+
+    block_time = getattr(oldest, "block_time", None) if oldest is not None else None
+    if block_time is None:
+        return None
+    try:
+        return int(block_time) * 1000
+    except (TypeError, ValueError):
+        return None
+
+
 async def get_wallet_first_activity_slot(connection: AsyncClient, address: str) -> int | None:
     """Best-effort wallet age proxy: the slot of the oldest transaction signature
     RPC will still return for this address. Solana RPC nodes only retain a

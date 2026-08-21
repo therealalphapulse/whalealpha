@@ -263,6 +263,8 @@ class Env(BaseSettings):
     TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE: int = Field(40, ge=1, le=200)
     TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE: int = Field(120, ge=1, le=500)
     TOKEN_HUNTER_PROVIDER_MAX_CONCURRENCY: int = Field(3, ge=1)
+    TOKEN_HUNTER_MIN_AGE_MINUTES: float = Field(0, ge=0)
+    TOKEN_HUNTER_ONCHAIN_AGE_MAX_CANDIDATES: int = Field(25, ge=0, le=100)
     TOKEN_HUNTER_MAX_AGE_MINUTES: float = Field(720, ge=1)
     TOKEN_HUNTER_MAX_ENRICHED_AGE_MINUTES: float = Field(360, ge=1)
     TOKEN_HUNTER_MIN_MARKET_CAP_USD: float = Field(10_000, ge=0)
@@ -306,13 +308,13 @@ class Env(BaseSettings):
     # (unlike the legacy signaled-token-holders stream), so they are what
     # actually eliminates the cold-start loop end to end.
     DISCOVERY_PUMPFUN_ENABLED: bool = True
-    DISCOVERY_PUMPFUN_API_BASE: str = "https://frontend-api.pump.fun"
+    DISCOVERY_PUMPFUN_API_BASE: str = "https://frontend-api-v3.pump.fun"
     DISCOVERY_LAUNCHLAB_ENABLED: bool = True
-    DISCOVERY_LAUNCHLAB_API_BASE: str = "https://api-v3.raydium.io/launchlab"
+    DISCOVERY_LAUNCHLAB_API_BASE: str = "https://launch-mint-v1.raydium.io"
     DISCOVERY_RAYDIUM_ENABLED: bool = True
     DISCOVERY_RAYDIUM_API_BASE: str = "https://api-v3.raydium.io"
     DISCOVERY_METEORA_ENABLED: bool = True
-    DISCOVERY_METEORA_API_BASE: str = "https://amm-v2.meteora.ag"
+    DISCOVERY_METEORA_API_BASE: str = "https://damm-v2.datapi.meteora.ag"
     # How far back (minutes) an on-chain launch source looks for "fresh"
     # pools/mints each cycle. Kept short — this stream is meant to catch
     # launches near-real-time, not backfill history.

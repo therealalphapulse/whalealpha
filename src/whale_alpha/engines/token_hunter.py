@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +14,7 @@ from aiogram.exceptions import TelegramAPIError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from whale_alpha.config import Env
+from whale_alpha.integrations.solana_connection import get_token_first_seen_at_ms
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot, enrich_tokens
 from whale_alpha.utils.logger import child_logger
 
@@ -186,7 +187,7 @@ def score_token(
 
 
 def cheap_filter(snapshot: TokenMarketSnapshot, *, age_minutes: float, env: Env) -> tuple[bool, str | None]:
-    if age_minutes < 0 or age_minutes > env.TOKEN_HUNTER_MAX_AGE_MINUTES:
+    if age_minutes < env.TOKEN_HUNTER_MIN_AGE_MINUTES or age_minutes > env.TOKEN_HUNTER_MAX_AGE_MINUTES:
         return False, "AGE_OUTSIDE_WINDOW"
     if not snapshot.market_cap_usd or snapshot.market_cap_usd < env.TOKEN_HUNTER_MIN_MARKET_CAP_USD:
         return False, "MARKET_CAP_TOO_LOW"
@@ -243,10 +244,96 @@ def prefilter_candidates(
     return prequalified, counts
 
 
-def _age(created: int | None, now: datetime) -> float | None:
-    if not created:
+def _normalize_created_at_ms(value: Any, now: datetime) -> int | None:
+    try:
+        raw = int(value)
+    except (TypeError, ValueError, OverflowError):
         return None
-    return max(0, (now - datetime.fromtimestamp(created / 1000, tz=UTC)).total_seconds() / 60)
+    if raw <= 0:
+        return None
+    created_ms = raw if raw >= 10**12 else raw * 1000
+    try:
+        created = datetime.fromtimestamp(created_ms / 1000, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+    if created > now + timedelta(seconds=30):
+        return None
+    return created_ms
+
+
+def _age(created: int | None, now: datetime) -> float | None:
+    normalized = _normalize_created_at_ms(created, now)
+    if normalized is None:
+        return None
+    return (now - datetime.fromtimestamp(normalized / 1000, tz=UTC)).total_seconds() / 60
+
+
+async def _resolve_candidate_ages(
+    candidates: list[DiscoveryCandidate], *, client: Any, connection: Any, env: Env, now: datetime
+) -> list[DiscoveryCandidate]:
+    resolved: list[DiscoveryCandidate] = []
+    missing: list[DiscoveryCandidate] = []
+    for candidate in candidates:
+        created_ms = _normalize_created_at_ms(candidate.snapshot.created_at_ms, now)
+        if created_ms is not None:
+            resolved.append(replace(candidate, snapshot=replace(candidate.snapshot, created_at_ms=created_ms)))
+        else:
+            missing.append(candidate)
+
+    # DexScreener pairCreatedAt is the preferred secondary source because it is
+    # independent of which launch provider produced the candidate.
+    dex_snapshots: dict[str, TokenMarketSnapshot] = {}
+    if missing and env.DISCOVERY_DEXSCREENER_ENABLED:
+        try:
+            dex_snapshots = await enrich_tokens(client, env, [c.snapshot.mint for c in missing])
+        except Exception as err:  # noqa: BLE001 — age fallback must not stop discovery
+            log.warning("DexScreener token-age fallback failed", err=str(err))
+
+    still_missing: list[DiscoveryCandidate] = []
+    for candidate in missing:
+        dex = dex_snapshots.get(candidate.snapshot.mint)
+        created_ms = _normalize_created_at_ms(dex.created_at_ms if dex else None, now)
+        if created_ms is not None:
+            resolved.append(replace(candidate, snapshot=replace(candidate.snapshot, created_at_ms=created_ms)))
+        else:
+            still_missing.append(candidate)
+
+    # Last resort: use the oldest retained signature for the mint as a bounded
+    # on-chain first-seen proxy. Never invent a timestamp, and cap RPC work.
+    onchain_limit = env.TOKEN_HUNTER_ONCHAIN_AGE_MAX_CANDIDATES
+    if connection is not None and still_missing and onchain_limit > 0:
+        batch = still_missing[:onchain_limit]
+        semaphore = asyncio.Semaphore(max(1, env.TOKEN_HUNTER_PROVIDER_MAX_CONCURRENCY))
+
+        async def lookup(candidate: DiscoveryCandidate) -> tuple[DiscoveryCandidate, int | None]:
+            async with semaphore:
+                try:
+                    return candidate, await get_token_first_seen_at_ms(connection, candidate.snapshot.mint)
+                except Exception as err:  # noqa: BLE001 — isolate one mint
+                    log.debug("On-chain token-age fallback failed", mint=candidate.snapshot.mint, err=str(err))
+                    return candidate, None
+
+        for candidate, created_ms_raw in await asyncio.gather(*(lookup(c) for c in batch)):
+            created_ms = _normalize_created_at_ms(created_ms_raw, now)
+            if created_ms is not None:
+                resolved.append(replace(candidate, snapshot=replace(candidate.snapshot, created_at_ms=created_ms)))
+            else:
+                resolved.append(candidate)
+        still_missing = still_missing[onchain_limit:]
+
+    resolved.extend(still_missing)
+    by_mint = {c.snapshot.mint: c for c in resolved}
+    for candidate in candidates:
+        final = by_mint[candidate.snapshot.mint]
+        age = _age(final.snapshot.created_at_ms, now)
+        source = "provider" if _age(candidate.snapshot.created_at_ms, now) is not None else (
+            "dexscreener" if candidate.snapshot.mint in dex_snapshots and _age(dex_snapshots[candidate.snapshot.mint].created_at_ms, now) is not None else (
+                "onchain" if final.snapshot.created_at_ms is not None else "unknown"
+            )
+        )
+        result = "UNKNOWN" if age is None else ("PASS" if env.TOKEN_HUNTER_MIN_AGE_MINUTES <= age <= env.TOKEN_HUNTER_MAX_AGE_MINUTES else "REJECT")
+        log.info("TOKEN AGE RESOLUTION", mint=final.snapshot.mint, source=source, created_at=datetime.fromtimestamp(final.snapshot.created_at_ms / 1000, tz=UTC).isoformat() if final.snapshot.created_at_ms else None, age_seconds=round(age * 60, 3) if age is not None else None, age_minutes=round(age, 3) if age is not None else None, result=result)
+    return list(by_mint.values())
 
 
 def _money(v: float | None) -> str:
@@ -352,7 +439,7 @@ async def _outcomes(session: AsyncSession, client: Any, env: Env, now: datetime)
 
 
 async def run_hunter_cycle(
-    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any
+    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any, connection: Any = None
 ) -> dict[str, int]:
     now = datetime.now(UTC)
     funnel = {
@@ -377,6 +464,7 @@ async def run_hunter_cycle(
 
     async with session_factory() as session:
         limited = list(candidates.values())[: env.TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE]
+        limited = await _resolve_candidate_ages(limited, client=client, connection=connection, env=env, now=now)
         prequalified, prefilter_counts = prefilter_candidates(limited, now=now, env=env)
         funnel["basic_filter_passed"] = prefilter_counts["basic_filter_passed"]
         funnel["quality_gate_passed"] = prefilter_counts["quality_gate_passed"]
@@ -437,13 +525,13 @@ async def run_hunter_cycle(
 
 
 def start_token_hunter_loop(
-    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any
+    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any, connection: Any = None
 ) -> Callable[[], Any]:
     async def worker() -> None:
         await asyncio.sleep(env.TOKEN_HUNTER_STARTUP_DELAY_SECONDS)
         while True:
             try:
-                await run_hunter_cycle(env, session_factory, bot, client)
+                await run_hunter_cycle(env, session_factory, bot, client, connection)
             except asyncio.CancelledError:
                 raise
             except Exception as err:
