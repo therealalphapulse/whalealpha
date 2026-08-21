@@ -39,9 +39,9 @@ from solana.rpc.async_api import AsyncClient
 from solders.signature import Signature
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from whale_alpha.utils.logger import child_logger
 
 from whale_alpha.db.models import AuditLog, Trade, TradeStatus
-from whale_alpha.utils.logger import child_logger
 
 log = child_logger("reconciliation")
 
@@ -52,18 +52,14 @@ async def reconcile_pending_trades(session: AsyncSession, connection: AsyncClien
     """Run once at startup. Returns counts of what happened, for a log line/health check."""
     summary = {"cancelled_never_sent": 0, "confirmed": 0, "failed": 0, "left_pending": 0}
 
-    stale_pending = await session.execute(
-        select(Trade).where(Trade.status == TradeStatus.PENDING)
-    )
+    stale_pending = await session.execute(select(Trade).where(Trade.status == TradeStatus.PENDING))
     for trade in stale_pending.scalars():
         if trade.tx_signature is None and trade.submitted_at is None:
             trade.status = TradeStatus.CANCELLED
             summary["cancelled_never_sent"] += 1
             log.info("Reconciled: cancelled a never-submitted PENDING trade", trade_id=trade.id)
 
-    submitted = await session.execute(
-        select(Trade).where(Trade.status == TradeStatus.SUBMITTED)
-    )
+    submitted = await session.execute(select(Trade).where(Trade.status == TradeStatus.SUBMITTED))
     for trade in submitted.scalars():
         if not trade.tx_signature:
             # Shouldn't happen (we only move to SUBMITTED once we have a
@@ -81,7 +77,7 @@ async def reconcile_pending_trades(session: AsyncSession, connection: AsyncClien
             sig = Signature.from_string(trade.tx_signature)
             status_resp = await connection.get_signature_statuses([sig])
             status = status_resp.value[0]
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError) as exc:
             log.error("Reconciliation RPC lookup failed", trade_id=trade.id, error=str(exc))
             trade.reconciliation_attempts += 1
             if trade.reconciliation_attempts >= MAX_RECONCILIATION_ATTEMPTS:
@@ -102,7 +98,10 @@ async def reconcile_pending_trades(session: AsyncSession, connection: AsyncClien
                 trade.status = TradeStatus.FAILED
                 summary["failed"] += 1
                 log.info(
-                    "Reconciled: trade failed on-chain", trade_id=trade.id, tx=trade.tx_signature, err=str(status.err)
+                    "Reconciled: trade failed on-chain",
+                    trade_id=trade.id,
+                    tx=trade.tx_signature,
+                    err=str(status.err),
                 )
             continue
 
@@ -138,7 +137,7 @@ async def _blockhash_definitely_expired(connection: AsyncClient, trade: Trade) -
     try:
         current_height_resp = await connection.get_block_height()
         return current_height_resp.value > trade.last_valid_block_height
-    except Exception:
+    except (RuntimeError, ValueError, TypeError):
         # If we can't tell, don't guess "expired" — leave it for the next pass.
         return False
 

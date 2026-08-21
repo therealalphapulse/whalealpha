@@ -13,12 +13,12 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from whale_alpha.config import Env
-from whale_alpha.db.models import TokenOpportunity, TokenSnapshot, WalletEvent, WalletStatus, WhaleWallet
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot, enrich_tokens
-from whale_alpha.integrations.token_hunter_sources import discover_token_mints
 from whale_alpha.utils.logger import child_logger
+
+from whale_alpha.db.models import TokenOpportunity, TokenSnapshot, WalletEvent, WalletStatus, WhaleWallet
+from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, discover_token_candidates
 
 log = child_logger("tokenHunter")
 
@@ -217,6 +217,32 @@ def quality_gate(snapshot: TokenMarketSnapshot, *, age_minutes: float, env: Env)
     return True, None
 
 
+def prefilter_candidates(
+    candidates: list[DiscoveryCandidate], *, now: datetime, env: Env
+) -> tuple[list[DiscoveryCandidate], dict[str, int]]:
+    """Apply only cheap discovery-data gates; never performs provider enrichment."""
+    counts = {"basic_filter_passed": 0, "quality_gate_passed": 0}
+    prequalified: list[DiscoveryCandidate] = []
+    for candidate in candidates:
+        snapshot = candidate.snapshot
+        age = _age(snapshot.created_at_ms, now)
+        if age is None:
+            log.info("Token rejected", stage="basic_filter", mint=snapshot.mint, reason="NO_TOKEN_AGE")
+            continue
+        ok, reason = cheap_filter(snapshot, age_minutes=age, env=env)
+        if not ok:
+            log.info("Token rejected", stage="basic_filter", mint=snapshot.mint, reason=reason)
+            continue
+        counts["basic_filter_passed"] += 1
+        ok, reason = quality_gate(snapshot, age_minutes=age, env=env)
+        if not ok:
+            log.info("Token rejected", stage="quality_gate", mint=snapshot.mint, reason=reason)
+            continue
+        counts["quality_gate_passed"] += 1
+        prequalified.append(candidate)
+    return prequalified, counts
+
+
 def _age(created: int | None, now: datetime) -> float | None:
     if not created:
         return None
@@ -342,41 +368,36 @@ async def run_hunter_cycle(
             "alert_delivered",
         )
     }
-    sources = await discover_token_mints(client, env)
-    mints: dict[str, str] = {}
-    for source, values in sources.items():
-        for mint in values:
-            mints.setdefault(mint, source)
-    funnel["discovered"] = len(mints)
+    sources = await discover_token_candidates(client, env)
+    candidates: dict[str, DiscoveryCandidate] = {}
+    for _, values in sources.items():
+        for candidate in values:
+            candidates.setdefault(candidate.snapshot.mint, candidate)
+    funnel["discovered"] = len(candidates)
+
     async with session_factory() as session:
-        limited = list(mints.items())[: env.TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE]
-        for offset in range(0, len(limited), 30):
-            batch = limited[offset : offset + 30]
-            snapshots = await enrich_tokens(client, env, [mint for mint, _ in batch])
+        limited = list(candidates.values())[: env.TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE]
+        prequalified, prefilter_counts = prefilter_candidates(limited, now=now, env=env)
+        funnel["basic_filter_passed"] = prefilter_counts["basic_filter_passed"]
+        funnel["quality_gate_passed"] = prefilter_counts["quality_gate_passed"]
+        for offset in range(0, len(prequalified), 30):
+            batch = prequalified[offset : offset + 30]
+            snapshots = await enrich_tokens(client, env, [c.snapshot.mint for c in batch])
             funnel["enriched"] += len(snapshots)
-            for mint, source in batch:
+            for candidate in batch:
+                mint = candidate.snapshot.mint
                 s = snapshots.get(mint)
                 if s is None:
                     continue
                 age = _age(s.created_at_ms, now)
                 if age is None:
-                    log.info("Token rejected", stage="basic_filter", mint=mint, reason="NO_TOKEN_AGE")
+                    log.info("Token rejected", stage="enriched", mint=mint, reason="NO_TOKEN_AGE")
                     continue
-                ok, reason = cheap_filter(s, age_minutes=age, env=env)
-                if not ok:
-                    log.info("Token rejected", stage="basic_filter", mint=mint, reason=reason)
-                    continue
-                funnel["basic_filter_passed"] += 1
-                ok, reason = quality_gate(s, age_minutes=age, env=env)
-                if not ok:
-                    log.info("Token rejected", stage="quality_gate", mint=mint, reason=reason)
-                    continue
-                funnel["quality_gate_passed"] += 1
                 score = score_token(
                     s, age_minutes=age, smart_money_score=await _smart_money(session, mint, now)
                 )
                 funnel["scored"] += 1
-                o = await _persist(session, s, score, source, now, age)
+                o = await _persist(session, s, score, candidate.source, now, age)
                 if score.total < env.TOKEN_HUNTER_ALERT_MIN_SCORE or score.risk_level == "HIGH":
                     continue
                 funnel["high_potential"] += 1
@@ -388,7 +409,7 @@ async def run_hunter_cycle(
                 o.alert_status = "ATTEMPTED"
                 funnel["alert_attempted"] += 1
                 delivered = 0
-                errors = []
+                errors: list[str] = []
                 text = format_alert(s, score, age, o.detected_at)
                 for chat_id in env.admin_telegram_ids:
                     try:

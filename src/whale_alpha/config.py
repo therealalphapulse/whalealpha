@@ -245,11 +245,11 @@ class Env(BaseSettings):
     # DexScreener, pump.fun, LaunchLab, Raydium, Meteora) — see
     # utils/http_retry.ProviderClient / get_provider_client.
     DISCOVERY_PROVIDER_MAX_CONCURRENCY: int = Field(4, ge=1)
-    DISCOVERY_PROVIDER_MAX_RETRIES: int = Field(3, ge=0)
+    DISCOVERY_PROVIDER_MAX_RETRIES: int = Field(1, ge=0)
     DISCOVERY_PROVIDER_RETRY_BASE_SECONDS: float = Field(1.0, ge=0)
     DISCOVERY_PROVIDER_RETRY_MAX_SECONDS: float = Field(20.0, ge=0)
     DISCOVERY_PROVIDER_CACHE_TTL_SECONDS: float = Field(120, ge=0)
-    DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD: int = Field(5, ge=1)
+    DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD: int = Field(1, ge=1)
     DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS: float = Field(60.0, ge=0)
 
     # --- High-potential token hunter --------------------------------------
@@ -478,9 +478,7 @@ def load_env() -> Env:
         # process refuses to start with a bad/missing configuration.
         print("Invalid environment configuration:", file=sys.stderr)
         print(exc, file=sys.stderr)
-        raise RuntimeError(
-            "Environment validation failed. Check .env against .env.example."
-        ) from exc
+        raise RuntimeError("Environment validation failed. Check .env against .env.example.") from exc
 
 
 @lru_cache(maxsize=1)

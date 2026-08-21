@@ -53,7 +53,6 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 import httpx
-
 from whale_alpha.utils.logger import child_logger
 
 log = child_logger("httpRetry")
@@ -451,7 +450,10 @@ def get_provider_client(
     if existing is not None:
         return existing
     created = ProviderClient(
-        name, max_concurrency=max_concurrency, failure_threshold=failure_threshold, cooldown_seconds=cooldown_seconds
+        name,
+        max_concurrency=max_concurrency,
+        failure_threshold=failure_threshold,
+        cooldown_seconds=cooldown_seconds,
     )
     _provider_clients[name] = created
     return created
@@ -463,4 +465,7 @@ def get_all_provider_metrics() -> dict[str, dict[str, float | int]]:
     provider latency/success-rate/429-count/retry-count/cache-hit-ratio/
     circuit-breaker-skips are all visible without a separate metrics
     backend."""
-    return {name: pc.metrics.as_dict() | {"circuit_open": pc.breaker.is_open} for name, pc in _provider_clients.items()}
+    return {
+        name: pc.metrics.as_dict() | {"circuit_open": pc.breaker.is_open}
+        for name, pc in _provider_clients.items()
+    }

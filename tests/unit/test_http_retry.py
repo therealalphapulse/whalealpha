@@ -49,7 +49,9 @@ class _FakeClient:
 @pytest.mark.asyncio
 async def test_succeeds_immediately_on_200():
     client = _FakeClient([_FakeResponse(200)])
-    result = await fetch_with_retry(client, "GET", "https://example.com", max_retries=3, base_backoff_seconds=0)
+    result = await fetch_with_retry(
+        client, "GET", "https://example.com", max_retries=3, base_backoff_seconds=0
+    )
     assert result.response is not None
     assert result.response.status_code == 200
     assert result.transient is False
@@ -59,7 +61,9 @@ async def test_succeeds_immediately_on_200():
 @pytest.mark.asyncio
 async def test_retries_on_429_then_succeeds_honoring_retry_after():
     client = _FakeClient([_FakeResponse(429, {"retry-after": "0"}), _FakeResponse(200)])
-    result = await fetch_with_retry(client, "GET", "https://example.com", max_retries=3, base_backoff_seconds=0)
+    result = await fetch_with_retry(
+        client, "GET", "https://example.com", max_retries=3, base_backoff_seconds=0
+    )
     assert result.response is not None
     assert result.response.status_code == 200
     assert client.calls == 2
@@ -68,7 +72,9 @@ async def test_retries_on_429_then_succeeds_honoring_retry_after():
 @pytest.mark.asyncio
 async def test_429_exhausting_retries_is_transient_not_permanent():
     client = _FakeClient([_FakeResponse(429), _FakeResponse(429), _FakeResponse(429)])
-    result = await fetch_with_retry(client, "GET", "https://example.com", max_retries=2, base_backoff_seconds=0)
+    result = await fetch_with_retry(
+        client, "GET", "https://example.com", max_retries=2, base_backoff_seconds=0
+    )
     assert result.response is None
     assert result.transient is True
     assert result.rate_limited is True
@@ -78,7 +84,9 @@ async def test_429_exhausting_retries_is_transient_not_permanent():
 @pytest.mark.asyncio
 async def test_permanent_4xx_is_not_retried():
     client = _FakeClient([_FakeResponse(404)])
-    result = await fetch_with_retry(client, "GET", "https://example.com", max_retries=3, base_backoff_seconds=0)
+    result = await fetch_with_retry(
+        client, "GET", "https://example.com", max_retries=3, base_backoff_seconds=0
+    )
     assert result.response is not None
     assert result.response.status_code == 404
     assert result.transient is False
@@ -88,7 +96,9 @@ async def test_permanent_4xx_is_not_retried():
 @pytest.mark.asyncio
 async def test_network_error_is_transient():
     client = _FakeClient([httpx.ConnectError("boom"), httpx.ConnectError("boom")])
-    result = await fetch_with_retry(client, "GET", "https://example.com", max_retries=1, base_backoff_seconds=0)
+    result = await fetch_with_retry(
+        client, "GET", "https://example.com", max_retries=1, base_backoff_seconds=0
+    )
     assert result.response is None
     assert result.transient is True
     assert client.calls == 2
@@ -112,7 +122,9 @@ async def test_semaphore_bounds_concurrency():
     client = _TrackingClient()
     await asyncio.gather(
         *(
-            fetch_with_retry(client, "GET", "https://example.com", semaphore=semaphore, base_backoff_seconds=0)
+            fetch_with_retry(
+                client, "GET", "https://example.com", semaphore=semaphore, base_backoff_seconds=0
+            )
             for _ in range(6)
         )
     )
@@ -187,7 +199,9 @@ async def test_circuit_breaker_half_opens_after_cooldown():
 @pytest.mark.asyncio
 async def test_provider_client_trips_breaker_and_skips_network_calls():
     client = _FakeClient([_FakeResponse(500)] * 10)
-    provider = ProviderClient("test_provider_trip", max_concurrency=2, failure_threshold=3, cooldown_seconds=60)
+    provider = ProviderClient(
+        "test_provider_trip", max_concurrency=2, failure_threshold=3, cooldown_seconds=60
+    )
 
     for _ in range(3):
         result = await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
@@ -203,7 +217,9 @@ async def test_provider_client_trips_breaker_and_skips_network_calls():
 @pytest.mark.asyncio
 async def test_provider_client_tracks_metrics():
     client = _FakeClient([_FakeResponse(200), _FakeResponse(429), _FakeResponse(200)])
-    provider = ProviderClient("test_provider_metrics", max_concurrency=2, failure_threshold=99, cooldown_seconds=60)
+    provider = ProviderClient(
+        "test_provider_metrics", max_concurrency=2, failure_threshold=99, cooldown_seconds=60
+    )
 
     await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
     await provider.get(client, "https://example.com", max_retries=0, base_backoff_seconds=0)
@@ -246,7 +262,9 @@ def test_mask_url_strips_query_string_credentials():
 
 
 def test_mask_headers_for_log_redacts_authorization_and_api_key():
-    masked = mask_headers_for_log({"Authorization": "Bearer SECRET", "X-API-KEY": "abc123", "Accept": "application/json"})
+    masked = mask_headers_for_log(
+        {"Authorization": "Bearer SECRET", "X-API-KEY": "abc123", "Accept": "application/json"}
+    )
     assert masked["Authorization"] == "[REDACTED]"
     assert masked["X-API-KEY"] == "[REDACTED]"
     assert masked["Accept"] == "application/json"
@@ -254,3 +272,15 @@ def test_mask_headers_for_log_redacts_authorization_and_api_key():
 
 def test_mask_headers_for_log_handles_none():
     assert mask_headers_for_log(None) == {}
+
+
+@pytest.mark.asyncio
+async def test_server_530_is_not_retried_across_every_cycle():
+    client = _FakeClient([_FakeResponse(530)] * 10)
+    provider = ProviderClient("pumpfun_530", max_concurrency=1, failure_threshold=1, cooldown_seconds=60)
+    result = await provider.get(client, "https://pump.fun", max_retries=1, base_backoff_seconds=0)
+    assert result.response is None and result.transient is True
+    assert client.calls == 2
+    skipped = await provider.get(client, "https://pump.fun", max_retries=1, base_backoff_seconds=0)
+    assert skipped.circuit_open is True
+    assert client.calls == 2

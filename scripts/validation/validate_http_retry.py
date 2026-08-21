@@ -28,6 +28,7 @@ class FakeResp:
 
 class ScriptedClient:
     """Returns queued responses/exceptions in order, one per .request() call."""
+
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
@@ -48,7 +49,9 @@ async def main():
     # 1. 429 -> Retry-After honored -> success
     client = ScriptedClient([FakeResp(429, {"retry-after": "0"}), FakeResp(200)])
     t0 = time.monotonic()
-    result = await fetch_with_retry(client, "GET", "https://api.example.com/x?api-key=SECRET123", max_retries=3, base_backoff_seconds=0.01)
+    result = await fetch_with_retry(
+        client, "GET", "https://api.example.com/x?api-key=SECRET123", max_retries=3, base_backoff_seconds=0.01
+    )
     elapsed = time.monotonic() - t0
     assert result.response.status_code == 200
     assert result.rate_limited is True
@@ -57,20 +60,28 @@ async def main():
 
     # 2. 429 exhausting retries -> transient, not permanent
     client2 = ScriptedClient([FakeResp(429), FakeResp(429), FakeResp(429)])
-    result2 = await fetch_with_retry(client2, "GET", "https://api.example.com/y", max_retries=2, base_backoff_seconds=0.01)
+    result2 = await fetch_with_retry(
+        client2, "GET", "https://api.example.com/y", max_retries=2, base_backoff_seconds=0.01
+    )
     assert result2.response is None and result2.transient is True
-    print(f"[PASS] 429 exhausting {result2.retried} retries -> transient=True (retry-queue eligible), not a permanent reject")
+    print(
+        f"[PASS] 429 exhausting {result2.retried} retries -> transient=True (retry-queue eligible), not a permanent reject"
+    )
 
     # 3. permanent 404 -> no retry at all
     client3 = ScriptedClient([FakeResp(404)])
-    result3 = await fetch_with_retry(client3, "GET", "https://api.example.com/z", max_retries=5, base_backoff_seconds=0.01)
+    result3 = await fetch_with_retry(
+        client3, "GET", "https://api.example.com/z", max_retries=5, base_backoff_seconds=0.01
+    )
     assert result3.response.status_code == 404 and result3.transient is False
     assert len(client3.calls) == 1
     print("[PASS] 404 -> zero retries attempted (permanent, would waste budget)")
 
     # 4. network error -> transient
     client4 = ScriptedClient([httpx.TransportError("boom"), httpx.TransportError("boom")])
-    result4 = await fetch_with_retry(client4, "GET", "https://api.example.com/w", max_retries=1, base_backoff_seconds=0.01)
+    result4 = await fetch_with_retry(
+        client4, "GET", "https://api.example.com/w", max_retries=1, base_backoff_seconds=0.01
+    )
     assert result4.response is None and result4.transient is True
     print("[PASS] network error -> transient=True")
 
@@ -105,19 +116,27 @@ async def main():
     #    stops making real network calls, metrics reflect everything.
     flaky_client = ScriptedClient([FakeResp(500)] * 3 + [FakeResp(200)])
     pc = get_provider_client("demo_provider", max_concurrency=2, failure_threshold=3, cooldown_seconds=1.0)
-    for i in range(3):
-        r = await pc.get(flaky_client, "https://api.example.com/data", max_retries=0, base_backoff_seconds=0.01)
+    for _ in range(3):
+        r = await pc.get(
+            flaky_client, "https://api.example.com/data", max_retries=0, base_backoff_seconds=0.01
+        )
         assert r.response is None and r.transient is True
     assert pc.breaker.is_open is True
     calls_before = len(flaky_client.calls)
-    r_skipped = await pc.get(flaky_client, "https://api.example.com/data", max_retries=0, base_backoff_seconds=0.01)
+    r_skipped = await pc.get(
+        flaky_client, "https://api.example.com/data", max_retries=0, base_backoff_seconds=0.01
+    )
     assert r_skipped.circuit_open is True
     assert len(flaky_client.calls) == calls_before  # NO network call made
-    print("[PASS] ProviderClient: circuit opened after 3x 500s, 4th call skipped network entirely (circuit_open=True)")
+    print(
+        "[PASS] ProviderClient: circuit opened after 3x 500s, 4th call skipped network entirely (circuit_open=True)"
+    )
     print(f"       metrics: {pc.metrics.as_dict()}")
 
     # 9. get_provider_client registry + get_all_provider_metrics
-    named = get_provider_client("jupiter_trending", max_concurrency=4, failure_threshold=5, cooldown_seconds=60)
+    named = get_provider_client(
+        "jupiter_trending", max_concurrency=4, failure_threshold=5, cooldown_seconds=60
+    )
     good_client = ScriptedClient([FakeResp(200)])
     await named.get(good_client, "https://api.jup.ag/tokens", max_retries=0, base_backoff_seconds=0.01)
     all_metrics = get_all_provider_metrics()
@@ -144,7 +163,9 @@ async def main():
     tc = TrackingClient()
     await asyncio.gather(*(pc2.get(tc, "https://x", base_backoff_seconds=0.01) for _ in range(8)))
     assert max_concurrent <= 2
-    print(f"[PASS] Semaphore bounded 8 concurrent requests to max_concurrency=2 (observed max={max_concurrent})")
+    print(
+        f"[PASS] Semaphore bounded 8 concurrent requests to max_concurrency=2 (observed max={max_concurrent})"
+    )
 
     print()
     print("ALL 10 TASK-3 RUNTIME CHECKS PASSED against the real utils/http_retry.py module.")

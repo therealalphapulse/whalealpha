@@ -495,7 +495,9 @@ class TokenOpportunity(Base):
     max_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_drawdown_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    snapshots: Mapped[list["TokenSnapshot"]] = relationship(back_populates="opportunity", cascade="all, delete-orphan")
+    snapshots: Mapped[list["TokenSnapshot"]] = relationship(
+        back_populates="opportunity", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_token_opportunities_status_detected_at", "status", "detected_at"),
@@ -509,7 +511,9 @@ class TokenSnapshot(Base):
     __tablename__ = "token_snapshots"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
-    opportunity_id: Mapped[str] = mapped_column(ForeignKey("token_opportunities.id", ondelete="CASCADE"), nullable=False)
+    opportunity_id: Mapped[str] = mapped_column(
+        ForeignKey("token_opportunities.id", ondelete="CASCADE"), nullable=False
+    )
     opportunity: Mapped[TokenOpportunity] = relationship(back_populates="snapshots")
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     market_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)

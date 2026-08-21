@@ -36,7 +36,9 @@ def test_buy_reconstructed_from_raw_rpc_transaction():
     tx = _make_tx(
         sol_delta_lamports=-2_000_000_000,
         pre_token=[],
-        post_token=[{"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 300.0}}],
+        post_token=[
+            {"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 300.0}}
+        ],
     )
     swap = _extract_swap_from_rpc_transaction(tx, WALLET, SOL_PRICE)
     assert swap is not None
@@ -50,7 +52,9 @@ def test_sell_reconstructed_when_token_account_closes():
     rather than appearing with a zero balance — must still be detected."""
     tx = _make_tx(
         sol_delta_lamports=1_500_000_000,
-        pre_token=[{"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 300.0}}],
+        pre_token=[
+            {"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 300.0}}
+        ],
         post_token=[],
     )
     swap = _extract_swap_from_rpc_transaction(tx, WALLET, SOL_PRICE)
@@ -66,7 +70,9 @@ def test_failed_transaction_is_never_counted_as_a_swap():
     tx = _make_tx(
         sol_delta_lamports=-2_000_000_000,
         pre_token=[],
-        post_token=[{"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 300.0}}],
+        post_token=[
+            {"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 300.0}}
+        ],
         err={"InstructionError": [0, "Custom"]},
     )
     assert _extract_swap_from_rpc_transaction(tx, WALLET, SOL_PRICE) is None
@@ -78,7 +84,9 @@ def test_plain_token_transfer_without_sol_delta_is_not_a_swap():
     tx = _make_tx(
         sol_delta_lamports=0,
         pre_token=[],
-        post_token=[{"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 50.0}}],
+        post_token=[
+            {"accountIndex": 2, "owner": WALLET, "mint": USDC_MINT, "uiTokenAmount": {"uiAmount": 50.0}}
+        ],
     )
     assert _extract_swap_from_rpc_transaction(tx, WALLET, SOL_PRICE) is None
 
@@ -87,7 +95,13 @@ def test_wallet_absent_from_transaction_returns_none_not_a_crash():
     tx = {
         "blockTime": 1_725_000_000,
         "transaction": {"message": {"accountKeys": [{"pubkey": OTHER}]}},
-        "meta": {"err": None, "preBalances": [1], "postBalances": [1], "preTokenBalances": [], "postTokenBalances": []},
+        "meta": {
+            "err": None,
+            "preBalances": [1],
+            "postBalances": [1],
+            "preTokenBalances": [],
+            "postTokenBalances": [],
+        },
     }
     assert _extract_swap_from_rpc_transaction(tx, WALLET, SOL_PRICE) is None
 
@@ -152,6 +166,7 @@ class _Always429:
         class _R:
             status_code = 429
             headers = {}
+
         return _R()
 
 
@@ -201,7 +216,12 @@ async def test_rpc_fallback_used_when_helius_unavailable():
                     "postBalances": [3_000_000_000, 0],
                     "preTokenBalances": [],
                     "postTokenBalances": [
-                        {"accountIndex": 2, "owner": address, "mint": "TOKEN_MINT", "uiTokenAmount": {"uiAmount": 400.0}}
+                        {
+                            "accountIndex": 2,
+                            "owner": address,
+                            "mint": "TOKEN_MINT",
+                            "uiTokenAmount": {"uiAmount": 400.0},
+                        }
                     ],
                 },
             }
@@ -298,7 +318,12 @@ async def test_rpc_fallback_still_works_after_the_helius_circuit_breaker_opens()
                     "postBalances": [3_000_000_000],
                     "preTokenBalances": [],
                     "postTokenBalances": [
-                        {"accountIndex": 0, "owner": address, "mint": "TOKEN_MINT", "uiTokenAmount": {"uiAmount": 400.0}}
+                        {
+                            "accountIndex": 0,
+                            "owner": address,
+                            "mint": "TOKEN_MINT",
+                            "uiTokenAmount": {"uiAmount": 400.0},
+                        }
                     ],
                 },
             }
@@ -337,7 +362,9 @@ async def test_rpc_fallback_attempted_flag_reflects_an_attempt_even_when_it_yiel
     async def fake_rpc_transactions_no_swaps(connection, address, **kwargs):
         return []  # RPC fallback attempted, but nothing classifiable as a swap
 
-    with patch.object(wds, "get_wallet_recent_transactions", AsyncMock(side_effect=fake_rpc_transactions_no_swaps)):
+    with patch.object(
+        wds, "get_wallet_recent_transactions", AsyncMock(side_effect=fake_rpc_transactions_no_swaps)
+    ):
         result = await wds.fetch_wallet_swap_history(
             _Always429(), env, "WALLET_FALLBACK_EMPTY", sol_price_usd=150.0, connection=object()
         )
@@ -385,7 +412,12 @@ async def test_successful_helius_fetch_does_not_set_rate_limited_or_fallback_fla
                     "postBalances": [3_000_000_000],
                     "preTokenBalances": [],
                     "postTokenBalances": [
-                        {"accountIndex": 0, "owner": address, "mint": "TOKEN_MINT", "uiTokenAmount": {"uiAmount": 400.0}}
+                        {
+                            "accountIndex": 0,
+                            "owner": address,
+                            "mint": "TOKEN_MINT",
+                            "uiTokenAmount": {"uiAmount": 400.0},
+                        }
                     ],
                 },
             }

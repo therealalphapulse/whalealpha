@@ -9,7 +9,6 @@ from __future__ import annotations
 import time
 
 import pytest
-
 from whale_alpha.integrations.solana_connection import (
     _is_rate_limited_error,
     _rate_limited_rpc_call,
@@ -215,7 +214,9 @@ def test_resolve_websocket_url_prefers_explicit_override():
 def test_resolve_websocket_url_falls_back_to_alchemy_then_drpc_then_none():
     from whale_alpha.integrations.solana_connection import resolve_websocket_url
 
-    assert resolve_websocket_url(_make_env(ALCHEMY_API_KEY="k1")) == "wss://solana-mainnet.g.alchemy.com/v2/k1"
+    assert (
+        resolve_websocket_url(_make_env(ALCHEMY_API_KEY="k1")) == "wss://solana-mainnet.g.alchemy.com/v2/k1"
+    )
     assert resolve_websocket_url(_make_env(DRPC_API_KEY="k2")) == "wss://solana.drpc.org?dkey=k2"
     assert resolve_websocket_url(_make_env()) is None
 
@@ -379,7 +380,6 @@ async def test_close_closes_every_underlying_client_even_if_one_raises():
 
 def test_create_connection_returns_plain_client_for_single_endpoint():
     from solana.rpc.async_api import AsyncClient
-
     from whale_alpha.integrations.solana_connection import create_connection
 
     connection = create_connection(_make_env(SOLANA_CLUSTER="devnet"))

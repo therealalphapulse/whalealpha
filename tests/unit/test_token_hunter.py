@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from whale_alpha.engines.token_hunter import acceleration_score, cheap_filter, imbalance_score, score_token
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot
-from whale_alpha.integrations.token_hunter_sources import _mint
+
+from whale_alpha.engines.token_hunter import (
+    acceleration_score,
+    cheap_filter,
+    imbalance_score,
+    prefilter_candidates,
+    score_token,
+)
+from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, _mint
 
 
 def env():
@@ -83,3 +91,17 @@ def test_manipulation_penalty_can_keep_a_high_volume_token_out():
 def test_discovery_parser_handles_raydium_and_meteora_mint_shapes():
     assert _mint({"mintA": {"address": "RAY"}}, "mintA") == "RAY"
     assert _mint({"pool_token_mints": ["MET", "OTHER"]}, "mint") == "MET"
+
+
+def test_prefilter_rejects_before_enrichment_stage():
+    now = datetime.now(UTC)
+    good = DiscoveryCandidate(
+        snapshot(created_at_ms=int((now - timedelta(minutes=20)).timestamp() * 1000)), "test"
+    )
+    bad = DiscoveryCandidate(
+        snapshot(liquidity_usd=1000, created_at_ms=int((now - timedelta(minutes=20)).timestamp() * 1000)),
+        "test",
+    )
+    selected, counts = prefilter_candidates([good, bad], now=now, env=env())
+    assert [c.snapshot.mint for c in selected] == ["X"]
+    assert counts == {"basic_filter_passed": 1, "quality_gate_passed": 1}
