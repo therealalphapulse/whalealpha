@@ -477,6 +477,13 @@ async def run_hunter_cycle(
                 s = snapshots.get(mint)
                 if s is None:
                     continue
+                # Preserve the timestamp already resolved before enrichment.
+                # Enrichment may not expose pairCreatedAt for every pair, and it
+                # must never erase a provider/DexScreener/on-chain age that was
+                # already established. Provider-derived resolution remains first.
+                resolved_created_ms = candidate.snapshot.created_at_ms or s.created_at_ms
+                if resolved_created_ms is not None and s.created_at_ms != resolved_created_ms:
+                    s = replace(s, created_at_ms=resolved_created_ms)
                 age = _age(s.created_at_ms, now)
                 if age is None:
                     log.info("Token rejected", stage="enriched", mint=mint, reason="NO_TOKEN_AGE")

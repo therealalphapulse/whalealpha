@@ -225,6 +225,40 @@ def test_token_normalization_supports_nested_mints():
 
 
 @pytest.mark.asyncio
+async def test_onchain_resolved_age_survives_enrichment_without_timestamp(monkeypatch):
+    now = datetime.now(UTC)
+    resolved_ms = int((now - timedelta(minutes=8)).timestamp() * 1000)
+    candidate = DiscoveryCandidate(snapshot(created_at_ms=resolved_ms), "raydium")
+    async def fake_discover(*args):
+        return {"raydium": [candidate]}
+    async def fake_enrich(*args):
+        return {"X": snapshot(created_at_ms=None)}
+    async def fake_smart(*args):
+        return None
+    async def fake_outcomes(*args):
+        return None
+    async def fake_persist(*args):
+        return SimpleNamespace(last_alerted_at=None, alert_attempted_at=None, alert_status=None, detected_at=now, alert_delivered_at=None, alert_error=None)
+    monkeypatch.setattr(token_hunter, "discover_token_candidates", fake_discover)
+    monkeypatch.setattr(token_hunter, "enrich_tokens", fake_enrich)
+    monkeypatch.setattr(token_hunter, "_smart_money", fake_smart)
+    monkeypatch.setattr(token_hunter, "_outcomes", fake_outcomes)
+    monkeypatch.setattr(token_hunter, "_persist", fake_persist)
+    monkeypatch.setattr(token_hunter, "score_token", lambda *a, **k: token_hunter.TokenScore(70, {"age": 70}, "MEDIUM", (), ("Age",)))
+    class Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def commit(self): pass
+    class Factory:
+        def __call__(self): return Session()
+    cfg = env()
+    cfg.admin_telegram_ids = set()
+    cfg.TOKEN_HUNTER_ALERT_MIN_SCORE = 82
+    result = await token_hunter.run_hunter_cycle(cfg, Factory(), SimpleNamespace(), object(), object())
+    assert result["scored"] == 1
+
+
+@pytest.mark.asyncio
 async def test_complete_hunter_pipeline_reaches_telegram(monkeypatch):
     candidate = DiscoveryCandidate(snapshot(created_at_ms=int((datetime.now(UTC) - timedelta(minutes=10)).timestamp()*1000)), "test")
     async def fake_discover(*args): return {"test": [candidate]}
