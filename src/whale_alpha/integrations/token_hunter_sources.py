@@ -118,25 +118,12 @@ def _candidate(entry: dict[str, Any], source: str, mint: str) -> DiscoveryCandid
     # Field order matters: "usd_market_cap" (pump.fun) and "marketCap" (DexScreener-shaped
     # payloads) are genuine USD values. "market_cap" is ambiguous — on pump.fun it is a raw
     # bonding-curve/SOL-denominated figure, NOT USD, and must never be preferred over
-    # usd_market_cap. Only fall back to it when no USD-denominated field is present.
+    # usd_market_cap. Only fall back to it when no USD-denominated field is present. Meteora
+    # and Raydium pools don't expose market cap in any field (only tvl/price/reserves), so
+    # this correctly resolves to None for them rather than guessing.
     market_cap = _number(entry.get("marketCap"), _number(entry.get("usd_market_cap")))
     if market_cap is None:
         market_cap = _number(entry.get("fdv"), _number(entry.get("market_cap")))
-    if market_cap is None:
-        # One-off diagnostic: we don't yet know the real market-cap field name (if any) for
-        # this provider's payload shape. Log the raw entry once so it can be identified, then
-        # this branch (and the MARKET CAP FIELD DEBUG log below) should be removed.
-        log.info("MARKET CAP FIELD UNRESOLVED — raw entry", provider=source, mint=mint, entry_keys=sorted(entry.keys()))
-    log.info(
-        "MARKET CAP FIELD DEBUG",
-        provider=source,
-        mint=mint,
-        resolved_market_cap_usd=market_cap,
-        raw_marketCap=entry.get("marketCap"),
-        raw_market_cap=entry.get("market_cap"),
-        raw_usd_market_cap=entry.get("usd_market_cap"),
-        raw_fdv=entry.get("fdv"),
-    )
     liquidity_usd = _number(liquidity.get("usd"), _number(entry.get("liquidityUsd")))
     volume_5m = (
         _number(volume.get("m5"), _number(entry.get("volume_5m"), _number(entry.get("volume5m"), 0.0))) or 0.0
@@ -210,10 +197,99 @@ async def _fetch_candidates(
     return candidates
 
 
+async def _fetch_dexscreener_pairs(
+    client: httpx.AsyncClient, env: Env, addresses: list[str]
+) -> list[DiscoveryCandidate]:
+    """Resolve real pair market data (price/liquidity/volume/market cap) for a list of
+    Solana token addresses via DexScreener's tokens endpoint, batching up to 30 addresses
+    per call (the API's documented limit)."""
+    candidates: list[DiscoveryCandidate] = []
+    seen: set[str] = set()
+    for i in range(0, len(addresses), 30):
+        batch = addresses[i : i + 30]
+        if not batch:
+            continue
+        url = f"{env.DISCOVERY_DEXSCREENER_API_BASE}/tokens/v1/solana/{','.join(batch)}"
+        result = await _provider(env, "dexscreener").get(client, url, **_retry(env))
+        if result.response is None or result.response.status_code >= 400:
+            log.warning(
+                "Token discovery provider failed",
+                provider="dexscreener",
+                status=result.response.status_code if result.response else None,
+            )
+            continue
+        try:
+            payload = result.response.json()
+        except ValueError as err:
+            log.warning("Token discovery provider returned invalid JSON", provider="dexscreener", err=str(err))
+            continue
+        for entry in _list(payload, ("pairs",)):
+            if not isinstance(entry, dict):
+                continue
+            # DexScreener pairs nest the token address under baseToken.address, so
+            # "baseToken" must be checked (its dict branch extracts .address) alongside
+            # the flatter shapes other providers use.
+            mint = _mint(entry, "baseToken", "mint", "tokenAddress", "address", "baseMint", "id")
+            if mint and mint not in seen:
+                seen.add(mint)
+                candidates.append(_candidate(entry, "dexscreener", mint))
+    return candidates
+
+
+async def _discover_dexscreener_candidates(
+    client: httpx.AsyncClient, env: Env, limit: int
+) -> list[DiscoveryCandidate]:
+    """DexScreener has no "new pairs" feed; the closest discovery surface is the boosted
+    (promoted) token list, which returns metadata only — no price, liquidity, volume, or
+    market cap. Seed candidate addresses from that list, then resolve their real market
+    data via _fetch_dexscreener_pairs. Non-Solana entries are dropped since this bot only
+    trades Solana."""
+    boost_url = f"{env.DISCOVERY_DEXSCREENER_API_BASE}/token-boosts/latest/v1"
+    result = await _provider(env, "dexscreener").get(client, boost_url, **_retry(env))
+    if result.response is None or result.response.status_code >= 400:
+        log.warning(
+            "Token discovery provider failed",
+            provider="dexscreener",
+            status=result.response.status_code if result.response else None,
+        )
+        return []
+    try:
+        payload = result.response.json()
+    except ValueError as err:
+        log.warning("Token discovery provider returned invalid JSON", provider="dexscreener", err=str(err))
+        return []
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for entry in _list(payload, ("data", "list", "items"))[:limit]:
+        if not isinstance(entry, dict) or entry.get("chainId") != "solana":
+            continue
+        address = entry.get("tokenAddress")
+        if isinstance(address, str) and address and address not in seen:
+            seen.add(address)
+            addresses.append(address)
+    return await _fetch_dexscreener_pairs(client, env, addresses)
+
+
 async def discover_token_candidates(
     client: httpx.AsyncClient, env: Env
 ) -> dict[str, list[DiscoveryCandidate]]:
     sources: dict[str, list[DiscoveryCandidate]] = {}
+
+    async def cached_dexscreener() -> None:
+        key = "dexscreener:candidates"
+        hit = _cache.get(key)
+        if hit is not None:
+            sources["dexscreener"] = hit
+            return
+        try:
+            candidates = await _discover_dexscreener_candidates(
+                client, env, limit=env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE
+            )
+        except Exception as err:  # noqa: BLE001 — one provider must never stop discovery
+            log.warning("Token discovery provider isolated failure", provider="dexscreener", err=str(err))
+            candidates = []
+        _cache.set(key, candidates)
+        sources["dexscreener"] = candidates
 
     async def cached(
         name: str,
@@ -260,9 +336,7 @@ async def discover_token_candidates(
             {"page": "1", "page_size": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)},
         ))
     if env.DISCOVERY_DEXSCREENER_ENABLED:
-        tasks.append(cached(
-            "dexscreener", "dexscreener", f"{env.DISCOVERY_DEXSCREENER_API_BASE}/token-boosts/latest/v1"
-        ))
+        tasks.append(cached_dexscreener())
     if tasks:
         await asyncio.gather(*tasks)
     return sources

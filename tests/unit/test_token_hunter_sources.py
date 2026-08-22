@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
 from whale_alpha.integrations.token_hunter_sources import _candidate
 
 
@@ -45,9 +50,63 @@ def test_fdv_used_before_ambiguous_raw_market_cap_fallback():
 
 def test_market_cap_none_when_no_recognized_field_present():
     """Providers whose payload shape has none of the known market-cap fields
-    (e.g. Meteora, Raydium pools, DexScreener token-boosts as currently wired)
-    must resolve to None rather than a wrong guess — this is the UNKNOWN
-    case, distinct from a genuinely-zero or below-threshold market cap."""
+    (e.g. Meteora and Raydium pools, which only expose tvl/price/reserves, not
+    market cap or supply) must resolve to None rather than a wrong guess — this
+    is the UNKNOWN case, distinct from a genuinely-zero or below-threshold
+    market cap."""
     entry = {"mint": "SomeMint333333333333333333333333333333333"}
     candidate = _candidate(entry, "meteora", entry["mint"])
     assert candidate.snapshot.market_cap_usd is None
+
+
+@pytest.mark.asyncio
+async def test_dexscreener_discovery_resolves_real_pair_data_via_two_step_lookup(monkeypatch):
+    """DexScreener's boost list is promotional metadata only (no market data).
+
+    Regression for: discovery previously built candidates directly from that
+    metadata, so market_cap_usd (and liquidity/volume/age) was always None,
+    causing every DexScreener-sourced candidate to be rejected as
+    MARKET_CAP_TOO_LOW regardless of the token's real market cap. Discovery
+    must now seed addresses from the boost list, filter to Solana, and resolve
+    real pair data via the tokens endpoint.
+    """
+    from whale_alpha.integrations import token_hunter_sources as sources
+
+    calls: list[str] = []
+
+    class FakeProvider:
+        async def get(self, client, url, **kwargs):
+            calls.append(url)
+            if "token-boosts" in url:
+                payload = [
+                    {"chainId": "solana", "tokenAddress": "MintA1111111111111111111111111111111111111"},
+                    {"chainId": "ethereum", "tokenAddress": "0xNotSolana"},
+                ]
+            else:
+                assert "MintA1111111111111111111111111111111111111" in url
+                assert "0xNotSolana" not in url
+                payload = [
+                    {
+                        "baseToken": {"address": "MintA1111111111111111111111111111111111111"},
+                        "pairAddress": "PAIR1",
+                        "marketCap": 45000.0,
+                        "liquidity": {"usd": 12000.0},
+                        "pairCreatedAt": 1787373000000,
+                    }
+                ]
+            return SimpleNamespace(response=SimpleNamespace(status_code=200, json=lambda: payload))
+
+    monkeypatch.setattr(sources, "_provider", lambda env, name: FakeProvider())
+    fake_env = SimpleNamespace(
+        DISCOVERY_DEXSCREENER_API_BASE="https://dex",
+        DISCOVERY_PROVIDER_MAX_RETRIES=0,
+        DISCOVERY_PROVIDER_RETRY_BASE_SECONDS=0,
+        DISCOVERY_PROVIDER_RETRY_MAX_SECONDS=0,
+    )
+    candidates = await sources._discover_dexscreener_candidates(AsyncMock(), fake_env, limit=10)
+    assert len(candidates) == 1
+    assert candidates[0].snapshot.mint == "MintA1111111111111111111111111111111111111"
+    assert candidates[0].snapshot.market_cap_usd == 45000.0
+    assert candidates[0].snapshot.liquidity_usd == 12000.0
+    assert any("token-boosts" in url for url in calls)
+    assert any("tokens/v1/solana/" in url for url in calls)
