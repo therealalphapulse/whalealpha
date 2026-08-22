@@ -438,19 +438,24 @@ async def run_hunter_cycle(
                 delivered = 0
                 errors: list[str] = []
                 text = format_alert(s, score, age, o.detected_at)
-                if env.admin_telegram_ids:
-                    recipient_ids = alert_recipient_ids(env.admin_telegram_ids, [])
-                else:
-                    subscriber_result = await session.execute(
-                        select(User.telegram_id).where(User.notify_signals.is_(True))
-                    )
-                    recipient_ids = alert_recipient_ids(set(), list(subscriber_result.scalars().all()))
+                recipient_ids = alert_recipient_ids(env.admin_telegram_ids, [])
                 for chat_id in recipient_ids:
                     try:
                         await bot.send_message(chat_id=int(chat_id), text=text)
                         delivered += 1
                     except (TelegramAPIError, ValueError) as err:
                         errors.append(str(err))
+                if delivered == 0:
+                    subscriber_result = await session.execute(
+                        select(User.telegram_id).where(User.notify_signals.is_(True))
+                    )
+                    subscriber_ids = alert_recipient_ids(set(), list(subscriber_result.scalars().all()))
+                    for chat_id in subscriber_ids:
+                        try:
+                            await bot.send_message(chat_id=int(chat_id), text=text)
+                            delivered += 1
+                        except (TelegramAPIError, ValueError) as err:
+                            errors.append(str(err))
                 if delivered:
                     o.alert_delivered_at = now
                     o.last_alerted_at = now
