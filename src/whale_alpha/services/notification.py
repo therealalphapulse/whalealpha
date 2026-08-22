@@ -16,6 +16,8 @@ log and skip rather than let one bad recipient abort notifying everyone else.
 
 from __future__ import annotations
 
+from html import escape
+
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from sqlalchemy import select
@@ -33,25 +35,41 @@ def _short(mint: str) -> str:
 
 
 def format_signal_message(signal: Signal, candidate: SignalCandidate) -> str:
+    risk_icon = "🟢" if candidate.risk_level == "LOW" else "🟡" if candidate.risk_level == "MEDIUM" else "🔴"
+    token = escape(_short(candidate.token_mint))
+    mint = escape(candidate.token_mint)
+    recommendation = escape(candidate.ai_recommendation) if candidate.ai_recommendation else None
     lines = [
-        "🚨 *New Whale Alpha Signal*",
+        "🚨 <b>WHALE ALPHA SIGNAL</b>",
+        "<i>Smart-money accumulation detected</i>",
         "",
-        f"Token: `{_short(candidate.token_mint)}`",
-        f"Confidence: *{candidate.confidence_score:.0f}/100* ({candidate.risk_level})",
-        f"Whales accumulating: {candidate.wallet_count}",
-        f"Total capital: ${candidate.total_capital_usd:,.0f}",
+        f"🪙 <b>{token}</b>",
+        f"🎯 <b>Confidence:</b> {candidate.confidence_score:.0f}/100  |  {risk_icon} <b>{escape(candidate.risk_level)}</b>",
+        "",
+        "🐋 <b>WHALE ACTIVITY</b>",
+        f"• Wallets accumulating: <b>{candidate.wallet_count}</b>",
+        f"• Capital deployed: <b>${candidate.total_capital_usd:,.0f}</b>",
     ]
     if signal.entry_zone_low is not None and signal.entry_zone_high is not None:
-        lines.append(f"Entry zone: ${signal.entry_zone_low:.6f} – ${signal.entry_zone_high:.6f}")
-    if candidate.ai_recommendation:
-        lines.append("")
-        lines.append(f"_{candidate.ai_recommendation}_")
-    lines.append("")
-    lines.append(
-        f"Full mint: `{candidate.token_mint}`\n"
-        "Use /buy <mint> <usd_amount> to act on this manually, or /autotrading "
-        "to review your auto-trading rules."
-    )
+        lines += [
+            "",
+            "📍 <b>ENTRY ZONE</b>",
+            f"<code>${signal.entry_zone_low:.6f} – ${signal.entry_zone_high:.6f}</code>",
+        ]
+    if recommendation:
+        lines += ["", "🧠 <b>ALPHA READ</b>", f"<i>{recommendation}</i>"]
+    lines += [
+        "",
+        "🔐 <b>CONTRACT</b>",
+        f"<code>{mint}</code>",
+        "",
+        "⚡ <b>ACTION</b>",
+        "Use <code>/buy &lt;mint&gt; &lt;usd_amount&gt;</code> for a manual trade.",
+        "Use <code>/autotrading</code> to review auto-trading rules.",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<i>Whale Alpha • Signal Intelligence</i>",
+    ]
     return "\n".join(lines)
 
 
@@ -69,7 +87,7 @@ async def notify_signal_subscribers(
     sent = 0
     for user in users:
         try:
-            await bot.send_message(chat_id=int(user.telegram_id), text=text, parse_mode="Markdown")
+            await bot.send_message(chat_id=int(user.telegram_id), text=text, parse_mode="HTML")
             sent += 1
         except (TelegramAPIError, ValueError) as err:
             # ValueError covers a non-numeric telegram_id, which shouldn't

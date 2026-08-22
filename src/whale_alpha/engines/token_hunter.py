@@ -7,6 +7,7 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from html import escape
 from typing import Any
 
 from aiogram import Bot
@@ -268,9 +269,36 @@ def _money(v: float | None) -> str:
 
 
 def format_alert(s: TokenMarketSnapshot, score: TokenScore, age: float, detected: datetime) -> str:
-    reasons = ", ".join(score.reasons) or "Multiple independent activity signals"
-    warnings = ", ".join(score.risk_flags) or "None observed"
-    return f"🐋 WHALE ALPHA — HIGH-POTENTIAL\n\n{s.symbol or 'Unknown'} — {s.name or 'Unknown'}\nMint: {s.mint}\nMC: {_money(s.market_cap_usd)} | Liquidity: {_money(s.liquidity_usd)}\nAge: {age:.0f}m | Score: {score.total:.0f}/100 | Risk: {score.risk_level}\n5m: {_money(s.volume_5m_usd)} volume | {s.buys_5m} buys / {s.sells_5m} sells\n1h price: {s.price_change_1h_pct:+.1f}%\n\nWhy: {reasons}\nWarnings: {warnings}\nDetected: {detected.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    risk_icon = "🟢" if score.risk_level == "LOW" else "🟡" if score.risk_level == "MEDIUM" else "🔴"
+    symbol = escape(s.symbol or "Unknown")
+    name = escape(s.name or "Unknown")
+    mint = escape(s.mint)
+    reasons = score.reasons or ("Multiple independent activity signals",)
+    warnings = score.risk_flags or ("None observed",)
+    reason_lines = "\n".join(f"• {escape(reason.replace('_', ' ').title())}" for reason in reasons[:4])
+    warning_lines = "\n".join(f"• {escape(flag.replace('_', ' ').title())}" for flag in warnings[:4])
+    return (
+        "🚨 <b>WHALE ALPHA • TOKEN HUNTER</b>\n"
+        "<i>High-potential early opportunity detected</i>\n\n"
+        f"🪙 <b>${symbol}</b>  <i>{name}</i>\n"
+        f"🎯 <b>Score:</b> {score.total:.0f}/100  |  {risk_icon} <b>{escape(score.risk_level)} RISK</b>\n"
+        f"⏱ <b>Age:</b> {age:.0f}m\n\n"
+        "📊 <b>MARKET SNAPSHOT</b>\n"
+        f"• Market cap: <b>{escape(_money(s.market_cap_usd))}</b>\n"
+        f"• Liquidity: <b>{escape(_money(s.liquidity_usd))}</b>\n"
+        f"• 5m volume: <b>{escape(_money(s.volume_5m_usd))}</b>\n"
+        f"• Flow: <b>{s.buys_5m}</b> buys / <b>{s.sells_5m}</b> sells\n"
+        f"• 1h price: <b>{s.price_change_1h_pct:+.1f}%</b>\n\n"
+        "🧠 <b>WHY IT TRIGGERED</b>\n"
+        f"{reason_lines}\n\n"
+        "🛡 <b>RISK CHECK</b>\n"
+        f"{warning_lines}\n\n"
+        "🔐 <b>CONTRACT</b>\n"
+        f"<code>{mint}</code>\n\n"
+        f"🕒 Detected: <code>{detected.strftime('%Y-%m-%d %H:%M:%S')} UTC</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Whale Alpha • Signal Intelligence</i>"
+    )
 
 
 async def _smart_money(session: AsyncSession, mint: str, now: datetime) -> float | None:
@@ -441,7 +469,7 @@ async def run_hunter_cycle(
                 recipient_ids = alert_recipient_ids(env.admin_telegram_ids, [])
                 for chat_id in recipient_ids:
                     try:
-                        await bot.send_message(chat_id=int(chat_id), text=text)
+                        await bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML")
                         delivered += 1
                     except (TelegramAPIError, ValueError) as err:
                         errors.append(str(err))
@@ -452,7 +480,7 @@ async def run_hunter_cycle(
                     subscriber_ids = alert_recipient_ids(set(), list(subscriber_result.scalars().all()))
                     for chat_id in subscriber_ids:
                         try:
-                            await bot.send_message(chat_id=int(chat_id), text=text)
+                            await bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML")
                             delivered += 1
                         except (TelegramAPIError, ValueError) as err:
                             errors.append(str(err))
