@@ -1,20 +1,4 @@
-"""Bot bootstrap — port of src/bot/index.ts (grammY Bot -> aiogram Dispatcher).
-
-Library-driven difference (see PORTING_NOTES.md): grammY's `Bot` instance owns
-both transport and dispatch. aiogram v3 splits this into a `Bot` (transport,
-API calls) and a `Dispatcher` (routing/middleware), with `Router`s attached to
-the dispatcher. We mirror the same command set and the same middleware order
-(rate limit -> RBAC) as the original `bot.use(...)` calls.
-
---- NEW vs. the original port ---
-`Dispatcher` now uses `RedisStorage` instead of the default in-memory FSM
-storage, since /connectwallet (bot/commands/wallet.py) needs FSM state to
-survive a restart between "asked for your key" and "received it" — in-memory
-storage would silently drop that mid-flow on a redeploy, leaving the user
-stuck. Also registers the four new command routers (wallet, manual_trading,
-alerts) and threads an `httpx.AsyncClient` through to the ones that need it
-for price-feed lookups.
-"""
+"""Bot bootstrap — port of src/bot/index.ts (grammY Bot -> aiogram Dispatcher)."""
 
 from __future__ import annotations
 
@@ -30,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from whale_alpha.bot.commands.admin import register_admin_commands
 from whale_alpha.bot.commands.alerts import register_alert_commands
 from whale_alpha.bot.commands.manual_trading import register_manual_trading_commands
+from whale_alpha.bot.commands.scanner import register_scanner_commands
 from whale_alpha.bot.commands.trading import register_trading_commands
 from whale_alpha.bot.commands.wallet import register_wallet_commands
 from whale_alpha.bot.commands.whales import register_whales_command
@@ -69,12 +54,14 @@ def create_bot(
             "Whale Alpha is now an intelligence-only early opportunity detector. "
             "It finds very young Solana tokens showing multiple independent signs of strength, "
             "scores them 0–100, and sends only high-potential opportunities.\n\n"
+            "🔎 /scan <token_mint> — scan any Solana meme token\n"
             "/whales — browse the legacy whale database\n"
             "/mute /unmute — toggle legacy whale-signal DMs\n"
             f"{admin_lines}",
             parse_mode="Markdown",
         )
 
+    dp.include_router(register_scanner_commands(env, http_client))
     dp.include_router(register_whales_command(session_factory))
     if env.ENABLE_LEGACY_TRADING:
         dp.include_router(register_trading_commands(session_factory))
