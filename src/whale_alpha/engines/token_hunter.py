@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from whale_alpha.config import Env
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot, enrich_tokens
+from whale_alpha.integrations.token_age import resolve_token_ages
 from whale_alpha.utils.logger import child_logger
 
 from whale_alpha.db.models import TokenOpportunity, TokenSnapshot, WalletEvent, WalletStatus, WhaleWallet
@@ -186,7 +187,7 @@ def score_token(
 
 
 def cheap_filter(snapshot: TokenMarketSnapshot, *, age_minutes: float, env: Env) -> tuple[bool, str | None]:
-    if age_minutes < 0 or age_minutes > env.TOKEN_HUNTER_MAX_AGE_MINUTES:
+    if age_minutes < env.TOKEN_HUNTER_MIN_AGE_MINUTES or age_minutes > env.TOKEN_HUNTER_MAX_AGE_MINUTES:
         return False, "AGE_OUTSIDE_WINDOW"
     if not snapshot.market_cap_usd or snapshot.market_cap_usd < env.TOKEN_HUNTER_MIN_MARKET_CAP_USD:
         return False, "MARKET_CAP_TOO_LOW"
@@ -352,7 +353,11 @@ async def _outcomes(session: AsyncSession, client: Any, env: Env, now: datetime)
 
 
 async def run_hunter_cycle(
-    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any
+    env: Env,
+    session_factory: async_sessionmaker[AsyncSession],
+    bot: Bot,
+    client: Any,
+    connection: Any | None = None,
 ) -> dict[str, int]:
     now = datetime.now(UTC)
     funnel = {
@@ -377,7 +382,19 @@ async def run_hunter_cycle(
 
     async with session_factory() as session:
         limited = list(candidates.values())[: env.TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE]
-        prequalified, prefilter_counts = prefilter_candidates(limited, now=now, env=env)
+        age_resolutions = await resolve_token_ages(client, env, limited, now, connection)
+        resolved_candidates = [
+            replace(
+                candidate,
+                snapshot=replace(
+                    candidate.snapshot,
+                    created_at_ms=age_resolutions[candidate.snapshot.mint].created_at_ms,
+                ),
+            )
+            for candidate in limited
+            if candidate.snapshot.mint in age_resolutions
+        ]
+        prequalified, prefilter_counts = prefilter_candidates(resolved_candidates, now=now, env=env)
         funnel["basic_filter_passed"] = prefilter_counts["basic_filter_passed"]
         funnel["quality_gate_passed"] = prefilter_counts["quality_gate_passed"]
         for offset in range(0, len(prequalified), 30):
@@ -389,10 +406,13 @@ async def run_hunter_cycle(
                 s = snapshots.get(mint)
                 if s is None:
                     continue
-                age = _age(s.created_at_ms, now)
+                resolution = age_resolutions.get(mint)
+                created_at_ms = resolution.created_at_ms if resolution else s.created_at_ms
+                age = _age(created_at_ms, now)
                 if age is None:
                     log.info("Token rejected", stage="enriched", mint=mint, reason="NO_TOKEN_AGE")
                     continue
+                s = replace(s, created_at_ms=created_at_ms)
                 score = score_token(
                     s, age_minutes=age, smart_money_score=await _smart_money(session, mint, now)
                 )
@@ -437,13 +457,13 @@ async def run_hunter_cycle(
 
 
 def start_token_hunter_loop(
-    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any
+    env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any, connection: Any | None = None
 ) -> Callable[[], Any]:
     async def worker() -> None:
         await asyncio.sleep(env.TOKEN_HUNTER_STARTUP_DELAY_SECONDS)
         while True:
             try:
-                await run_hunter_cycle(env, session_factory, bot, client)
+                await run_hunter_cycle(env, session_factory, bot, client, connection)
             except asyncio.CancelledError:
                 raise
             except Exception as err:

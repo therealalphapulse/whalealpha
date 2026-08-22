@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import asyncio
+
 import httpx
 from whale_alpha.config import Env
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot
+from whale_alpha.integrations.token_age import parse_timestamp_ms
 from whale_alpha.utils.logger import child_logger
 
 from whale_alpha.utils.http_retry import TTLCache, get_provider_client
@@ -98,13 +101,10 @@ def _dict(value: Any) -> dict[str, Any]:
 
 
 def _created_at_ms(entry: dict[str, Any]) -> int | None:
-    for key in ("pairCreatedAt", "createdAt", "created_at"):
-        value = _int(entry.get(key))
-        if value:
-            return value if value > 10**12 else value * 1000
-    value = _int(entry.get("created_timestamp"))
-    if value:
-        return value if value > 10**12 else value * 1000
+    for key in ("pairCreatedAt", "createdAt", "created_at", "created_timestamp"):
+        parsed = parse_timestamp_ms(entry.get(key))
+        if parsed is not None:
+            return parsed
     return None
 
 
@@ -162,9 +162,10 @@ async def _fetch_candidates(
     url: str,
     *,
     params: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
     limit: int,
 ) -> list[DiscoveryCandidate]:
-    result = await _provider(env, provider).get(client, url, params=params, **_retry(env))
+    result = await _provider(env, provider).get(client, url, params=params, headers=headers, **_retry(env))
     if result.response is None or result.response.status_code >= 400:
         log.warning(
             "Token discovery provider failed",
@@ -195,61 +196,56 @@ async def discover_token_candidates(
 ) -> dict[str, list[DiscoveryCandidate]]:
     sources: dict[str, list[DiscoveryCandidate]] = {}
 
-    async def cached(name: str, provider: str, url: str, params: dict[str, str] | None = None) -> None:
+    async def cached(
+        name: str,
+        provider: str,
+        url: str,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         key = f"{name}:candidates"
         hit = _cache.get(key)
         if hit is not None:
             sources[name] = hit
             return
-        candidates = await _fetch_candidates(
-            client, env, provider, url, params=params, limit=env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE
-        )
+        try:
+            candidates = await _fetch_candidates(
+                client, env, provider, url, params=params, headers=headers, limit=env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE
+            )
+        except Exception as err:  # noqa: BLE001 — one provider must never stop discovery
+            log.warning("Token discovery provider isolated failure", provider=provider, err=str(err))
+            candidates = []
         _cache.set(key, candidates)
         sources[name] = candidates
 
+    tasks = []
     if env.DISCOVERY_PUMPFUN_ENABLED:
-        await cached(
-            "pumpfun",
-            "pumpfun",
-            f"{env.DISCOVERY_PUMPFUN_API_BASE}/coins",
-            {
-                "offset": "0",
-                "limit": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE),
-                "sort": "created_timestamp",
-                "order": "DESC",
-            },
-        )
+        tasks.append(cached(
+            "pumpfun", "pumpfun", f"{env.DISCOVERY_PUMPFUN_API_BASE}/coins",
+            {"offset": "0", "limit": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE), "sort": "created_timestamp", "order": "DESC"},
+            {"Authorization": f"Bearer {env.PUMPFUN_API_TOKEN}"} if env.PUMPFUN_API_TOKEN else None,
+        ))
     if env.DISCOVERY_LAUNCHLAB_ENABLED:
-        await cached(
-            "launchlab",
-            "launchlab",
-            f"{env.DISCOVERY_LAUNCHLAB_API_BASE}/list",
-            {"sort": "new", "size": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)},
-        )
+        tasks.append(cached(
+            "launchlab", "launchlab", f"{env.DISCOVERY_LAUNCHLAB_API_BASE}/get/list",
+            {"sort": "new"},
+        ))
     if env.DISCOVERY_RAYDIUM_ENABLED:
-        await cached(
-            "raydium",
-            "raydium",
-            f"{env.DISCOVERY_RAYDIUM_API_BASE}/pools/info/list",
-            {
-                "poolType": "all",
-                "poolSortField": "default",
-                "sortType": "desc",
-                "pageSize": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE),
-                "page": "1",
-            },
-        )
+        tasks.append(cached(
+            "raydium", "raydium", f"{env.DISCOVERY_RAYDIUM_API_BASE}/pools/info/list",
+            {"poolType": "all", "poolSortField": "default", "sortType": "desc", "pageSize": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE), "page": "1"},
+        ))
     if env.DISCOVERY_METEORA_ENABLED:
-        await cached(
-            "meteora",
-            "meteora",
-            f"{env.DISCOVERY_METEORA_API_BASE}/pools",
-            {"limit": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)},
-        )
+        tasks.append(cached(
+            "meteora", "meteora", f"{env.DISCOVERY_METEORA_API_BASE}/pools",
+            {"page": "1", "page_size": str(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)},
+        ))
     if env.DISCOVERY_DEXSCREENER_ENABLED:
-        await cached(
+        tasks.append(cached(
             "dexscreener", "dexscreener", f"{env.DISCOVERY_DEXSCREENER_API_BASE}/token-boosts/latest/v1"
-        )
+        ))
+    if tasks:
+        await asyncio.gather(*tasks)
     return sources
 
 

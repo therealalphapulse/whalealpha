@@ -14,6 +14,7 @@ from sqlalchemy import text
 from whale_alpha.bot import create_bot
 from whale_alpha.config import get_env
 from whale_alpha.db.session import create_engine, create_session_factory
+from whale_alpha.integrations.solana_connection import create_connection
 from whale_alpha.engines.token_hunter import start_token_hunter_loop
 from whale_alpha.utils.logger import child_logger, configure_logging
 
@@ -40,8 +41,10 @@ async def main() -> None:
     http_client = httpx.AsyncClient(timeout=20.0)
     bot, dp = create_bot(env, redis, session_factory, http_client)
     stop_hunter = None
+    solana_connection = None
     if env.TOKEN_HUNTER_ENABLED:
-        stop_hunter = start_token_hunter_loop(env, session_factory, bot, http_client)
+        solana_connection = create_connection(env)
+        stop_hunter = start_token_hunter_loop(env, session_factory, bot, http_client, solana_connection)
         log.info("Token Hunter started")
     else:
         log.warning("Token Hunter disabled via TOKEN_HUNTER_ENABLED=false")
@@ -66,6 +69,8 @@ async def main() -> None:
     if stop_hunter is not None:
         await stop_hunter()
     await http_client.aclose()
+    if solana_connection is not None:
+        await solana_connection.close()
     await redis.aclose()
     await engine.dispose()
     with contextlib.suppress(asyncio.CancelledError):

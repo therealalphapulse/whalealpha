@@ -251,6 +251,9 @@ class TTLCache(Generic[T]):
             self._store.pop(next(iter(self._store)), None)
         self._store[key] = (time.monotonic() + self._ttl, value)
 
+    def clear(self) -> None:
+        self._store.clear()
+
     def __len__(self) -> int:
         return len(self._store)
 
