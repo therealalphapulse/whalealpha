@@ -118,6 +118,16 @@ def _candidate(entry: dict[str, Any], source: str, mint: str) -> DiscoveryCandid
     market_cap = _number(entry.get("marketCap"), _number(entry.get("market_cap")))
     if market_cap is None:
         market_cap = _number(entry.get("usd_market_cap"), _number(entry.get("fdv")))
+    log.info(
+        "MARKET CAP FIELD DEBUG",
+        provider=source,
+        mint=mint,
+        resolved_market_cap_usd=market_cap,
+        raw_marketCap=entry.get("marketCap"),
+        raw_market_cap=entry.get("market_cap"),
+        raw_usd_market_cap=entry.get("usd_market_cap"),
+        raw_fdv=entry.get("fdv"),
+    )
     liquidity_usd = _number(liquidity.get("usd"), _number(entry.get("liquidityUsd")))
     volume_5m = (
         _number(volume.get("m5"), _number(entry.get("volume_5m"), _number(entry.get("volume5m"), 0.0))) or 0.0
