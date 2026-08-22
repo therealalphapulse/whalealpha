@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from whale_alpha.engines.token_hunter import TokenScore, format_alert
+from whale_alpha.engines.token_hunter import quote_milestones_for_gain
 from whale_alpha.services.notification import format_signal_message
 
 
@@ -29,7 +30,6 @@ def test_signal_card_has_confidence_whales_entry_and_action():
     assert "Strong accumulation" in card
 
 
-from whale_alpha.engines.token_hunter import quote_milestones_for_gain
 
 
 def test_quote_milestones_progress_from_percent_to_multiples():
