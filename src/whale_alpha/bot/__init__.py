@@ -36,8 +36,7 @@ def create_bot(
     dp.update.outer_middleware(RateLimitMiddleware(redis))
     dp.update.outer_middleware(RbacMiddleware(env))
 
-    @dp.message(Command("start"))
-    async def start_handler(message: Message, is_admin: bool = False) -> None:
+    async def _welcome(message: Message, is_admin: bool = False) -> None:
         if message.from_user is None:
             return
         telegram_id = str(message.from_user.id)
@@ -47,19 +46,36 @@ def create_bot(
             if user is None:
                 session.add(User(telegram_id=telegram_id, role=Role.USER))
                 await session.commit()
-
-        admin_lines = "\n*Admin:* /addwhale /approvewhale /removewhale" if is_admin else ""
-        await message.answer(
-            "🐋 *Welcome to Whale Alpha*\n\n"
-            "Whale Alpha is now an intelligence-only early opportunity detector. "
-            "It finds very young Solana tokens showing multiple independent signs of strength, "
-            "scores them 0–100, and sends only high-potential opportunities.\n\n"
-            "🔎 Send a token contract address — scan any Solana meme token instantly\n"
-            "/whales — browse the legacy whale database\n"
-            "/mute /unmute — toggle legacy whale-signal DMs\n"
-            f"{admin_lines}",
-            parse_mode="Markdown",
+        admin_section = (
+            "\n\n<b>🛠 ADMIN</b>\n<code>/addwhale</code>  <code>/approvewhale</code>  <code>/removewhale</code>"
+            if is_admin else ""
         )
+        await message.answer(
+            "🐋 <b>WHALE ALPHA</b>\n"
+            "<i>Professional Solana intelligence terminal</i>\n\n"
+            "<b>🔎 TOKEN SCANNER</b>\n"
+            "Send <b>only the Solana contract address</b>. No command required.\n\n"
+            "<b>🚨 SIGNALS</b>\n"
+            "High-potential early opportunities are delivered automatically when the existing quality gates pass.\n\n"
+            "<b>📈 PERFORMANCE</b>\n"
+            "Qualified signals can receive reply-based quote updates at crossed gain milestones.\n\n"
+            "<b>🐋 INTELLIGENCE</b>\n"
+            "<code>/whales</code> — elite wallet intelligence\n"
+            "<code>/mute</code> / <code>/unmute</code> — signal notifications\n"
+            "<code>/alerts</code> — manage price alerts\n"
+            "<code>/help</code> — command guide"
+            f"{admin_section}\n\n"
+            "<i>Built for disciplined on-chain research. Data is informational, not financial advice.</i>",
+            parse_mode="HTML",
+        )
+
+    @dp.message(Command("start"))
+    async def start_handler(message: Message, is_admin: bool = False) -> None:
+        await _welcome(message, is_admin)
+
+    @dp.message(Command("help"))
+    async def help_handler(message: Message, is_admin: bool = False) -> None:
+        await _welcome(message, is_admin)
 
     dp.include_router(register_scanner_commands(env, http_client))
     dp.include_router(register_whales_command(session_factory))

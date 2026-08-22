@@ -47,15 +47,23 @@ def format_quote_alert(o: TokenOpportunity, gain_pct: float, milestone_pct: int,
     multiple = 1 + (gain_pct / 100)
     milestone_multiple = 1 + (milestone_pct / 100)
     milestone_label = f"{milestone_multiple:.0f}x" if milestone_pct >= 200 else f"+{milestone_pct}%"
+    symbol = escape(o.symbol or o.name or o.mint[:8])
+    mint = escape(o.mint)
+    reference = o.alert_reference_price_usd or 0
     return (
-        f"📈 <b>WHALE ALPHA • QUOTE ALERT</b>\n"
-        f"<i>{escape(o.symbol or o.name or o.mint[:8])} hit {escape(milestone_label)}</i>\n\n"
+        "📈 <b>WHALE ALPHA • PERFORMANCE UPDATE</b>\n"
+        f"<i>{symbol} crossed the {escape(milestone_label)} milestone</i>\n\n"
         f"🪙 <b>${escape(o.symbol or 'TOKEN')}</b>\n"
-        f"🚀 <b>Gain:</b> +{gain_pct:.1f}%  <b>({multiple:.2f}x)</b>\n"
+        f"🚀 <b>Return:</b> +{gain_pct:.1f}%  <b>({multiple:.2f}x)</b>\n"
         f"🎯 <b>Milestone:</b> {escape(milestone_label)}\n"
-        f"💵 <b>Price:</b> ${price_usd:.10f}\n"
-        f"📊 <b>From signal:</b> ${o.alert_reference_price_usd:.10f}\n\n"
-        f"🔥 <b>Momentum confirmed.</b>"
+        f"💵 <b>Live price:</b> <code>${price_usd:.10f}</code>\n"
+        f"📌 <b>Signal price:</b> <code>${reference:.10f}</code>\n\n"
+        "🧭 <b>STATUS</b>\n"
+        "• Milestone crossed from the original signal baseline\n"
+        "• Update is a market-performance observation, not a trade instruction\n\n"
+        f"🔐 <b>Contract:</b> <code>{mint}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Whale Alpha • Quote Intelligence</i>"
     )
 
 
