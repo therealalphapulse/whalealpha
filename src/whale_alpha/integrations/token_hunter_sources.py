@@ -115,9 +115,18 @@ def _candidate(entry: dict[str, Any], source: str, mint: str) -> DiscoveryCandid
     txns = _dict(entry.get("txns"))
     m5 = _dict(txns.get("m5"))
     h1 = _dict(txns.get("h1"))
-    market_cap = _number(entry.get("marketCap"), _number(entry.get("market_cap")))
+    # Field order matters: "usd_market_cap" (pump.fun) and "marketCap" (DexScreener-shaped
+    # payloads) are genuine USD values. "market_cap" is ambiguous — on pump.fun it is a raw
+    # bonding-curve/SOL-denominated figure, NOT USD, and must never be preferred over
+    # usd_market_cap. Only fall back to it when no USD-denominated field is present.
+    market_cap = _number(entry.get("marketCap"), _number(entry.get("usd_market_cap")))
     if market_cap is None:
-        market_cap = _number(entry.get("usd_market_cap"), _number(entry.get("fdv")))
+        market_cap = _number(entry.get("fdv"), _number(entry.get("market_cap")))
+    if market_cap is None:
+        # One-off diagnostic: we don't yet know the real market-cap field name (if any) for
+        # this provider's payload shape. Log the raw entry once so it can be identified, then
+        # this branch (and the MARKET CAP FIELD DEBUG log below) should be removed.
+        log.info("MARKET CAP FIELD UNRESOLVED — raw entry", provider=source, mint=mint, entry_keys=sorted(entry.keys()))
     log.info(
         "MARKET CAP FIELD DEBUG",
         provider=source,
