@@ -38,8 +38,15 @@ def register_scanner_commands(env: Env, http_client: httpx.AsyncClient) -> Route
         status = await message.answer("🔎 <b>Scanning token…</b>\nFetching live market data.", parse_mode="HTML")
         try:
             snapshot = await enrich_token(http_client, env, mint)
-        except Exception:
+        except (httpx.HTTPError, ValueError, RuntimeError) as err:
             snapshot = None
+            await status.edit_text(
+                "❌ <b>Token scan unavailable</b>\n\n"
+                "The market-data provider returned an error. Please retry shortly.\n\n"
+                f"<code>{type(err).__name__}</code>",
+                parse_mode="HTML",
+            )
+            return
 
         if snapshot is None:
             await status.edit_text(
