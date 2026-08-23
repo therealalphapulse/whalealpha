@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from whale_alpha.config import Env
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot, enrich_tokens
+from whale_alpha.engines.market_regime import MarketRegime, classify_market_regime, market_regime_gate
 from whale_alpha.integrations.token_age import resolve_token_ages
 from whale_alpha.utils.logger import child_logger
 
@@ -51,19 +52,19 @@ def format_quote_alert(o: TokenOpportunity, gain_pct: float, milestone_pct: int,
     mint = escape(o.mint)
     reference = o.alert_reference_price_usd or 0
     return (
-        "📈 <b>WHALE ALPHA • PERFORMANCE UPDATE</b>\n"
+        "ð <b>WHALE ALPHA â¢ PERFORMANCE UPDATE</b>\n"
         f"<i>{symbol} crossed the {escape(milestone_label)} milestone</i>\n\n"
-        f"🪙 <b>${escape(o.symbol or 'TOKEN')}</b>\n"
-        f"🚀 <b>Return:</b> +{gain_pct:.1f}%  <b>({multiple:.2f}x)</b>\n"
-        f"🎯 <b>Milestone:</b> {escape(milestone_label)}\n"
-        f"💵 <b>Live price:</b> <code>${price_usd:.10f}</code>\n"
-        f"📌 <b>Signal price:</b> <code>${reference:.10f}</code>\n\n"
-        "🧭 <b>STATUS</b>\n"
-        "• Milestone crossed from the original signal baseline\n"
-        "• Update is a market-performance observation, not a trade instruction\n\n"
-        f"🔐 <b>Contract:</b> <code>{mint}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Whale Alpha • Quote Intelligence</i>"
+        f"ðª <b>${escape(o.symbol or 'TOKEN')}</b>\n"
+        f"ð <b>Return:</b> +{gain_pct:.1f}%  <b>({multiple:.2f}x)</b>\n"
+        f"ð¯ <b>Milestone:</b> {escape(milestone_label)}\n"
+        f"ðµ <b>Live price:</b> <code>${price_usd:.10f}</code>\n"
+        f"ð <b>Signal price:</b> <code>${reference:.10f}</code>\n\n"
+        "ð§­ <b>STATUS</b>\n"
+        "â¢ Milestone crossed from the original signal baseline\n"
+        "â¢ Update is a market-performance observation, not a trade instruction\n\n"
+        f"ð <b>Contract:</b> <code>{mint}</code>\n"
+        "ââââââââââââââââââââ\n"
+        "<i>Whale Alpha â¢ Quote Intelligence</i>"
     )
 
 
@@ -158,7 +159,7 @@ def organic_activity_score(volume: float, txns: int, buys: int, sells: int) -> t
 
 
 def score_token(
-    snapshot: TokenMarketSnapshot, *, age_minutes: float, smart_money_score: float | None = None
+    snapshot: TokenMarketSnapshot, *, age_minutes: float, smart_money_score: float | None = None, market_regime: MarketRegime | None = None
 ) -> TokenScore:
     components = {
         "age": age_score(age_minutes),
@@ -179,6 +180,7 @@ def score_token(
             "market_cap_momentum": clamp(50 + snapshot.price_change_1h_pct * 2.5),
             "organic_activity": organic,
             "metadata_presence": 80 if snapshot.metadata_present else 35,
+            "market_trend_alignment": clamp(50 + snapshot.price_change_1h_pct * 4 + (snapshot.buys_5m / max(snapshot.buys_5m + snapshot.sells_5m, 1) - 0.5) * 100),
         }
     )
     weights = {
@@ -192,6 +194,12 @@ def score_token(
         "organic_activity": 0.12,
         "metadata_presence": 0.05,
     }
+    if market_regime is not None:
+        components["market_trend_alignment"] = clamp(50 + snapshot.price_change_1h_pct * 4 + (snapshot.buys_5m / max(snapshot.buys_5m + snapshot.sells_5m, 1) - 0.5) * 100)
+        weights["market_trend_alignment"] = 0.10
+        for k in list(weights):
+            if k != "market_trend_alignment":
+                weights[k] *= 0.90
     if smart_money_score is not None:
         components["smart_money_activity"] = clamp(smart_money_score)
         weights["smart_money_activity"] = 0.10
@@ -209,7 +217,11 @@ def score_token(
     penalty = 18 * sum(f in severe for f in flags) + 8 * sum(
         f in {"THIN_LIQUIDITY", "LOW_LIQUIDITY_TO_MC", "VERTICAL_PRICE_MOVE"} for f in flags
     )
-    total = clamp(sum(components[k] * weights[k] for k in weights) - penalty)
+    if market_regime is not None:
+        regime_bias={"RISK_ON":6,"BULLISH":4,"NEUTRAL":0,"RISK_OFF":-5,"PANIC":-12,"UNKNOWN":-2}.get(market_regime.name,0)
+        total=clamp(sum(components[k]*weights[k] for k in weights)+regime_bias-penalty)
+    else:
+        total=clamp(sum(components[k]*weights[k] for k in weights)-penalty)
     risk = (
         "LOW"
         if total >= 82 and not severe.intersection(flags) and len(flags) <= 1
@@ -304,35 +316,35 @@ def _money(v: float | None) -> str:
 
 
 def format_alert(s: TokenMarketSnapshot, score: TokenScore, age: float, detected: datetime) -> str:
-    risk_icon = "🟢" if score.risk_level == "LOW" else "🟡" if score.risk_level == "MEDIUM" else "🔴"
+    risk_icon = "ð¢" if score.risk_level == "LOW" else "ð¡" if score.risk_level == "MEDIUM" else "ð´"
     symbol = escape(s.symbol or "Unknown")
     name = escape(s.name or "Unknown")
     mint = escape(s.mint)
     reasons = score.reasons or ("Multiple independent activity signals",)
     warnings = score.risk_flags or ("None observed",)
-    reason_lines = "\n".join(f"• {escape(reason.replace('_', ' ').title())}" for reason in reasons[:4])
-    warning_lines = "\n".join(f"• {escape(flag.replace('_', ' ').title())}" for flag in warnings[:4])
+    reason_lines = "\n".join(f"â¢ {escape(reason.replace('_', ' ').title())}" for reason in reasons[:4])
+    warning_lines = "\n".join(f"â¢ {escape(flag.replace('_', ' ').title())}" for flag in warnings[:4])
     return (
-        "🚨 <b>WHALE ALPHA • TOKEN HUNTER</b>\n"
+        "ð¨ <b>WHALE ALPHA â¢ TOKEN HUNTER</b>\n"
         "<i>High-potential early opportunity detected</i>\n\n"
-        f"🪙 <b>${symbol}</b>  <i>{name}</i>\n"
-        f"🎯 <b>Score:</b> {score.total:.0f}/100  |  {risk_icon} <b>{escape(score.risk_level)} RISK</b>\n"
-        f"⏱ <b>Age:</b> {age:.0f}m\n\n"
-        "📊 <b>MARKET SNAPSHOT</b>\n"
-        f"• Market cap: <b>{escape(_money(s.market_cap_usd))}</b>\n"
-        f"• Liquidity: <b>{escape(_money(s.liquidity_usd))}</b>\n"
-        f"• 5m volume: <b>{escape(_money(s.volume_5m_usd))}</b>\n"
-        f"• Flow: <b>{s.buys_5m}</b> buys / <b>{s.sells_5m}</b> sells\n"
-        f"• 1h price: <b>{s.price_change_1h_pct:+.1f}%</b>\n\n"
-        "🧠 <b>WHY IT TRIGGERED</b>\n"
+        f"ðª <b>${symbol}</b>  <i>{name}</i>\n"
+        f"ð¯ <b>Score:</b> {score.total:.0f}/100  |  {risk_icon} <b>{escape(score.risk_level)} RISK</b>\n"
+        f"â± <b>Age:</b> {age:.0f}m\n\n"
+        "ð <b>MARKET SNAPSHOT</b>\n"
+        f"â¢ Market cap: <b>{escape(_money(s.market_cap_usd))}</b>\n"
+        f"â¢ Liquidity: <b>{escape(_money(s.liquidity_usd))}</b>\n"
+        f"â¢ 5m volume: <b>{escape(_money(s.volume_5m_usd))}</b>\n"
+        f"â¢ Flow: <b>{s.buys_5m}</b> buys / <b>{s.sells_5m}</b> sells\n"
+        f"â¢ 1h price: <b>{s.price_change_1h_pct:+.1f}%</b>\n\n"
+        "ð§  <b>WHY IT TRIGGERED</b>\n"
         f"{reason_lines}\n\n"
-        "🛡 <b>RISK CHECK</b>\n"
+        "ð¡ <b>RISK CHECK</b>\n"
         f"{warning_lines}\n\n"
-        "🔐 <b>CONTRACT</b>\n"
+        "ð <b>CONTRACT</b>\n"
         f"<code>{mint}</code>\n\n"
-        f"🕒 Detected: <code>{detected.strftime('%Y-%m-%d %H:%M:%S')} UTC</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Whale Alpha • Signal Intelligence</i>"
+        f"ð Detected: <code>{detected.strftime('%Y-%m-%d %H:%M:%S')} UTC</code>\n"
+        "ââââââââââââââââââââ\n"
+        "<i>Whale Alpha â¢ Signal Intelligence</i>"
     )
 
 
@@ -506,6 +518,8 @@ async def run_hunter_cycle(
             batch = prequalified[offset : offset + 30]
             snapshots = await enrich_tokens(client, env, [c.snapshot.mint for c in batch])
             funnel["enriched"] += len(snapshots)
+            market_regime = classify_market_regime(list(snapshots.values())) if len(snapshots) >= env.TOKEN_HUNTER_MARKET_REGIME_MIN_DATA else MarketRegime("UNKNOWN", 0, 0, 0, 0, 0.5, 0, "UNKNOWN", ("INSUFFICIENT_MARKET_DATA",))
+            log.info("market_regime", regime=market_regime.name, trend=market_regime.trend, score=market_regime.score, breadth=market_regime.breadth_pct, median_change=market_regime.median_price_change_1h_pct)
             for candidate in batch:
                 mint = candidate.snapshot.mint
                 s = snapshots.get(mint)
@@ -519,10 +533,17 @@ async def run_hunter_cycle(
                     continue
                 s = replace(s, created_at_ms=created_at_ms)
                 score = score_token(
-                    s, age_minutes=age, smart_money_score=await _smart_money(session, mint, now)
+                    s, age_minutes=age, smart_money_score=await _smart_money(session, mint, now), market_regime=market_regime
                 )
                 funnel["scored"] += 1
                 o = await _persist(session, s, score, candidate.source, now, age)
+                severe_flags={"NO_LIQUIDITY_DATA","VOLUME_WITHOUT_TRANSACTION_DEPTH","EXTREME_TRADE_SIZE"}.intersection(score.risk_flags)
+                if env.TOKEN_HUNTER_MARKET_REGIME_ENABLED:
+                    regime_ok, regime_flags = market_regime_gate(s, market_regime, score=score.total, severe_flags=severe_flags, risk_off_min_score=env.TOKEN_HUNTER_RISK_OFF_MIN_SCORE, neutral_min_score=env.TOKEN_HUNTER_NEUTRAL_MIN_SCORE, risk_on_min_score=env.TOKEN_HUNTER_RISK_ON_MIN_SCORE)
+                    if not regime_ok:
+                        o.risk_flags=list(dict.fromkeys([*o.risk_flags,*regime_flags]))
+                        log.info("Token rejected", stage="market_regime_gate", mint=mint, regime=market_regime.name, trend=market_regime.trend, reasons=list(regime_flags))
+                        continue
                 if score.total < env.TOKEN_HUNTER_ALERT_MIN_SCORE or score.risk_level == "HIGH":
                     continue
                 funnel["high_potential"] += 1
