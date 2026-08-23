@@ -78,9 +78,9 @@ def build_expert_alert_card(
     symbol = escape(snapshot.symbol or "UNKNOWN")
     name = escape(snapshot.name or "Unknown Token")
     mint = escape(snapshot.mint)
-    dex = escape(snapshot.dex_id or "N/A")
-    pair = escape(snapshot.pair_address or "N/A")
-    age = _age(snapshot.created_at_ms, int((detected_at or datetime.now(UTC)).timestamp() * 1000)) if age_minutes is None else f"{max(age_minutes, 0):.0f}m"
+    dex = escape(getattr(snapshot, "dex_id", None) or "N/A")
+    pair = escape(getattr(snapshot, "pair_address", None) or "N/A")
+    age = _age(getattr(snapshot, "created_at_ms", None), int((detected_at or datetime.now(UTC)).timestamp() * 1000)) if age_minutes is None else f"{max(age_minutes, 0):.0f}m"
     if age_minutes is None and age != "Unknown":
         age = age
     mc = _money(snapshot.market_cap_usd)

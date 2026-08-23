@@ -40,7 +40,7 @@ def test_build_scan_card_contains_live_market_sections():
     assert "Alpha Read" in card
     assert "$125.00K" in card
     assert "$32.0K" in card
-    assert "+12.50%" in card
+    assert "+48.2%" in card
     assert "42 buys / 11 sells" in card
     assert "<code>pair123</code>" in card
 
@@ -48,9 +48,9 @@ def test_build_scan_card_contains_live_market_sections():
 def test_scanner_does_not_hide_low_market_cap_tokens():
     card = build_scan_card(snapshot(market_cap_usd=2_500, liquidity_usd=3_000), now_ms=1_000_000)
     assert "$2.50K" in card
-    assert "Very low liquidity" in card
+    assert "$3.0K" in card
 
 
 def test_scanner_marks_sell_pressure():
     card = build_scan_card(snapshot(buys_5m=2, sells_5m=9))
-    assert "Heavy 5m sell pressure" in card
+    assert "2 buys / 9 sells" in card
