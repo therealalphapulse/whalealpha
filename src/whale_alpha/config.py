@@ -281,6 +281,28 @@ class Env(BaseSettings):
     TOKEN_HUNTER_RISK_ON_MIN_SCORE: float = Field(80, ge=0, le=100)
     TOKEN_HUNTER_ALERT_COOLDOWN_MINUTES: float = Field(120, ge=0)
 
+    # --- Whale Alpha: strict meme dip -> consolidation -> reversal hunter ---
+    WHALE_ALPHA_MIN_MC_USD: float = Field(400_000, ge=0)
+    WHALE_ALPHA_MAX_MC_USD: float = Field(15_000_000, ge=1)
+    WHALE_ALPHA_MIN_LIQ_USD: float = Field(75_000, ge=0)
+    WHALE_ALPHA_MAX_LIQ_USD: float = Field(1_200_000, ge=1)
+    WHALE_ALPHA_MIN_LIQ_MC_RATIO: float = Field(0.04, ge=0, le=1)
+    WHALE_ALPHA_MAX_LIQ_MC_RATIO: float = Field(0.35, ge=0, le=1)
+    WHALE_ALPHA_MIN_PAIR_AGE_HOURS: float = Field(6, ge=0)
+    WHALE_ALPHA_MAX_PAIR_AGE_DAYS: float = Field(30, ge=1)
+    WHALE_ALPHA_MIN_DIP_PCT: float = Field(15, ge=0)
+    WHALE_ALPHA_MAX_DIP_PCT: float = Field(50, ge=0)
+    WHALE_ALPHA_CONSOLIDATION_MIN_MINUTES: float = Field(45, ge=1)
+    WHALE_ALPHA_CONSOLIDATION_MAX_HOURS: float = Field(18, ge=1)
+    WHALE_ALPHA_MAX_CONSOLIDATION_RANGE_PCT: float = Field(12, ge=0)
+    WHALE_ALPHA_BREAKOUT_VOLUME_MULTIPLIER_MIN: float = Field(1.8, ge=1)
+    WHALE_ALPHA_BUY_SELL_RATIO_MIN: float = Field(1.15, ge=1)
+    WHALE_ALPHA_MAX_TOP10_PCT: float = Field(25, ge=0, le=100)
+    WHALE_ALPHA_MAX_SINGLE_WALLET_PCT: float = Field(8, ge=0, le=100)
+    WHALE_ALPHA_MAX_DEV_HOLD_PCT: float = Field(5, ge=0, le=100)
+    WHALE_ALPHA_MAX_TAGGED_RISK_PCT: float = Field(15, ge=0, le=100)
+    WHALE_ALPHA_MIN_CONFIDENCE: float = Field(80, ge=0, le=100)
+
     # --- Trending-token bootstrap source (feature: discovery cold start) ---
     # Independent of anything already tracked â see
     # integrations/wallet_discovery_source.find_candidates_from_trending_tokens.
@@ -336,6 +358,8 @@ class Env(BaseSettings):
     DISCOVERY_BIRDEYE_ENABLED: bool = True
     DISCOVERY_BIRDEYE_API_BASE: str = "https://public-api.birdeye.so"
     BIRDEYE_API_KEY: str | None = None
+    BITQUERY_API_KEY: str | None = None
+    BITQUERY_API_BASE: str = "https://streaming.bitquery.io/graphql"
     DISCOVERY_DEXSCREENER_ENABLED: bool = True
     DISCOVERY_DEXSCREENER_API_BASE: str = "https://api.dexscreener.com"
 
