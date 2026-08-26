@@ -35,6 +35,7 @@ class Env(BaseSettings):
 
     TELEGRAM_BOT_TOKEN: str = Field(..., min_length=1)
     TELEGRAM_ADMIN_CHAT_IDS: str = ""
+    ADMIN_DEBUG_MODE: bool = False
 
     DATABASE_URL: str = Field(..., min_length=1)
     REDIS_URL: str = "redis://localhost:6379"
@@ -302,6 +303,13 @@ class Env(BaseSettings):
     WHALE_ALPHA_MAX_DEV_HOLD_PCT: float = Field(5, ge=0, le=100)
     WHALE_ALPHA_MAX_TAGGED_RISK_PCT: float = Field(15, ge=0, le=100)
     WHALE_ALPHA_MIN_CONFIDENCE: float = Field(80, ge=0, le=100)
+    # Final release-assurance gate
+    WHALE_ALPHA_MAX_5M_VOLUME_TO_LIQUIDITY: float = Field(2.0, ge=0)
+    WHALE_ALPHA_MAX_15M_VOLUME_TO_LIQUIDITY: float = Field(5.0, ge=0)
+    WHALE_ALPHA_AUDIT_MARKET_MAX_AGE_SECONDS: int = Field(60, ge=1)
+    WHALE_ALPHA_AUDIT_FLOW_MAX_AGE_SECONDS: int = Field(180, ge=1)
+    WHALE_ALPHA_AUDIT_HOLDER_MAX_AGE_SECONDS: int = Field(300, ge=1)
+    WHALE_ALPHA_AUDIT_SECURITY_MAX_AGE_SECONDS: int = Field(300, ge=1)
 
     # --- Trending-token bootstrap source (feature: discovery cold start) ---
     # Independent of anything already tracked â see

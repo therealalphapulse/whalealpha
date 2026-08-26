@@ -26,6 +26,8 @@ from whale_alpha.utils.logger import child_logger
 from whale_alpha.db.models import TokenOpportunity, TokenSnapshot, User, WalletEvent, WalletStatus, WhaleWallet
 from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, discover_token_candidates
 from whale_alpha.engines.reversal_hunter import ReversalAnalysis, evaluate_candidates, discover_meme_candidates
+from whale_alpha.engines.final_audit import FinalAuditResult, run_final_release_audit
+from whale_alpha.db.models import WhaleAlphaAudit
 
 log = child_logger("tokenHunter")
 
@@ -563,7 +565,28 @@ async def run_hunter_cycle(
     async with session_factory() as session:
         for analysis in analyses:
             o = await _persist_reversal(session, analysis, now)
-            if not analysis.approved:
+            audit = await run_final_release_audit(client, env, analysis, connection, now)
+            session.add(WhaleAlphaAudit(
+                id=audit.audit_id, analysis_id=audit.analysis_id, snapshot_id=audit.snapshot_id,
+                strategy_version=audit.strategy_version, rules_version=audit.rules_version,
+                scoring_model_version=audit.scoring_model_version, audit_mode=audit.audit_mode,
+                token_mint=analysis.snapshot.mint, pair_address=analysis.snapshot.pair_address,
+                approved=audit.approved, final_score=audit.final_score, final_tier=audit.final_tier,
+                findings=list(audit.findings), corrections=list(audit.corrections), evidence=audit.evidence,
+            ))
+            o.score = audit.final_score
+            o.score_breakdown = {**(analysis.evidence or {}), "final_audit": audit.evidence}
+            o.risk_flags = list(dict.fromkeys(list(analysis.hard_rejects) + list(audit.findings)))
+            o.key_reasons = list(audit.corrections) if audit.corrections else list(analysis.reasons)
+            if not audit.approved:
+                o.status = "REJECTED"
+                if env.ADMIN_DEBUG_MODE and env.admin_telegram_ids:
+                    debug = "WHALE ALPHA — AUDIT REJECTION\n" + f"Token: {analysis.snapshot.symbol or analysis.snapshot.mint}\n" + "Reason:\n" + "".join(f"- {x}\n" for x in audit.findings[:12])
+                    for chat_id in env.admin_telegram_ids:
+                        try:
+                            await bot.send_message(chat_id=int(chat_id), text=debug)
+                        except (TelegramAPIError, ValueError):
+                            pass
                 continue
             funnel["approved"] += 1
             if o.last_alerted_at is not None and now - o.last_alerted_at < timedelta(minutes=env.TOKEN_HUNTER_ALERT_COOLDOWN_MINUTES):

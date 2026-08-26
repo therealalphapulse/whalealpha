@@ -453,6 +453,34 @@ class AuditLog(Base):
     __table_args__ = (Index("ix_audit_logs_actor_id_created_at", "actor_id", "created_at"),)
 
 
+class WhaleAlphaAudit(Base):
+    """Immutable internal release-assurance record for every Whale Alpha candidate audit."""
+
+    __tablename__ = "whale_alpha_audits"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_id)
+    analysis_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    snapshot_id: Mapped[str] = mapped_column(String, nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String, nullable=False)
+    rules_version: Mapped[str] = mapped_column(String, nullable=False)
+    scoring_model_version: Mapped[str] = mapped_column(String, nullable=False)
+    audit_mode: Mapped[str] = mapped_column(String, nullable=False)
+    token_mint: Mapped[str] = mapped_column(String, nullable=False)
+    pair_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    final_tier: Mapped[str] = mapped_column(String, nullable=False, default="NO SIGNAL")
+    findings: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    corrections: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_whale_alpha_audits_token_created_at", "token_mint", "created_at"),
+        Index("ix_whale_alpha_audits_approved_created_at", "approved", "created_at"),
+    )
+
+
 class TokenOpportunity(Base):
     """Persisted token-hunter observation and alert/outcome record."""
 

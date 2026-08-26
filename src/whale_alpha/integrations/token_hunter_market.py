@@ -36,6 +36,12 @@ class TokenMarketSnapshot:
     price_change_1h_pct: float
     metadata_present: bool
     source: str = "dexscreener"
+    quote_token_address: str | None = None
+    quote_token_symbol: str | None = None
+    decimals: int | None = None
+    total_supply: float | None = None
+    market_cap_source: str | None = None
+    fdv_usd: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -155,7 +161,7 @@ async def enrich_tokens(
             dex_id=pair.get("dexId") if isinstance(pair.get("dexId"), str) else None,
             created_at_ms=_int(pair.get("pairCreatedAt")) or None,
             price_usd=_number(pair.get("priceUsd")),
-            market_cap_usd=_number(pair.get("marketCap"), _number(pair.get("fdv"))),
+            market_cap_usd=_number(pair.get("marketCap"), _number(pair.get("usd_market_cap"))),
             liquidity_usd=_pair_liquidity(pair),
             volume_5m_usd=_number(volume.get("m5"), 0.0) or 0.0,
             volume_1h_usd=_number(volume.get("h1"), 0.0) or 0.0,
@@ -166,6 +172,10 @@ async def enrich_tokens(
             price_change_5m_pct=_number(changes.get("m5"), 0.0) or 0.0,
             price_change_1h_pct=_number(changes.get("h1"), 0.0) or 0.0,
             metadata_present=bool(socials or websites or base.get("name") or base.get("symbol")),
+            quote_token_address=_dict(pair.get("quoteToken")).get("address") if isinstance(pair.get("quoteToken"), dict) else None,
+            quote_token_symbol=_dict(pair.get("quoteToken")).get("symbol") if isinstance(pair.get("quoteToken"), dict) else None,
+            market_cap_source=("dexscreener.marketCap" if pair.get("marketCap") is not None else None),
+            fdv_usd=_number(pair.get("fdv")),
         )
         _cache.set(mint, snapshot.as_dict())
         cached[mint] = snapshot
