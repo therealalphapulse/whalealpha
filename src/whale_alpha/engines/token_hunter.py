@@ -25,6 +25,7 @@ from whale_alpha.utils.logger import child_logger
 
 from whale_alpha.db.models import TokenOpportunity, TokenSnapshot, User, WalletEvent, WalletStatus, WhaleWallet
 from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, discover_token_candidates
+from whale_alpha.engines.reversal_hunter import ReversalAnalysis, evaluate_candidates, discover_meme_candidates
 
 log = child_logger("tokenHunter")
 
@@ -464,6 +465,87 @@ async def _outcomes(session: AsyncSession, client: Any, env: Env, now: datetime,
                         )
 
 
+def format_reversal_alert(a: ReversalAnalysis) -> str:
+    p = a.pattern
+    f = a.flow
+    o = a.onchain
+    s = a.snapshot
+    age_hours = ((datetime.now(UTC).timestamp() * 1000 - (s.created_at_ms or 0)) / 3_600_000) if s.created_at_ms else 0
+    age = f"{age_hours:.1f}h" if age_hours < 48 else f"{age_hours/24:.1f}d"
+    return (
+        "🚨 <b>WHALE ALPHA SIGNAL</b>\n"
+        f"Token: {escape(s.name or 'Unknown')}\n"
+        f"Ticker: {escape(s.symbol or 'UNKNOWN')}\n"
+        f"Contract Address: <code>{escape(s.mint)}</code>\n"
+        f"DEX Pair: <code>{escape(s.pair_address or 'UNKNOWN')}</code>\n"
+        f"Age: {age}\n"
+        f"Price: ${s.price_usd:.10f}\n"
+        f"Market Cap: ${s.market_cap_usd:,.0f}\n"
+        f"Liquidity: ${s.liquidity_usd:,.0f}\n"
+        f"Liquidity/MC Ratio: {(s.liquidity_usd / s.market_cap_usd * 100):.2f}%\n\n"
+        "Pattern:\n"
+        f"- Dip %: {p.dip_pct:.2f}%\n"
+        f"- Dip Lookback: {p.dip_lookback_hours:.2f}h\n"
+        f"- Consolidation Duration: {p.consolidation_minutes:.0f}m\n"
+        f"- Consolidation Range %: {p.consolidation_range_pct:.2f}%\n"
+        f"- Breakout Status: {'CONFIRMED' if p.breakout_confirmed else 'FAILED'}\n\n"
+        "Flow:\n"
+        f"- 5m Volume vs Avg: {f.volume_5m_vs_avg:.2f}x\n"
+        f"- 15m Volume vs Avg: {f.volume_15m_vs_avg:.2f}x\n"
+        f"- Buy/Sell Ratio: {f.buy_sell_ratio:.2f}\n"
+        f"- Net Buy Pressure: {'YES' if f.net_buy_pressure else 'NO'}\n"
+        f"- Smart Money Status: {escape(f.smart_money_status)}\n"
+        f"- Top Trader Status: {escape(f.top_trader_status)}\n\n"
+        "On-Chain Risk:\n"
+        f"- Top 10 Holder %: {o.top10_pct:.2f}%\n"
+        f"- Largest Wallet %: {o.largest_wallet_pct:.2f}%\n"
+        f"- Dev Hold %: {o.dev_hold_pct:.2f}%\n"
+        f"- Tagged Risk Wallets Combined %: {o.tagged_risk_pct:.2f}%\n"
+        f"- Security Flags: {escape(', '.join(o.security_flags) or 'NONE')}\n"
+        f"- Authority Flags: {escape(', '.join(o.authority_flags) or 'NONE')}\n\n"
+        f"Score: {a.score:.2f}/100\n"
+        f"Confidence Tier: {escape(a.tier)}\n\n"
+        "Why This Alert Triggered:\n"
+        + ''.join(f"- {escape(r)}\n" for r in a.reasons)
+        + "\nInvalidation:\n"
+        f"- {escape(a.invalidation)}\n\n"
+        f"Final Verdict:\n- {escape(a.tier)}"
+    )
+
+
+async def _persist_reversal(session: AsyncSession, analysis: ReversalAnalysis, now: datetime) -> TokenOpportunity:
+    s = analysis.snapshot
+    result = await session.execute(select(TokenOpportunity).where(TokenOpportunity.mint == s.mint))
+    o = result.scalar_one_or_none()
+    if o is None:
+        o = TokenOpportunity(mint=s.mint, detected_at=now)
+        session.add(o)
+    age = ((now.timestamp() * 1000 - (s.created_at_ms or now.timestamp() * 1000)) / 60_000)
+    o.name = s.name
+    o.symbol = s.symbol
+    o.detection_source = analysis.candidate.source
+    o.last_seen_at = now
+    o.age_minutes = max(0.0, age)
+    o.market_cap_usd = s.market_cap_usd
+    o.liquidity_usd = s.liquidity_usd
+    o.price_usd = s.price_usd
+    o.volume_5m_usd = s.volume_5m_usd
+    o.volume_1h_usd = s.volume_1h_usd
+    o.buys_5m = s.buys_5m
+    o.sells_5m = s.sells_5m
+    o.buys_1h = s.buys_1h
+    o.sells_1h = s.sells_1h
+    o.score = analysis.score
+    o.score_breakdown = analysis.evidence
+    o.risk_level = "LOW" if analysis.approved else "HIGH"
+    o.risk_flags = list(analysis.hard_rejects)
+    o.key_reasons = list(analysis.reasons)
+    o.status = "HIGH_POTENTIAL" if analysis.approved else "REJECTED"
+    session.add(TokenSnapshot(opportunity=o, observed_at=now, market_cap_usd=s.market_cap_usd, liquidity_usd=s.liquidity_usd, price_usd=s.price_usd, volume_5m_usd=s.volume_5m_usd))
+    await session.flush()
+    return o
+
+
 async def run_hunter_cycle(
     env: Env,
     session_factory: async_sessionmaker[AsyncSession],
@@ -471,130 +553,49 @@ async def run_hunter_cycle(
     client: Any,
     connection: Any | None = None,
 ) -> dict[str, int]:
+    """Run only the strict Whale Alpha dip -> consolidation -> reversal strategy."""
     now = datetime.now(UTC)
-    funnel = {
-        k: 0
-        for k in (
-            "discovered",
-            "basic_filter_passed",
-            "quality_gate_passed",
-            "enriched",
-            "scored",
-            "high_potential",
-            "alert_attempted",
-            "alert_delivered",
-        )
-    }
-    sources = await discover_token_candidates(client, env)
-    candidates: dict[str, DiscoveryCandidate] = {}
-    for _, values in sources.items():
-        for candidate in values:
-            candidates.setdefault(candidate.snapshot.mint, candidate)
+    funnel = {"discovered": 0, "evaluated": 0, "approved": 0, "alert_attempted": 0, "alert_delivered": 0}
+    candidates = await discover_meme_candidates(client, env, now)
     funnel["discovered"] = len(candidates)
-
+    analyses = await evaluate_candidates(client, env, candidates, connection, now)
+    funnel["evaluated"] = len(analyses)
     async with session_factory() as session:
-        limited = list(candidates.values())[: env.TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE]
-        age_resolutions = await resolve_token_ages(client, env, limited, now, connection)
-        resolved_candidates = [
-            replace(
-                candidate,
-                snapshot=replace(
-                    candidate.snapshot,
-                    created_at_ms=age_resolutions[candidate.snapshot.mint].created_at_ms,
-                ),
-            )
-            for candidate in limited
-            if candidate.snapshot.mint in age_resolutions
-        ]
-        prequalified, prefilter_counts = prefilter_candidates(resolved_candidates, now=now, env=env)
-        funnel["basic_filter_passed"] = prefilter_counts["basic_filter_passed"]
-        funnel["quality_gate_passed"] = prefilter_counts["quality_gate_passed"]
-        for offset in range(0, len(prequalified), 30):
-            batch = prequalified[offset : offset + 30]
-            snapshots = await enrich_tokens(client, env, [c.snapshot.mint for c in batch])
-            funnel["enriched"] += len(snapshots)
-            market_regime = classify_market_regime(list(snapshots.values())) if len(snapshots) >= env.TOKEN_HUNTER_MARKET_REGIME_MIN_DATA else MarketRegime("UNKNOWN", 0, 0, 0, 0, 0.5, 0, "UNKNOWN", ("INSUFFICIENT_MARKET_DATA",))
-            log.info("market_regime", regime=market_regime.name, trend=market_regime.trend, score=market_regime.score, breadth=market_regime.breadth_pct, median_change=market_regime.median_price_change_1h_pct)
-            for candidate in batch:
-                mint = candidate.snapshot.mint
-                s = snapshots.get(mint)
-                if s is None:
-                    continue
-                resolution = age_resolutions.get(mint)
-                created_at_ms = resolution.created_at_ms if resolution else s.created_at_ms
-                age = _age(created_at_ms, now)
-                if age is None:
-                    log.info("Token rejected", stage="enriched", mint=mint, reason="NO_TOKEN_AGE")
-                    continue
-                s = replace(s, created_at_ms=created_at_ms)
-                score = score_token(
-                    s, age_minutes=age, smart_money_score=await _smart_money(session, mint, now), market_regime=market_regime
-                )
-                funnel["scored"] += 1
-                o = await _persist(session, s, score, candidate.source, now, age)
-                severe_flags={"NO_LIQUIDITY_DATA","VOLUME_WITHOUT_TRANSACTION_DEPTH","EXTREME_TRADE_SIZE"}.intersection(score.risk_flags)
-                if env.TOKEN_HUNTER_MARKET_REGIME_ENABLED:
-                    regime_ok, regime_flags = market_regime_gate(s, market_regime, score=score.total, severe_flags=severe_flags, risk_off_min_score=env.TOKEN_HUNTER_RISK_OFF_MIN_SCORE, neutral_min_score=env.TOKEN_HUNTER_NEUTRAL_MIN_SCORE, risk_on_min_score=env.TOKEN_HUNTER_RISK_ON_MIN_SCORE)
-                    if not regime_ok:
-                        o.risk_flags=list(dict.fromkeys([*o.risk_flags,*regime_flags]))
-                        log.info("Token rejected", stage="market_regime_gate", mint=mint, regime=market_regime.name, trend=market_regime.trend, reasons=list(regime_flags))
-                        continue
-                if score.total < env.TOKEN_HUNTER_ALERT_MIN_SCORE or score.risk_level == "HIGH":
-                    continue
-                funnel["high_potential"] += 1
-                if o.last_alerted_at is not None and now - o.last_alerted_at < timedelta(
-                    minutes=env.TOKEN_HUNTER_ALERT_COOLDOWN_MINUTES
-                ):
-                    continue
-                o.alert_attempted_at = now
-                o.alert_status = "ATTEMPTED"
-                funnel["alert_attempted"] += 1
-                delivered = 0
-                errors: list[str] = []
-                message_ids: dict[str, int] = {}
-                text = format_alert(s, score, age, o.detected_at)
-                recipient_ids = alert_recipient_ids(env.admin_telegram_ids, [])
-                for chat_id in recipient_ids:
-                    try:
-                        message = await bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML", reply_markup=build_alert_keyboard(s))
-                        message_ids[str(chat_id)] = message.message_id
-                        delivered += 1
-                    except (TelegramAPIError, ValueError) as err:
-                        errors.append(str(err))
-                if delivered == 0:
-                    subscriber_result = await session.execute(
-                        select(User.telegram_id).where(User.notify_signals.is_(True))
-                    )
-                    subscriber_ids = alert_recipient_ids(set(), list(subscriber_result.scalars().all()))
-                    for chat_id in subscriber_ids:
-                        try:
-                            message = await bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML", reply_markup=build_alert_keyboard(s))
-                            message_ids[str(chat_id)] = message.message_id
-                            delivered += 1
-                        except (TelegramAPIError, ValueError) as err:
-                            errors.append(str(err))
-                if delivered:
-                    o.alert_delivered_at = now
-                    o.last_alerted_at = now
-                    o.alert_status = "DELIVERED"
-                    o.alert_error = "; ".join(errors)[:1000] if errors else None
-                    if o.alert_reference_price_usd is None and s.price_usd is not None and s.price_usd > 0:
-                        o.alert_reference_price_usd = s.price_usd
-                    o.alert_message_ids = message_ids
-                    o.quote_milestones = list(o.quote_milestones or [])
-                    funnel["alert_delivered"] += delivered
-                    log.info("alert_delivered", mint=mint, score=score.total, delivered=delivered)
-                else:
-                    o.alert_status = "FAILED"
-                    o.alert_error = (
-                        "; ".join(errors)[:1000] or "No configured admin chat accepted the message"
-                    )
-                    log.error("alert_failed", mint=mint, score=score.total, error=o.alert_error)
-        await _outcomes(session, client, env, now, bot)
+        for analysis in analyses:
+            o = await _persist_reversal(session, analysis, now)
+            if not analysis.approved:
+                continue
+            funnel["approved"] += 1
+            if o.last_alerted_at is not None and now - o.last_alerted_at < timedelta(minutes=env.TOKEN_HUNTER_ALERT_COOLDOWN_MINUTES):
+                continue
+            text = format_reversal_alert(analysis)
+            recipients = alert_recipient_ids(env.admin_telegram_ids, [])
+            if not recipients:
+                result = await session.execute(select(User.telegram_id).where(User.notify_signals.is_(True)))
+                recipients = alert_recipient_ids(set(), list(result.scalars().all()))
+            delivered = 0
+            message_ids: dict[str, int] = {}
+            errors: list[str] = []
+            for chat_id in recipients:
+                try:
+                    msg = await bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML", reply_markup=build_alert_keyboard(analysis.snapshot))
+                    message_ids[str(chat_id)] = msg.message_id
+                    delivered += 1
+                except (TelegramAPIError, ValueError) as err:
+                    errors.append(str(err))
+            o.alert_attempted_at = now
+            o.alert_status = "DELIVERED" if delivered else "FAILED"
+            o.alert_error = "; ".join(errors)[:1000] if errors else None
+            if delivered:
+                o.alert_delivered_at = now
+                o.last_alerted_at = now
+                o.alert_reference_price_usd = analysis.snapshot.price_usd
+                o.alert_message_ids = message_ids
+                funnel["alert_delivered"] += delivered
+            funnel["alert_attempted"] += 1
         await session.commit()
-    log.info("TOKEN HUNTER CYCLE COMPLETE", **funnel)
+    log.info("WHALE ALPHA REVERSAL CYCLE COMPLETE", **funnel)
     return funnel
-
 
 def start_token_hunter_loop(
     env: Env, session_factory: async_sessionmaker[AsyncSession], bot: Bot, client: Any, connection: Any | None = None
