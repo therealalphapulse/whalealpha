@@ -24,10 +24,11 @@ from whale_alpha.integrations.token_age import resolve_token_ages
 from whale_alpha.utils.logger import child_logger
 
 from whale_alpha.db.models import TokenOpportunity, TokenSnapshot, User, WalletEvent, WalletStatus, WhaleWallet
-from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, discover_token_candidates
+from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate
 from whale_alpha.engines.reversal_hunter import ReversalAnalysis, evaluate_candidates, discover_meme_candidates
 from whale_alpha.engines.final_audit import FinalAuditResult, run_final_release_audit
 from whale_alpha.db.models import WhaleAlphaAudit
+from whale_alpha.utils.http_retry import get_all_provider_metrics
 
 log = child_logger("tokenHunter")
 
@@ -560,6 +561,10 @@ async def run_hunter_cycle(
     funnel = {"discovered": 0, "evaluated": 0, "approved": 0, "alert_attempted": 0, "alert_delivered": 0}
     candidates = await discover_meme_candidates(client, env, now)
     funnel["discovered"] = len(candidates)
+    discovered_by_source: dict[str, int] = {}
+    for c in candidates:
+        discovered_by_source[c.source] = discovered_by_source.get(c.source, 0) + 1
+    log.info("discovery_by_source", **discovered_by_source)
     analyses = await evaluate_candidates(client, env, candidates, connection, now)
     funnel["evaluated"] = len(analyses)
     async with session_factory() as session:
@@ -618,6 +623,7 @@ async def run_hunter_cycle(
             funnel["alert_attempted"] += 1
         await session.commit()
     log.info("WHALE ALPHA REVERSAL CYCLE COMPLETE", **funnel)
+    log.info("WHALE ALPHA DISCOVERY PROVIDER TELEMETRY", providers=get_all_provider_metrics())
     return funnel
 
 def start_token_hunter_loop(
