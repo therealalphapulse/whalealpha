@@ -156,19 +156,24 @@ async def test_provider_failure_isolation(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_complete_hunter_pipeline_reaches_scoring_without_age_rejection(monkeypatch):
-    from datetime import datetime
-    from types import SimpleNamespace
+    """`run_hunter_cycle` (the strict Whale Alpha dip->consolidation->reversal
+    pipeline) discovers via `discover_meme_candidates` — not the legacy
+    multi-source `discover_token_candidates` — and its funnel only has
+    discovered/evaluated/approved/alert_attempted/alert_delivered. This
+    replaces a stale pre-rewrite version of this test that monkeypatched
+    `discover_token_candidates` (never called by run_hunter_cycle) and
+    asserted on funnel keys (basic_filter_passed/quality_gate_passed/
+    enriched/scored) that don't exist on the current funnel shape. See
+    engines/reversal_hunter.py + integrations/token_hunter_sources.py's
+    `discover_dexscreener_fallback_candidates` for where discovered
+    candidates actually come from now."""
     from whale_alpha.engines import token_hunter as hunter
-    from whale_alpha.integrations.token_age import TokenAgeResolution
 
     now = datetime.now(UTC)
     created = int((now - timedelta(minutes=20)).timestamp() * 1000)
-    candidate = DiscoveryCandidate(snapshot(created_at_ms=created), "test")
+    candidate = DiscoveryCandidate(snapshot(created_at_ms=created), "birdeye_meme")
     env_obj = env()
-    env_obj.TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE = 10
-    env_obj.TOKEN_HUNTER_ALERT_MIN_SCORE = 101
     env_obj.TOKEN_HUNTER_ALERT_COOLDOWN_MINUTES = 120
-    env_obj.TOKEN_HUNTER_PROVIDER_MAX_CONCURRENCY = 2
     env_obj.admin_telegram_ids = []
 
     class Session:
@@ -177,16 +182,12 @@ async def test_complete_hunter_pipeline_reaches_scoring_without_age_rejection(mo
         async def commit(self): pass
 
     def session_factory(): return Session()
-    monkeypatch.setattr(hunter, "discover_token_candidates", AsyncMock(return_value={"test": [candidate]}))
-    monkeypatch.setattr(hunter, "resolve_token_ages", AsyncMock(return_value={"X": TokenAgeResolution(created, "provider", 1200)}))
-    monkeypatch.setattr(hunter, "enrich_tokens", AsyncMock(return_value={"X": snapshot(created_at_ms=created)}))
-    monkeypatch.setattr(hunter, "_smart_money", AsyncMock(return_value=None))
-    monkeypatch.setattr(hunter, "_persist", AsyncMock(return_value=SimpleNamespace(last_alerted_at=None, detected_at=now)))
-    monkeypatch.setattr(hunter, "_outcomes", AsyncMock())
+
+    monkeypatch.setattr(hunter, "discover_meme_candidates", AsyncMock(return_value=[candidate]))
+    monkeypatch.setattr(hunter, "evaluate_candidates", AsyncMock(return_value=[]))
 
     funnel = await hunter.run_hunter_cycle(env_obj, session_factory, AsyncMock(), AsyncMock())
+
     assert funnel["discovered"] == 1
-    assert funnel["basic_filter_passed"] == 1
-    assert funnel["quality_gate_passed"] == 1
-    assert funnel["enriched"] == 1
-    assert funnel["scored"] == 1
+    assert funnel["evaluated"] == 0
+    assert funnel["approved"] == 0
