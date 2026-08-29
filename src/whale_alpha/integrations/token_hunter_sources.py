@@ -270,6 +270,25 @@ async def _discover_dexscreener_candidates(
     return await _fetch_dexscreener_pairs(client, env, addresses)
 
 
+async def discover_dexscreener_fallback_candidates(
+    client: httpx.AsyncClient, env: Env, limit: int
+) -> list[DiscoveryCandidate]:
+    """Public entry point for other discovery pipelines (e.g. the strict
+    Whale Alpha reversal hunter in engines/reversal_hunter.py) to reuse this
+    module's already-approved DexScreener discovery path as a fallback when
+    their primary provider fails, is disabled, or returns no candidates for
+    a cycle. Thin, logic-free wrapper around `_discover_dexscreener_candidates`
+    — no filtering, scoring, or hard-gate behavior lives here or changes by
+    calling it; callers get exactly the same DiscoveryCandidate objects (and
+    the same field-mapping in `_candidate`) that this module's own
+    `discover_token_candidates` uses for its DexScreener source. Respects
+    DISCOVERY_DEXSCREENER_ENABLED like every other DexScreener call site in
+    this module."""
+    if not env.DISCOVERY_DEXSCREENER_ENABLED:
+        return []
+    return await _discover_dexscreener_candidates(client, env, limit)
+
+
 async def discover_token_candidates(
     client: httpx.AsyncClient, env: Env
 ) -> dict[str, list[DiscoveryCandidate]]:
