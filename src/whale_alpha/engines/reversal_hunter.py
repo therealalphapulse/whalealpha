@@ -19,7 +19,7 @@ import httpx
 from solders.pubkey import Pubkey
 from whale_alpha.config import Env
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot, enrich_token
-from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate
+from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, discover_dexscreener_fallback_candidates
 from whale_alpha.utils.http_retry import get_provider_client
 from whale_alpha.utils.logger import child_logger
 
@@ -299,9 +299,19 @@ async def _birdeye_get(client: httpx.AsyncClient, env: Env, path: str, params: d
         return None
 
 
-async def discover_meme_candidates(client: httpx.AsyncClient, env: Env, now: datetime) -> list[DiscoveryCandidate]:
+async def _discover_birdeye_meme_candidates(
+    client: httpx.AsyncClient, env: Env, now: datetime
+) -> tuple[list[DiscoveryCandidate], str]:
+    """Birdeye meme-list discovery. Returns (candidates, status) instead of
+    silently collapsing every failure mode to an empty list — the caller
+    (discover_meme_candidates) needs to know *why* Birdeye produced nothing
+    so it can decide whether to fall back, and so the reason is visible in
+    Railway logs instead of just a bare `discovered=0`. No filter or
+    candidate-shape change from the previous implementation."""
     if not env.BIRDEYE_API_KEY:
-        return []
+        return [], "no_api_key"
+    if not env.DISCOVERY_BIRDEYE_ENABLED:
+        return [], "disabled"
     params = {
         "sort_type": "desc",
         "source": "all",
@@ -313,7 +323,31 @@ async def discover_meme_candidates(client: httpx.AsyncClient, env: Env, now: dat
         "max_market_cap": env.WHALE_ALPHA_MAX_MC_USD,
         "limit": min(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE, 50),
     }
-    payload = await _birdeye_get(client, env, "/defi/v3/token/meme/list", params)
+    provider = get_provider_client(
+        "birdeye_reversal",
+        max_concurrency=env.TOKEN_HUNTER_PROVIDER_MAX_CONCURRENCY,
+        failure_threshold=env.DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
+        cooldown_seconds=env.DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+    )
+    result = await provider.get(
+        client,
+        f"{env.DISCOVERY_BIRDEYE_API_BASE.rstrip('/')}/defi/v3/token/meme/list",
+        params=params,
+        headers={"X-API-KEY": env.BIRDEYE_API_KEY, "x-chain": SOLANA},
+        max_retries=env.DISCOVERY_PROVIDER_MAX_RETRIES,
+        base_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_BASE_SECONDS,
+        max_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_MAX_SECONDS,
+    )
+    if result.circuit_open:
+        return [], "circuit_open"
+    if result.response is None:
+        return [], "http_failure"
+    if result.response.status_code >= 400:
+        return [], f"http_{result.response.status_code}"
+    try:
+        payload = result.response.json()
+    except ValueError:
+        return [], "invalid_json"
     rows = _rows(payload)
     out: list[DiscoveryCandidate] = []
     seen: set[str] = set()
@@ -346,7 +380,48 @@ async def discover_meme_candidates(client: httpx.AsyncClient, env: Env, now: dat
             ),
             source="birdeye_meme",
         ))
-    return out
+    return out, ("ok" if out else "empty_payload")
+
+
+async def discover_meme_candidates(client: httpx.AsyncClient, env: Env, now: datetime) -> list[DiscoveryCandidate]:
+    """Strict Whale Alpha candidate discovery. Birdeye's meme-list is the
+    primary source; if it produces zero candidates for any reason (missing
+    key, disabled, open circuit breaker, HTTP failure, or a genuinely empty
+    result) we fall back to the already-approved DexScreener discovery path
+    (integrations/token_hunter_sources.py) rather than silently returning an
+    empty pipeline. This changes *where candidates come from*, never *what
+    counts as a valid candidate* — every candidate, from either source, still
+    goes through the same prefilter/evaluate/final-audit hard gates
+    downstream. No filter is loosened and nothing here fabricates data."""
+    birdeye_candidates, birdeye_status = await _discover_birdeye_meme_candidates(client, env, now)
+    log.info(
+        "discovery_source_result",
+        source="birdeye_meme",
+        candidates=len(birdeye_candidates),
+        status=birdeye_status,
+    )
+    if birdeye_candidates:
+        return birdeye_candidates
+
+    log.warning(
+        "discovery_birdeye_empty_falling_back",
+        reason=birdeye_status,
+        fallback_source="dexscreener",
+    )
+    try:
+        fallback_candidates = await discover_dexscreener_fallback_candidates(
+            client, env, limit=min(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE, 50)
+        )
+    except Exception as err:  # noqa: BLE001 — one provider must never take down discovery
+        log.warning("discovery_source_failed", source="dexscreener", err=str(err))
+        fallback_candidates = []
+    log.info(
+        "discovery_source_result",
+        source="dexscreener",
+        candidates=len(fallback_candidates),
+        status="fallback_used" if fallback_candidates else "empty",
+    )
+    return fallback_candidates
 
 
 async def _fetch_ohlcv(client: httpx.AsyncClient, env: Env, mint: str, now: datetime) -> list[Candle]:
