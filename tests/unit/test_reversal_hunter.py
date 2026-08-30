@@ -41,12 +41,14 @@ def test_rejects_single_candle_spike_without_follow_through():
     assert result is None
 
 
-# --- Discovery pipeline: Birdeye failure / silent-empty-result fix, and the
-# DexScreener fallback wiring (engines/reversal_hunter.discover_meme_candidates).
-# No scenario below loosens a filter or asserts on fabricated data — every
-# candidate returned is either a parsed Birdeye row or a candidate handed
-# back by a mocked (already-approved) DexScreener fallback; provider
-# failures degrade to an empty list rather than raising or fabricating.
+# --- Discovery pipeline: GeckoTerminal-only pump.fun sourcing
+# (engines/reversal_hunter.discover_meme_candidates). GeckoTerminal is the
+# ONLY discovery source -- no Birdeye/DexScreener fallback runs inside
+# discover_meme_candidates anymore. No scenario below loosens a filter or
+# asserts on fabricated data: every candidate returned is a parsed
+# GeckoTerminal pool whose relationships.dex.data.id matched the
+# configured pump.fun dex-id set; provider failures degrade to an empty
+# list rather than raising or fabricating a result.
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -55,21 +57,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from whale_alpha.engines import reversal_hunter
-from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot
-from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate
 from whale_alpha.utils.http_retry import HttpFetchResult
 
 
-def _env(**overrides):
+def _gt_env(**overrides):
     data = dict(
-        BIRDEYE_API_KEY="test-key",
-        DISCOVERY_BIRDEYE_ENABLED=True,
-        DISCOVERY_BIRDEYE_API_BASE="https://public-api.birdeye.so",
-        WHALE_ALPHA_MIN_LIQ_USD=10_000,
-        WHALE_ALPHA_MAX_LIQ_USD=5_000_000,
-        WHALE_ALPHA_MIN_MC_USD=50_000,
-        WHALE_ALPHA_MAX_MC_USD=10_000_000,
-        TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE=50,
+        DISCOVERY_GECKOTERMINAL_ENABLED=True,
+        DISCOVERY_GECKOTERMINAL_API_BASE="https://api.geckoterminal.com/api/v2",
+        DISCOVERY_GECKOTERMINAL_PUMPFUN_DEX_IDS="pump-fun,pumpswap",
+        DISCOVERY_GECKOTERMINAL_PAGES=1,
         TOKEN_HUNTER_PROVIDER_MAX_CONCURRENCY=5,
         DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD=1,
         DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS=60,
@@ -81,16 +77,30 @@ def _env(**overrides):
     return SimpleNamespace(**data)
 
 
-def _fallback_candidate(mint: str = "DEX_MINT") -> DiscoveryCandidate:
-    return DiscoveryCandidate(
-        TokenMarketSnapshot(
-            mint=mint, name="Fallback Token", symbol="FBK", pair_address="P", dex_id="raydium",
-            created_at_ms=0, price_usd=0.01, market_cap_usd=100_000, liquidity_usd=20_000,
-            volume_5m_usd=1_000, volume_1h_usd=5_000, buys_5m=10, sells_5m=2, buys_1h=40, sells_1h=20,
-            price_change_5m_pct=5, price_change_1h_pct=10, metadata_present=True,
-        ),
-        source="dexscreener",
-    )
+def _gt_pool(mint: str, dex_id: str, name: str = "Cat / SOL"):
+    return {
+        "id": f"solana_{mint}_pool",
+        "type": "pool",
+        "attributes": {
+            "base_token_price_usd": "0.0000044",
+            "name": name,
+            "pool_created_at": "2026-08-30T10:44:17Z",
+            "fdv_usd": "4830.43",
+            "market_cap_usd": None,
+            "price_change_percentage": {"m5": "30.0", "h1": "12.0"},
+            "transactions": {
+                "m5": {"buys": 40, "sells": 26},
+                "h1": {"buys": 90, "sells": 50},
+            },
+            "volume_usd": {"m5": "6612.31", "h1": "20000.0"},
+            "reserve_in_usd": "42076.57",
+        },
+        "relationships": {
+            "base_token": {"data": {"id": f"solana_{mint}", "type": "token"}},
+            "quote_token": {"data": {"id": "solana_So11111111111111111111111111111111111111112", "type": "token"}},
+            "dex": {"data": {"id": dex_id, "type": "dex"}},
+        },
+    }
 
 
 class _FakeResponse:
@@ -110,91 +120,114 @@ class _FakeProvider:
         return self._result
 
 
-def _patch_provider(monkeypatch, result: HttpFetchResult):
+def _gt_patch(monkeypatch, result: HttpFetchResult):
     monkeypatch.setattr(reversal_hunter, "get_provider_client", lambda *a, **k: _FakeProvider(result))
 
 
 @pytest.mark.asyncio
-async def test_birdeye_success_returns_birdeye_candidates_and_skips_fallback(monkeypatch):
-    payload = {"data": {"items": [{"address": "MINT1", "name": "Test", "symbol": "TST", "liquidity": 50_000, "market_cap": 200_000}]}}
-    _patch_provider(monkeypatch, HttpFetchResult(response=_FakeResponse(200, payload), transient=False))
-    fallback = AsyncMock()
-    monkeypatch.setattr(reversal_hunter, "discover_dexscreener_fallback_candidates", fallback)
+async def test_geckoterminal_keeps_pumpfun_and_pumpswap_drops_other_dex(monkeypatch):
+    payload = {"data": [
+        _gt_pool("MINT_PUMPFUN", "pump-fun"),
+        _gt_pool("MINT_PUMPSWAP", "pumpswap"),
+        _gt_pool("MINT_RAYDIUM", "raydium"),
+    ]}
+    _gt_patch(monkeypatch, HttpFetchResult(response=_FakeResponse(200, payload), transient=False))
 
-    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _env(), datetime.now(UTC))
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
 
-    assert len(out) == 1
-    assert out[0].snapshot.mint == "MINT1"
-    assert out[0].source == "birdeye_meme"
-    fallback.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_missing_birdeye_key_falls_back_to_dexscreener(monkeypatch):
-    fallback = AsyncMock(return_value=[_fallback_candidate()])
-    monkeypatch.setattr(reversal_hunter, "discover_dexscreener_fallback_candidates", fallback)
-
-    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _env(BIRDEYE_API_KEY=None), datetime.now(UTC))
-
-    assert len(out) == 1
-    assert out[0].source == "dexscreener"
-    fallback.assert_awaited_once()
+    mints = {c.snapshot.mint for c in out}
+    assert mints == {"MINT_PUMPFUN", "MINT_PUMPSWAP"}
+    assert all(c.source == "geckoterminal_pumpfun" for c in out)
 
 
 @pytest.mark.asyncio
-async def test_birdeye_circuit_open_falls_back_to_dexscreener(monkeypatch):
-    _patch_provider(monkeypatch, HttpFetchResult(response=None, transient=True, circuit_open=True))
-    fallback = AsyncMock(return_value=[_fallback_candidate()])
-    monkeypatch.setattr(reversal_hunter, "discover_dexscreener_fallback_candidates", fallback)
+async def test_geckoterminal_maps_market_data_fields(monkeypatch):
+    payload = {"data": [_gt_pool("MINT1", "pumpswap")]}
+    _gt_patch(monkeypatch, HttpFetchResult(response=_FakeResponse(200, payload), transient=False))
 
-    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _env(), datetime.now(UTC))
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
 
     assert len(out) == 1
-    assert out[0].source == "dexscreener"
-    fallback.assert_awaited_once()
+    snap = out[0].snapshot
+    assert snap.liquidity_usd == pytest.approx(42076.57)
+    assert snap.volume_1h_usd == pytest.approx(20000.0)
+    assert snap.buys_1h == 90
+    assert snap.sells_1h == 50
+    assert snap.price_change_1h_pct == pytest.approx(12.0)
 
 
 @pytest.mark.asyncio
-async def test_birdeye_http_failure_falls_back_to_dexscreener(monkeypatch):
-    _patch_provider(monkeypatch, HttpFetchResult(response=None, transient=True))
-    fallback = AsyncMock(return_value=[_fallback_candidate()])
-    monkeypatch.setattr(reversal_hunter, "discover_dexscreener_fallback_candidates", fallback)
+async def test_geckoterminal_disabled_returns_empty_no_fallback(monkeypatch):
+    fetch_mock = AsyncMock()
+    monkeypatch.setattr(reversal_hunter, "get_provider_client", fetch_mock)
 
-    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _env(), datetime.now(UTC))
+    out = await reversal_hunter.discover_meme_candidates(
+        AsyncMock(), _gt_env(DISCOVERY_GECKOTERMINAL_ENABLED=False), datetime.now(UTC)
+    )
 
-    assert len(out) == 1
-    assert out[0].source == "dexscreener"
-
-
-@pytest.mark.asyncio
-async def test_birdeye_empty_payload_falls_back_to_dexscreener(monkeypatch):
-    _patch_provider(monkeypatch, HttpFetchResult(response=_FakeResponse(200, {"data": {"items": []}}), transient=False))
-    fallback = AsyncMock(return_value=[_fallback_candidate()])
-    monkeypatch.setattr(reversal_hunter, "discover_dexscreener_fallback_candidates", fallback)
-
-    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _env(), datetime.now(UTC))
-
-    assert len(out) == 1
-    assert out[0].source == "dexscreener"
+    assert out == []
+    fetch_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_both_providers_empty_returns_empty_list_not_fabricated(monkeypatch):
-    _patch_provider(monkeypatch, HttpFetchResult(response=None, transient=True))
-    fallback = AsyncMock(return_value=[])
-    monkeypatch.setattr(reversal_hunter, "discover_dexscreener_fallback_candidates", fallback)
+async def test_geckoterminal_circuit_open_returns_empty_not_fabricated(monkeypatch):
+    _gt_patch(monkeypatch, HttpFetchResult(response=None, transient=True, circuit_open=True))
 
-    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _env(), datetime.now(UTC))
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
 
     assert out == []
 
 
 @pytest.mark.asyncio
-async def test_dexscreener_fallback_exception_is_contained_not_raised(monkeypatch):
-    _patch_provider(monkeypatch, HttpFetchResult(response=None, transient=True))
-    fallback = AsyncMock(side_effect=RuntimeError("dexscreener boom"))
-    monkeypatch.setattr(reversal_hunter, "discover_dexscreener_fallback_candidates", fallback)
+async def test_geckoterminal_http_failure_returns_empty_not_fabricated(monkeypatch):
+    _gt_patch(monkeypatch, HttpFetchResult(response=None, transient=True))
 
-    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _env(), datetime.now(UTC))
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
 
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_geckoterminal_http_error_status_returns_empty(monkeypatch):
+    _gt_patch(monkeypatch, HttpFetchResult(response=_FakeResponse(403, {"error": "forbidden"}), transient=False))
+
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
+
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_geckoterminal_invalid_json_returns_empty_not_raises(monkeypatch):
+    class _BadJsonResponse:
+        status_code = 200
+
+        def json(self):
+            raise ValueError("bad json")
+
+    _gt_patch(monkeypatch, HttpFetchResult(response=_BadJsonResponse(), transient=False))
+
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
+
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_geckoterminal_empty_page_returns_empty_list(monkeypatch):
+    _gt_patch(monkeypatch, HttpFetchResult(response=_FakeResponse(200, {"data": []}), transient=False))
+
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
+
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_geckoterminal_dedupes_repeated_mints(monkeypatch):
+    payload = {"data": [
+        _gt_pool("MINT_DUP", "pump-fun"),
+        _gt_pool("MINT_DUP", "pumpswap"),
+    ]}
+    _gt_patch(monkeypatch, HttpFetchResult(response=_FakeResponse(200, payload), transient=False))
+
+    out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
+
+    assert len(out) == 1
