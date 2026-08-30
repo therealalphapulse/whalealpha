@@ -19,7 +19,7 @@ import httpx
 from solders.pubkey import Pubkey
 from whale_alpha.config import Env
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot, enrich_token
-from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, discover_dexscreener_fallback_candidates
+from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate
 from whale_alpha.utils.http_retry import get_provider_client
 from whale_alpha.utils.logger import child_logger
 
@@ -299,129 +299,181 @@ async def _birdeye_get(client: httpx.AsyncClient, env: Env, path: str, params: d
         return None
 
 
-async def _discover_birdeye_meme_candidates(
+async def _discover_geckoterminal_pumpfun_candidates(
     client: httpx.AsyncClient, env: Env, now: datetime
 ) -> tuple[list[DiscoveryCandidate], str]:
-    """Birdeye meme-list discovery. Returns (candidates, status) instead of
-    silently collapsing every failure mode to an empty list — the caller
-    (discover_meme_candidates) needs to know *why* Birdeye produced nothing
-    so it can decide whether to fall back, and so the reason is visible in
-    Railway logs instead of just a bare `discovered=0`. No filter or
-    candidate-shape change from the previous implementation."""
-    if not env.BIRDEYE_API_KEY:
-        return [], "no_api_key"
-    if not env.DISCOVERY_BIRDEYE_ENABLED:
+    """GeckoTerminal-only discovery, restricted to Solana pump.fun pools.
+
+    This is the ONLY discovery source for discover_meme_candidates below --
+    no Birdeye/DexScreener/other-provider fallback lives in that function
+    anymore. Returns (candidates, status) so the caller can log *why* zero
+    candidates came back (disabled, circuit-open, http failure, invalid
+    JSON, or a genuinely empty page) instead of a bare `discovered=0`.
+
+    Pump.fun-origin filtering is done via GeckoTerminal's
+    relationships.dex.data.id on each pool, checked against
+    DISCOVERY_GECKOTERMINAL_PUMPFUN_DEX_IDS. That set defaults to both
+    "pump-fun" (raw bonding-curve pools -- no real reserve/OHLCV yet) and
+    "pumpswap" (graduated pump.fun tokens on Pump.fun's own AMM, which DO
+    have the liquidity/candle history detect_dip_consolidation_breakout
+    needs). Restricting to "pump-fun" only would starve the pattern
+    detector of usable data; this is documented and configurable rather
+    than a silent assumption.
+
+    No filter, scoring, or hard-gate logic lives here -- this only sources
+    candidates. detect_dip_consolidation_breakout, score_reversal,
+    every _fetch_* verification call, and final_audit are all keyed purely
+    by mint address and are completely unaffected by this discovery swap.
+    """
+    if not env.DISCOVERY_GECKOTERMINAL_ENABLED:
         return [], "disabled"
-    params = {
-        "sort_type": "desc",
-        "source": "all",
-        "min_creation_time": int((now - timedelta(days=30)).timestamp()),
-        "max_creation_time": int(now.timestamp()),
-        "min_liquidity": env.WHALE_ALPHA_MIN_LIQ_USD,
-        "max_liquidity": env.WHALE_ALPHA_MAX_LIQ_USD,
-        "min_market_cap": env.WHALE_ALPHA_MIN_MC_USD,
-        "max_market_cap": env.WHALE_ALPHA_MAX_MC_USD,
-        "limit": min(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE, 50),
+
+    dex_ids = {
+        d.strip().lower()
+        for d in env.DISCOVERY_GECKOTERMINAL_PUMPFUN_DEX_IDS.split(",")
+        if d.strip()
     }
+    if not dex_ids:
+        return [], "no_dex_ids_configured"
+
     provider = get_provider_client(
-        "birdeye_reversal",
+        "geckoterminal",
         max_concurrency=env.TOKEN_HUNTER_PROVIDER_MAX_CONCURRENCY,
         failure_threshold=env.DISCOVERY_PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
         cooldown_seconds=env.DISCOVERY_PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
     )
-    result = await provider.get(
-        client,
-        f"{env.DISCOVERY_BIRDEYE_API_BASE.rstrip('/')}/defi/v3/token/meme/list",
-        params=params,
-        headers={"X-API-KEY": env.BIRDEYE_API_KEY, "x-chain": SOLANA},
-        max_retries=env.DISCOVERY_PROVIDER_MAX_RETRIES,
-        base_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_BASE_SECONDS,
-        max_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_MAX_SECONDS,
-    )
-    if result.circuit_open:
-        return [], "circuit_open"
-    if result.response is None:
-        return [], "http_failure"
-    if result.response.status_code >= 400:
-        return [], f"http_{result.response.status_code}"
-    try:
-        payload = result.response.json()
-    except ValueError:
-        return [], "invalid_json"
-    rows = _rows(payload)
+    base = env.DISCOVERY_GECKOTERMINAL_API_BASE.rstrip("/")
+    headers = {
+        "Accept": "application/json;version=20230302",
+        "User-Agent": "AlphaPulse-WhaleAlpha/1.0 (+https://github.com/therealalphapulse/whalealpha)",
+    }
+
     out: list[DiscoveryCandidate] = []
     seen: set[str] = set()
-    for row in rows:
-        mint = row.get("address") or row.get("token_address") or row.get("mint")
-        if not isinstance(mint, str) or not mint or mint in seen:
-            continue
-        seen.add(mint)
-        out.append(DiscoveryCandidate(
-            snapshot=TokenMarketSnapshot(
-                mint=mint,
-                name=row.get("name") if isinstance(row.get("name"), str) else None,
-                symbol=row.get("symbol") if isinstance(row.get("symbol"), str) else None,
-                pair_address=None,
-                dex_id=None,
-                created_at_ms=int((_num(row.get("creation_time") or row.get("created_at")) or 0) * (1000 if (_num(row.get("creation_time") or row.get("created_at")) or 0) < 10_000_000_000 else 1)) or None,
-                price_usd=_num(row.get("price")),
-                market_cap_usd=_num(row.get("market_cap") or row.get("marketCap")),
-                liquidity_usd=_num(row.get("liquidity")),
-                volume_5m_usd=0.0,
-                volume_1h_usd=0.0,
-                buys_5m=0,
-                sells_5m=0,
-                buys_1h=0,
-                sells_1h=0,
-                price_change_5m_pct=0.0,
-                price_change_1h_pct=0.0,
-                metadata_present=bool(row.get("website") or row.get("twitter") or row.get("telegram") or row.get("name")),
-                source="birdeye_meme",
-            ),
-            source="birdeye_meme",
-        ))
-    return out, ("ok" if out else "empty_payload")
+    last_status = "empty_payload"
+    any_page_ok = False
+
+    for page in range(1, max(1, env.DISCOVERY_GECKOTERMINAL_PAGES) + 1):
+        result = await provider.get(
+            client,
+            f"{base}/networks/solana/new_pools",
+            params={"page": str(page)},
+            headers=headers,
+            max_retries=env.DISCOVERY_PROVIDER_MAX_RETRIES,
+            base_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_BASE_SECONDS,
+            max_backoff_seconds=env.DISCOVERY_PROVIDER_RETRY_MAX_SECONDS,
+        )
+        if result.circuit_open:
+            if not any_page_ok:
+                return out, "circuit_open"
+            break
+        if result.response is None:
+            if not any_page_ok:
+                return out, "http_failure"
+            break
+        if result.response.status_code >= 400:
+            if not any_page_ok:
+                return out, f"http_{result.response.status_code}"
+            break
+        try:
+            payload = result.response.json()
+        except ValueError:
+            if not any_page_ok:
+                return out, "invalid_json"
+            break
+
+        any_page_ok = True
+        rows = _rows(payload)
+        if not rows:
+            break
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            relationships = _obj(row.get("relationships"))
+            dex_id = (_obj(relationships.get("dex")).get("id") or "").strip().lower()
+            if dex_id not in dex_ids:
+                continue
+
+            base_token_id = _obj(relationships.get("base_token")).get("id")
+            if not isinstance(base_token_id, str) or not base_token_id:
+                continue
+            mint = base_token_id.split("_", 1)[1] if "_" in base_token_id else base_token_id
+            if not mint or mint in seen:
+                continue
+            seen.add(mint)
+
+            attrs = _obj(row.get("attributes"))
+            price_change = _obj(attrs.get("price_change_percentage"))
+            txns = _obj(attrs.get("transactions"))
+            volume = _obj(attrs.get("volume_usd"))
+            m5 = _obj(txns.get("m5"))
+            h1 = _obj(txns.get("h1"))
+            name_field = attrs.get("name") if isinstance(attrs.get("name"), str) else None
+            pair_name = name_field.split(" / ")[0].strip() if name_field and " / " in name_field else name_field
+            created_at_ms = None
+            created_raw = attrs.get("pool_created_at")
+            if isinstance(created_raw, str):
+                try:
+                    created_at_ms = int(
+                        datetime.fromisoformat(created_raw.replace("Z", "+00:00")).timestamp() * 1000
+                    )
+                except ValueError:
+                    created_at_ms = None
+
+            market_cap = _num(attrs.get("market_cap_usd"))
+            if market_cap is None:
+                market_cap = _num(attrs.get("fdv_usd"))
+
+            out.append(DiscoveryCandidate(
+                snapshot=TokenMarketSnapshot(
+                    mint=mint,
+                    name=pair_name,
+                    symbol=None,
+                    pair_address=row.get("id").split("_", 1)[1] if isinstance(row.get("id"), str) and "_" in row.get("id", "") else None,
+                    dex_id=dex_id,
+                    created_at_ms=created_at_ms,
+                    price_usd=_num(attrs.get("base_token_price_usd")),
+                    market_cap_usd=market_cap,
+                    liquidity_usd=_num(attrs.get("reserve_in_usd")),
+                    volume_5m_usd=_num(volume.get("m5")) or 0.0,
+                    volume_1h_usd=_num(volume.get("h1")) or 0.0,
+                    buys_5m=int(_num(m5.get("buys")) or 0),
+                    sells_5m=int(_num(m5.get("sells")) or 0),
+                    buys_1h=int(_num(h1.get("buys")) or 0),
+                    sells_1h=int(_num(h1.get("sells")) or 0),
+                    price_change_5m_pct=_num(price_change.get("m5")) or 0.0,
+                    price_change_1h_pct=_num(price_change.get("h1")) or 0.0,
+                    metadata_present=bool(pair_name),
+                    source="geckoterminal_pumpfun",
+                ),
+                source="geckoterminal_pumpfun",
+            ))
+        last_status = "ok" if out else "empty_after_filter"
+
+    return out, (last_status if out else last_status)
 
 
 async def discover_meme_candidates(client: httpx.AsyncClient, env: Env, now: datetime) -> list[DiscoveryCandidate]:
-    """Strict Whale Alpha candidate discovery. Birdeye's meme-list is the
-    primary source; if it produces zero candidates for any reason (missing
-    key, disabled, open circuit breaker, HTTP failure, or a genuinely empty
-    result) we fall back to the already-approved DexScreener discovery path
-    (integrations/token_hunter_sources.py) rather than silently returning an
-    empty pipeline. This changes *where candidates come from*, never *what
-    counts as a valid candidate* — every candidate, from either source, still
-    goes through the same prefilter/evaluate/final-audit hard gates
-    downstream. No filter is loosened and nothing here fabricates data."""
-    birdeye_candidates, birdeye_status = await _discover_birdeye_meme_candidates(client, env, now)
+    """Strict Whale Alpha candidate discovery. GeckoTerminal is the ONLY
+    discovery source -- no Birdeye/DexScreener/other-provider fallback
+    lives in this function. A GeckoTerminal outage or an empty pump.fun
+    universe for a cycle means zero candidates for that cycle, not a
+    silent switch to a different discovery source. Deeper verification
+    (OHLCV, holder profile, top holders, risk positions, top traders,
+    smart-money list, security, on-chain flow) downstream in
+    evaluate_candidate/evaluate_candidates is completely unchanged --
+    every one of those calls is keyed purely by mint address, never by
+    discovery source, and every hard gate (detect_dip_consolidation_breakout,
+    score_reversal, final_audit) is untouched."""
+    candidates, status = await _discover_geckoterminal_pumpfun_candidates(client, env, now)
     log.info(
         "discovery_source_result",
-        source="birdeye_meme",
-        candidates=len(birdeye_candidates),
-        status=birdeye_status,
+        source="geckoterminal_pumpfun",
+        candidates=len(candidates),
+        status=status,
     )
-    if birdeye_candidates:
-        return birdeye_candidates
-
-    log.warning(
-        "discovery_birdeye_empty_falling_back",
-        reason=birdeye_status,
-        fallback_source="dexscreener",
-    )
-    try:
-        fallback_candidates = await discover_dexscreener_fallback_candidates(
-            client, env, limit=min(env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE, 50)
-        )
-    except Exception as err:  # noqa: BLE001 — one provider must never take down discovery
-        log.warning("discovery_source_failed", source="dexscreener", err=str(err))
-        fallback_candidates = []
-    log.info(
-        "discovery_source_result",
-        source="dexscreener",
-        candidates=len(fallback_candidates),
-        status="fallback_used" if fallback_candidates else "empty",
-    )
-    return fallback_candidates
+    return candidates
 
 
 async def _fetch_ohlcv(client: httpx.AsyncClient, env: Env, mint: str, now: datetime) -> list[Candle]:
