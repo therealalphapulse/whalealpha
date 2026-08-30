@@ -371,6 +371,23 @@ class Env(BaseSettings):
     DISCOVERY_DEXSCREENER_ENABLED: bool = True
     DISCOVERY_DEXSCREENER_API_BASE: str = "https://api.dexscreener.com"
 
+    # --- GeckoTerminal discovery (Whale Alpha GeckoTerminal-only pump.fun
+    # sourcing requirement) ---
+    # This is now the ONLY candidate-sourcing provider for
+    # engines/reversal_hunter.discover_meme_candidates -- Birdeye/DexScreener
+    # discovery in that module is disconnected (their _fetch_* verification
+    # helpers and other callers of DISCOVERY_BIRDEYE_*/DISCOVERY_DEXSCREENER_*
+    # above are untouched and still active).
+    DISCOVERY_GECKOTERMINAL_ENABLED: bool = True
+    DISCOVERY_GECKOTERMINAL_API_BASE: str = "https://api.geckoterminal.com/api/v2"
+    # Comma-separated GeckoTerminal `relationships.dex.data.id` values that
+    # count as "pump.fun". Defaults to both the raw bonding-curve venue
+    # ("pump-fun") and the post-graduation AMM ("pumpswap") -- bonding-curve
+    # pools have no real reserve/OHLCV yet, so pumpswap is what actually
+    # supplies detect_dip_consolidation_breakout with usable candle history.
+    DISCOVERY_GECKOTERMINAL_PUMPFUN_DEX_IDS: str = "pump-fun,pumpswap"
+    DISCOVERY_GECKOTERMINAL_PAGES: int = Field(2, ge=1, le=10)
+
     # --- Wallet Graph Expansion (Priority 4) ---
     # Every promoted wallet becomes a discovery node: its recent traded
     # tokens are re-queried for co-holders/co-buyers, and repeated
@@ -446,6 +463,7 @@ class Env(BaseSettings):
         "DISCOVERY_METEORA_API_BASE",
         "DISCOVERY_BIRDEYE_API_BASE",
         "DISCOVERY_DEXSCREENER_API_BASE",
+        "DISCOVERY_GECKOTERMINAL_API_BASE",
     )
     @classmethod
     def _must_be_url(cls, v: str) -> str:
