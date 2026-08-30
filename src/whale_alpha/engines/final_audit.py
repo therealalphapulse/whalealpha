@@ -14,8 +14,8 @@ from whale_alpha.config import Env
 from whale_alpha.engines.reversal_hunter import (
     Candle, ReversalAnalysis, _authority_flags, _fetch_bitquery_flow, _fetch_holder_profile,
     _fetch_market_overview, _fetch_ohlcv, _fetch_risk_positions, _fetch_security,
-    _fetch_smart_money_token_list, _fetch_top_holders, _fetch_top_traders, _flow_evidence,
-    _holder_evidence, _security_flags, detect_dip_consolidation_breakout,
+    _fetch_smart_money_token_list, _fetch_top_holders, _fetch_top_traders, _fetch_trade_data,
+    _flow_evidence, _holder_evidence, _security_flags, detect_dip_consolidation_breakout,
 )
 from whale_alpha.integrations.token_hunter_market import _dict, _number, _pair_liquidity
 from whale_alpha.utils.http_retry import get_provider_client
