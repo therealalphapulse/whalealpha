@@ -804,13 +804,28 @@ async def evaluate_candidate(client: httpx.AsyncClient, env: Env, candidate: Dis
     if flow and (flow.buy_sell_ratio < env.WHALE_ALPHA_BUY_SELL_RATIO_MIN or not flow.net_buy_pressure): rejects.append("NET_BUY_PRESSURE_FAILED")
     on_raw = _holder_evidence(profile, holders, positions)
     security_flags = _security_flags(security)
-    authority_flags = _authority_flags(await connection.get_account_info(Pubkey.from_string(candidate.snapshot.mint))) if connection is not None else ("AUTHORITY_DATA_MISSING",)
+    if connection is not None:
+        try:
+            authority_flags = _authority_flags(await connection.get_account_info(Pubkey.from_string(candidate.snapshot.mint)))
+        except Exception:  # noqa: BLE001 -- any provider-side failure means "unknown", not "bad"
+            # Every routed RPC provider failed this lookup -- that's a data
+            # availability problem, not a security finding. Falling back to
+            # the same AUTHORITY_DATA_MISSING sentinel already used for the
+            # no-connection case below, rather than letting this propagate
+            # into evaluate_candidates' generic EVALUATION_ERROR catch-all,
+            # which would hard-reject on a provider outage.
+            authority_flags = ("AUTHORITY_DATA_MISSING",)
+    else:
+        authority_flags = ("AUTHORITY_DATA_MISSING",)
     if on_raw is None: rejects.append("HOLDER_DATA_MISSING")
     onchain = OnChainEvidence(*(on_raw or (0,0,0,0,False)), security_flags, authority_flags)
     if on_raw and (on_raw[0] > env.WHALE_ALPHA_MAX_TOP10_PCT or on_raw[1] > env.WHALE_ALPHA_MAX_SINGLE_WALLET_PCT or on_raw[2] > env.WHALE_ALPHA_MAX_DEV_HOLD_PCT or on_raw[3] > env.WHALE_ALPHA_MAX_TAGGED_RISK_PCT): rejects.append("CONCENTRATION_HARD_REJECT")
     if on_raw and not on_raw[4]: rejects.append("TAGGED_RISK_WALLETS_NET_DISTRIBUTING")
     rejects.extend(security_flags)
-    rejects.extend(authority_flags)
+    # AUTHORITY_DATA_MISSING means "we don't know", not "we found a
+    # problem" -- it must not hard-reject; genuine flags (e.g.
+    # MINT_AUTHORITY_ACTIVE, FREEZE_AUTHORITY_ACTIVE) still do.
+    rejects.extend(f for f in authority_flags if f != "AUTHORITY_DATA_MISSING")
     if flow and (flow.smart_money_status == "SUPPORTIVE" and flow.top_trader_status == "SUPPORTIVE"): smart_quality = 100
     elif flow and flow.smart_money_status == "SUPPORTIVE": smart_quality = 85
     elif flow and flow.top_trader_status == "SUPPORTIVE": smart_quality = 75
