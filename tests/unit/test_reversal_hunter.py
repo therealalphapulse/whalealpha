@@ -58,6 +58,9 @@ import pytest
 
 from whale_alpha.engines import reversal_hunter
 from whale_alpha.utils.http_retry import HttpFetchResult
+import base64
+
+from whale_alpha.engines.reversal_hunter import DiscoveryCandidate, TokenMarketSnapshot
 
 
 def _gt_env(**overrides):
@@ -231,3 +234,113 @@ async def test_geckoterminal_dedupes_repeated_mints(monkeypatch):
     out = await reversal_hunter.discover_meme_candidates(AsyncMock(), _gt_env(), datetime.now(UTC))
 
     assert len(out) == 1
+
+
+# --- evaluate_candidate: authority-data availability vs. genuine findings.
+# All-provider RPC outages (Helius rate-limited, dRPC 400s, Ankr 403s --
+# exactly what production saw) must degrade to "we don't know", never to a
+# hard reject or an uncaught exception. A real MINT_AUTHORITY_ACTIVE /
+# FREEZE_AUTHORITY_ACTIVE finding, when data IS available, must still
+# hard-reject -- this is not a weakening of the safety gate.
+
+class _RaisingConnection:
+    """Simulates every routed RPC provider failing -- exactly the
+    production log signature (Helius 429, dRPC 400, Ankr 403 -> all
+    routes exhausted -> _FailoverAsyncClient raises)."""
+
+    async def get_account_info(self, *args, **kwargs):
+        raise RuntimeError("all routed providers failed")
+
+
+class _MintAuthorityActiveConnection:
+    """A connection that returns real, parseable mint-account data with
+    a live mint authority -- a genuine security finding, not a missing-data
+    case."""
+
+    async def get_account_info(self, *args, **kwargs):
+        raw = bytearray(82)
+        raw[0:4] = (1).to_bytes(4, "little")
+        return SimpleNamespace(value=SimpleNamespace(data=(base64.b64encode(bytes(raw)).decode(), "base64")))
+
+
+def _permissive_env(**overrides):
+    data = dict(
+        BIRDEYE_API_KEY="k", BITQUERY_API_KEY="k",
+        WHALE_ALPHA_MIN_MC_USD=0, WHALE_ALPHA_MAX_MC_USD=1e18,
+        WHALE_ALPHA_MIN_LIQ_USD=0, WHALE_ALPHA_MAX_LIQ_USD=1e18,
+        WHALE_ALPHA_MIN_LIQ_MC_RATIO=0, WHALE_ALPHA_MAX_LIQ_MC_RATIO=1e18,
+        WHALE_ALPHA_MIN_PAIR_AGE_HOURS=0, WHALE_ALPHA_MAX_PAIR_AGE_DAYS=1e9,
+        WHALE_ALPHA_BUY_SELL_RATIO_MIN=0, WHALE_ALPHA_MAX_TOP10_PCT=1e9,
+        WHALE_ALPHA_MAX_SINGLE_WALLET_PCT=1e9, WHALE_ALPHA_MAX_DEV_HOLD_PCT=1e9,
+        WHALE_ALPHA_MAX_TAGGED_RISK_PCT=1e9, WHALE_ALPHA_MIN_CONFIDENCE=0,
+    )
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+def _snapshot(mint="6cxUz3xUZ4de87ETGnVnLAURKuVrjPnX1cMa3wP4pump"):
+    return TokenMarketSnapshot(
+        mint=mint, name="Test", symbol="TST", pair_address="pair", dex_id="pumpswap",
+        created_at_ms=None, price_usd=1.0, market_cap_usd=100_000.0, liquidity_usd=20_000.0,
+        volume_5m_usd=0.0, volume_1h_usd=0.0, buys_5m=0, sells_5m=0, buys_1h=0, sells_1h=0,
+        price_change_5m_pct=0.0, price_change_1h_pct=0.0, metadata_present=True,
+    )
+
+
+def _patch_evaluate_candidate_deps(monkeypatch, snapshot):
+    monkeypatch.setattr(reversal_hunter, "enrich_token", AsyncMock(return_value=snapshot))
+    monkeypatch.setattr(reversal_hunter, "_fetch_ohlcv", AsyncMock(return_value=[]))
+    monkeypatch.setattr(reversal_hunter, "_fetch_market_overview", AsyncMock(return_value=None))
+    monkeypatch.setattr(reversal_hunter, "_fetch_trade_data", AsyncMock(return_value=None))
+    monkeypatch.setattr(reversal_hunter, "_fetch_holder_profile", AsyncMock(return_value=None))
+    monkeypatch.setattr(reversal_hunter, "_fetch_top_holders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(reversal_hunter, "_fetch_risk_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(reversal_hunter, "_fetch_top_traders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(reversal_hunter, "_fetch_security", AsyncMock(return_value=None))
+    monkeypatch.setattr(reversal_hunter, "_fetch_bitquery_flow", AsyncMock(return_value=None))
+
+
+@pytest.mark.asyncio
+async def test_all_rpc_providers_down_does_not_crash_or_hard_reject(monkeypatch):
+    """Reproduces the exact production scenario (Helius 429 + dRPC 400 +
+    Ankr 403 -> every routed provider fails -> _FailoverAsyncClient raises)
+    that was silently converted into EVALUATION_ERROR for every single
+    candidate, driving approved=0 despite discovered=38-40 per cycle."""
+    snapshot = _snapshot()
+    candidate = DiscoveryCandidate(snapshot=snapshot, source="geckoterminal_pumpfun")
+    _patch_evaluate_candidate_deps(monkeypatch, snapshot)
+
+    result = await reversal_hunter.evaluate_candidate(
+        AsyncMock(), _permissive_env(), candidate, _RaisingConnection(), datetime.now(UTC), []
+    )
+
+    assert "EVALUATION_ERROR" not in result.hard_rejects
+    assert "AUTHORITY_DATA_MISSING" not in result.hard_rejects
+
+
+@pytest.mark.asyncio
+async def test_no_connection_does_not_hard_reject_on_missing_authority_data(monkeypatch):
+    snapshot = _snapshot()
+    candidate = DiscoveryCandidate(snapshot=snapshot, source="geckoterminal_pumpfun")
+    _patch_evaluate_candidate_deps(monkeypatch, snapshot)
+
+    result = await reversal_hunter.evaluate_candidate(
+        AsyncMock(), _permissive_env(), candidate, None, datetime.now(UTC), []
+    )
+
+    assert "AUTHORITY_DATA_MISSING" not in result.hard_rejects
+
+
+@pytest.mark.asyncio
+async def test_genuine_mint_authority_active_still_hard_rejects(monkeypatch):
+    """The safety gate itself must be untouched: when authority data IS
+    available and shows a live mint authority, that must still block."""
+    snapshot = _snapshot()
+    candidate = DiscoveryCandidate(snapshot=snapshot, source="geckoterminal_pumpfun")
+    _patch_evaluate_candidate_deps(monkeypatch, snapshot)
+
+    result = await reversal_hunter.evaluate_candidate(
+        AsyncMock(), _permissive_env(), candidate, _MintAuthorityActiveConnection(), datetime.now(UTC), []
+    )
+
+    assert "MINT_AUTHORITY_ACTIVE" in result.hard_rejects
