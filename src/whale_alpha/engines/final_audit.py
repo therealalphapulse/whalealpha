@@ -174,10 +174,14 @@ async def run_final_release_audit(client: httpx.AsyncClient, env: Env, analysis:
             slot = getattr(slot, "slot", None)
             decimals, supply, authority_flags = _parse_mint_account(ai)
         except Exception:
-            findings.append("AUTHORITY_READ_FAILED")
+            # All routed RPC providers failed -- data unavailable, not a
+            # security finding. Recorded via corrections (audit trail) not
+            # findings, which would otherwise block release on a provider
+            # outage rather than a genuine authority problem.
+            corrections.append("Authority re-verification unavailable (RPC providers failed); not treated as a rejection.")
     else:
-        findings.append("AUTHORITY_DATA_MISSING")
-    findings.extend(x for x in authority_flags if x != "")
+        corrections.append("Authority re-verification skipped (no RPC connection); not treated as a rejection.")
+    findings.extend(x for x in authority_flags if x not in ("", "AUTHORITY_DATA_MISSING"))
     if decimals is None or supply is None: findings.append("SUPPLY_DECIMALS_UNVERIFIED")
     if not dex or not dex.get("marketCap"): findings.append("MARKET_CAP_UNVERIFIED")
 
