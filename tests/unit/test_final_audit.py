@@ -63,3 +63,72 @@ def test_fetch_trade_data_imported_from_reversal_hunter():
     from whale_alpha.engines import final_audit, reversal_hunter
 
     assert final_audit._fetch_trade_data is reversal_hunter._fetch_trade_data
+
+
+# --- run_final_release_audit: authority-data availability vs. genuine
+# findings, mirroring the same fix in evaluate_candidate. An all-provider
+# RPC outage during the independent recalculation must not surface as a
+# finding that blocks release; a genuine authority problem still must.
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from whale_alpha.engines import final_audit
+from whale_alpha.engines.reversal_hunter import DiscoveryCandidate, ReversalAnalysis, TokenMarketSnapshot
+
+
+class _RaisingConnection:
+    async def get_account_info(self, *args, **kwargs):
+        raise RuntimeError("all routed providers failed")
+
+
+def _snapshot(mint="6cxUz3xUZ4de87ETGnVnLAURKuVrjPnX1cMa3wP4pump"):
+    return TokenMarketSnapshot(
+        mint=mint, name="Test", symbol="TST", pair_address="pair", dex_id="pumpswap",
+        created_at_ms=None, price_usd=1.0, market_cap_usd=100_000.0, liquidity_usd=20_000.0,
+        volume_5m_usd=0.0, volume_1h_usd=0.0, buys_5m=0, sells_5m=0, buys_1h=0, sells_1h=0,
+        price_change_5m_pct=0.0, price_change_1h_pct=0.0, metadata_present=True,
+    )
+
+
+def _analysis():
+    snapshot = _snapshot()
+    candidate = DiscoveryCandidate(snapshot=snapshot, source="geckoterminal_pumpfun")
+    return ReversalAnalysis(candidate, snapshot, None, None, None, 0, "NO SIGNAL", (), (), "", {})
+
+
+def _patch_recalc_deps(monkeypatch):
+    monkeypatch.setattr(final_audit, "_fresh_dex_pair", AsyncMock(return_value=None))
+    monkeypatch.setattr(final_audit, "_fetch_market_overview", AsyncMock(return_value=None))
+    monkeypatch.setattr(final_audit, "_fetch_trade_data", AsyncMock(return_value=None))
+    monkeypatch.setattr(final_audit, "_fetch_ohlcv", AsyncMock(return_value=[]))
+    monkeypatch.setattr(final_audit, "_fetch_holder_profile", AsyncMock(return_value=None))
+    monkeypatch.setattr(final_audit, "_fetch_top_holders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(final_audit, "_fetch_risk_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(final_audit, "_fetch_top_traders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(final_audit, "_fetch_security", AsyncMock(return_value=None))
+    monkeypatch.setattr(final_audit, "_fetch_bitquery_flow", AsyncMock(return_value=None))
+    monkeypatch.setattr(final_audit, "_fetch_smart_money_token_list", AsyncMock(return_value=[]))
+
+
+@pytest.mark.asyncio
+async def test_final_audit_rpc_outage_not_in_findings(monkeypatch):
+    """Reproduces the production scenario inside the mandatory final audit's
+    own independent recalculation: every routed RPC provider failing must
+    not surface AUTHORITY_READ_FAILED/AUTHORITY_DATA_MISSING as a finding
+    that blocks release -- it's a data-availability problem, not evidence
+    against the token."""
+    _patch_recalc_deps(monkeypatch)
+
+    result = await final_audit.run_final_release_audit(
+        AsyncMock(), _permissive_fa_env(), _analysis(), _RaisingConnection(), datetime.now(UTC)
+    )
+
+    assert "AUTHORITY_READ_FAILED" not in result.findings
+    assert "AUTHORITY_DATA_MISSING" not in result.findings
+
+
+def _permissive_fa_env():
+    return SimpleNamespace(WHALE_ALPHA_MIN_CONFIDENCE=0)
