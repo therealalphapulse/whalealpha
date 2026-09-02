@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from whale_alpha.config import Env
 from whale_alpha.db.models import AutoTradingConfig, Trade, TradeSide, TradeSource, TradeStatus, User
-from whale_alpha.engines.risk import AutoTradingRules, UserTradingState, evaluate_auto_trade
+from whale_alpha.engines.risk import UserTradingState, evaluate_auto_trade
 from whale_alpha.engines.trading_engine import fixed_auto_rules
 from whale_alpha.engines.signal import SignalCandidate
 from whale_alpha.engines.trade_executor import ExecuteTradeParams, execute_trade
