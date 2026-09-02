@@ -16,14 +16,19 @@ from whale_alpha.config import Env
 from whale_alpha.db.models import User
 from whale_alpha.engines.market_regime import classify_market_regime, market_regime_gate
 from whale_alpha.engines.token_hunter import (
-    _fetch_dexscreener_pairs,
     _persist,
     build_alert_keyboard,
     format_alert,
     prefilter_candidates,
     score_token,
 )
-from whale_alpha.integrations.token_hunter_sources import DiscoveryCandidate, _provider, _retry
+from whale_alpha.integrations.token_hunter_sources import (
+    DiscoveryCandidate,
+    _fetch_dexscreener_pairs,
+    _provider,
+    _retry,
+    discover_dexscreener_fallback_candidates,
+)
 from whale_alpha.utils.http_retry import get_all_provider_metrics
 from whale_alpha.utils.logger import child_logger
 
@@ -45,8 +50,6 @@ async def discover_dexscreener_profiles(client: Any, env: Env) -> list[Discovery
     result = await _provider(env, "dexscreener").get(client, url, **_retry(env))
     if result.response is None or result.response.status_code >= 400:
         log.warning("DexScreener profile discovery failed", status=result.response.status_code if result.response else None)
-        # Reuse the existing DexScreener-only discovery fallback.
-        from whale_alpha.integrations.token_hunter_sources import discover_dexscreener_fallback_candidates
         return await discover_dexscreener_fallback_candidates(client, env, env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)
 
     try:
@@ -69,7 +72,6 @@ async def discover_dexscreener_profiles(client: Any, env: Env) -> list[Discovery
             break
 
     if not addresses:
-        from whale_alpha.integrations.token_hunter_sources import discover_dexscreener_fallback_candidates
         return await discover_dexscreener_fallback_candidates(client, env, env.TOKEN_HUNTER_MAX_DISCOVERY_PER_SOURCE)
 
     candidates = await _fetch_dexscreener_pairs(client, env, addresses)
@@ -107,8 +109,6 @@ async def run_screener_cycle(
         log.info("WHALE ALPHA SCREENER PROVIDER TELEMETRY", providers=get_all_provider_metrics())
         return funnel
 
-    # Do not infer a market regime from an undersized sample. In that case the
-    # token-level score/risk gates remain authoritative and no threshold is lowered.
     regime = None
     if env.TOKEN_HUNTER_MARKET_REGIME_ENABLED and len(prequalified) >= env.TOKEN_HUNTER_MARKET_REGIME_MIN_DATA:
         regime = classify_market_regime([c.snapshot for c in prequalified])
