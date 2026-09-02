@@ -1,10 +1,11 @@
-"""Bot bootstrap — port of src/bot/index.ts (grammY Bot -> aiogram Dispatcher)."""
+"""Bot bootstrap â port of src/bot/index.ts (grammY Bot -> aiogram Dispatcher)."""
 
 from __future__ import annotations
 
 import httpx
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import ErrorEvent, Message
 from redis.asyncio import Redis
@@ -28,10 +29,16 @@ log = child_logger("bot")
 
 
 def create_bot(
-    env: Env, redis: Redis, session_factory: async_sessionmaker[AsyncSession], http_client: httpx.AsyncClient
+    env: Env,
+    redis: Redis,
+    session_factory: async_sessionmaker[AsyncSession],
+    http_client: httpx.AsyncClient,
+    *,
+    use_redis_storage: bool = True,
 ) -> tuple[Bot, Dispatcher]:
     bot = Bot(token=env.TELEGRAM_BOT_TOKEN)
-    dp = Dispatcher(storage=RedisStorage(redis))
+    storage = RedisStorage(redis) if use_redis_storage else MemoryStorage()
+    dp = Dispatcher(storage=storage)
 
     dp.update.outer_middleware(RateLimitMiddleware(redis))
     dp.update.outer_middleware(RbacMiddleware(env))
@@ -47,23 +54,23 @@ def create_bot(
                 session.add(User(telegram_id=telegram_id, role=Role.USER))
                 await session.commit()
         admin_section = (
-            "\n\n<b>🛠 ADMIN</b>\n<code>/addwhale</code>  <code>/approvewhale</code>  <code>/removewhale</code>"
+            "\n\n<b>ð  ADMIN</b>\n<code>/addwhale</code>  <code>/approvewhale</code>  <code>/removewhale</code>"
             if is_admin else ""
         )
         await message.answer(
-            "🐋 <b>WHALE ALPHA</b>\n"
+            "ð <b>WHALE ALPHA</b>\n"
             "<i>Professional Solana intelligence terminal</i>\n\n"
-            "<b>🔎 TOKEN SCANNER</b>\n"
+            "<b>ð TOKEN SCANNER</b>\n"
             "Send <b>only the Solana contract address</b>. No command required.\n\n"
-            "<b>🚨 SIGNALS</b>\n"
+            "<b>ð¨ SIGNALS</b>\n"
             "High-potential early opportunities are delivered automatically when the existing quality gates pass.\n\n"
-            "<b>📈 PERFORMANCE</b>\n"
+            "<b>ð PERFORMANCE</b>\n"
             "Qualified signals can receive reply-based quote updates at crossed gain milestones.\n\n"
-            "<b>🐋 INTELLIGENCE</b>\n"
-            "<code>/whales</code> — elite wallet intelligence\n"
-            "<code>/mute</code> / <code>/unmute</code> — signal notifications\n"
-            "<code>/alerts</code> — manage price alerts\n"
-            "<code>/help</code> — command guide"
+            "<b>ð INTELLIGENCE</b>\n"
+            "<code>/whales</code> â elite wallet intelligence\n"
+            "<code>/mute</code> / <code>/unmute</code> â signal notifications\n"
+            "<code>/alerts</code> â manage price alerts\n"
+            "<code>/help</code> â command guide"
             f"{admin_section}\n\n"
             "<i>Built for disciplined on-chain research. Data is informational, not financial advice.</i>",
             parse_mode="HTML",

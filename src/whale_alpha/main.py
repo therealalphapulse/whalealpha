@@ -1,4 +1,4 @@
-"""Whale Alpha production entrypoint — intelligence-only token screener."""
+"""Whale Alpha production entrypoint â intelligence-only token screener."""
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +9,7 @@ import traceback
 
 import httpx
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import text
 
 from whale_alpha.bot import create_bot
@@ -36,11 +37,18 @@ async def main() -> None:
     log.info("PostgreSQL connected")
 
     redis = Redis.from_url(env.REDIS_URL)
-    await redis.ping()
-    log.info("Redis connected")
+    redis_healthy = True
+    try:
+        await redis.ping()
+        # PING can succeed while MISCONF rejects every write, so probe a real write.
+        await redis.set("__whale_alpha_startup_probe__", "1", ex=30)
+        log.info("Redis connected")
+    except RedisError as err:
+        redis_healthy = False
+        log.error("Redis unavailable; continuing with in-memory bot FSM", err=str(err))
 
     http_client = httpx.AsyncClient(timeout=20.0)
-    bot, dp = create_bot(env, redis, session_factory, http_client)
+    bot, dp = create_bot(env, redis, session_factory, http_client, use_redis_storage=redis_healthy)
     stop_hunter = None
     stop_price_alerts = start_price_alert_loop(env, session_factory, bot, http_client)
     solana_connection = None
@@ -64,7 +72,7 @@ async def main() -> None:
 
     polling_task = asyncio.create_task(dp.start_polling(bot))
     log.info("Telegram polling started")
-    log.info("Application Ready — intelligence only; DexScreener screener active; no trading workers are started")
+    log.info("Application Ready â intelligence only; DexScreener screener active; no trading workers are started")
     await stop_event.wait()
 
     polling_task.cancel()
