@@ -86,7 +86,7 @@ def create_bot(
 
     dp.include_router(register_scanner_commands(env, http_client))
     dp.include_router(register_whales_command(session_factory))
-    if env.ENABLE_LEGACY_TRADING:
+    if env.ENABLE_TRADING_ENGINE:
         dp.include_router(register_trading_commands(session_factory))
         dp.include_router(register_wallet_commands(session_factory, env))
         dp.include_router(register_manual_trading_commands(session_factory, env, http_client))

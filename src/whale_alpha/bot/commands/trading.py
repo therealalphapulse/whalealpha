@@ -14,7 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from whale_alpha.db.models import Trade, TradeStatus, User
+from whale_alpha.db.models import AutoTradingConfig, Trade, TradeStatus, User
+from whale_alpha.engines.trading_engine import FIXED_AUTO_POLICY
 
 router = Router(name="trading")
 
@@ -51,6 +52,49 @@ def register_trading_commands(session_factory: async_sessionmaker[AsyncSession])
         ]
         await message.answer("📊 *Recent trades*\n\n" + "\n".join(lines), parse_mode="Markdown")
 
+@router.message(Command("autobuy"))
+async def autobuy_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    telegram_id = str(message.from_user.id)
+    async with session_factory() as session:
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
+        if user is None:
+            await message.answer("Use /start first to initialize your account.")
+            return
+        if not user.encrypted_wallet_key or not user.wallet_public_key:
+            await message.answer("Connect a trading wallet first with /connectwallet.")
+            return
+        cfg = user.auto_trading_config
+        if cfg is None:
+            cfg = AutoTradingConfig(user_id=user.id, enabled=True)
+            session.add(cfg)
+        else:
+            cfg.enabled = not cfg.enabled
+        cfg.fixed_trade_amount_usd = FIXED_AUTO_POLICY.amount_usd
+        cfg.percent_allocation = None
+        cfg.max_slippage_bps = FIXED_AUTO_POLICY.max_slippage_bps
+        cfg.min_liquidity_usd = FIXED_AUTO_POLICY.min_liquidity_usd
+        cfg.max_open_positions = FIXED_AUTO_POLICY.max_open_positions
+        cfg.max_daily_trades = FIXED_AUTO_POLICY.max_daily_trades
+        cfg.max_daily_exposure_usd = FIXED_AUTO_POLICY.max_daily_exposure_usd
+        cfg.cooldown_minutes = int(FIXED_AUTO_POLICY.cooldown_minutes)
+        cfg.max_market_cap_usd = FIXED_AUTO_POLICY.max_market_cap_usd
+        await session.commit()
+        enabled = cfg.enabled
+    await message.answer(
+        ("🤖 <b>Auto Buy ENABLED</b>\n\n" if enabled else "⛔ <b>Auto Buy DISABLED</b>\n\n")
+        + f"Fixed entry: <b>${FIXED_AUTO_POLICY.amount_usd:.2f}</b> per qualified signal\n"
+          f"Max daily trades: {FIXED_AUTO_POLICY.max_daily_trades}\n"
+          f"Max daily exposure: ${FIXED_AUTO_POLICY.max_daily_exposure_usd:.2f}\n"
+          f"Max slippage: {FIXED_AUTO_POLICY.max_slippage_bps / 100:.2f}%\n"
+          f"Min liquidity: ${FIXED_AUTO_POLICY.min_liquidity_usd:,.0f}\n"
+          f"Cooldown: {FIXED_AUTO_POLICY.cooldown_minutes:g} min\n\n"
+          "Auto Buy fires only from qualified Whale Alpha signals.",
+        parse_mode="HTML",
+    )
+
     @router.message(Command("autotrading"))
     async def autotrading_handler(message: Message) -> None:
         if message.from_user is None:
@@ -77,16 +121,16 @@ def register_trading_commands(session_factory: async_sessionmaker[AsyncSession])
                 )
                 return
 
-            await message.answer(
-                f"🤖 *Auto Trading*: {'ENABLED ✅' if cfg.enabled else 'disabled'}\n"
-                f"Max daily trades: {cfg.max_daily_trades}\n"
-                f"Max daily exposure: ${cfg.max_daily_exposure_usd}\n"
-                f"Max slippage: {cfg.max_slippage_bps / 100}%\n"
-                f"Min liquidity: ${cfg.min_liquidity_usd}\n"
-                f"Risk profile: {cfg.risk_profile.value}\n\n"
-                "_Auto Trading only fires on qualified Whale Alpha signals that pass all of "
-                "the above — never directly off a wallet buy._",
-                parse_mode="Markdown",
-            )
+await message.answer(
+    f"🤖 *Auto Buy*: {'ENABLED ✅' if cfg.enabled else 'disabled'}\n"
+    f"Fixed entry: ${FIXED_AUTO_POLICY.amount_usd:.2f} per qualified signal\n"
+    f"Max daily trades: {FIXED_AUTO_POLICY.max_daily_trades}\n"
+    f"Max daily exposure: ${FIXED_AUTO_POLICY.max_daily_exposure_usd:.2f}\n"
+    f"Max slippage: {FIXED_AUTO_POLICY.max_slippage_bps / 100:.2f}%\n"
+    f"Min liquidity: ${FIXED_AUTO_POLICY.min_liquidity_usd:,.0f}\n"
+    f"Cooldown: {FIXED_AUTO_POLICY.cooldown_minutes:g} min\n\n"
+    "_Auto Buy fires only on qualified Whale Alpha signals. Use /autobuy to toggle it._",
+    parse_mode="Markdown",
+)
 
     return router
