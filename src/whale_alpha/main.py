@@ -1,4 +1,4 @@
-"""Whale Alpha production entrypoint â intelligence-only token screener."""
+"""Whale Alpha production entrypoint — token screener plus optional trading engine."""
 from __future__ import annotations
 
 import asyncio
@@ -15,10 +15,10 @@ from sqlalchemy import text
 from whale_alpha.bot import create_bot
 from whale_alpha.config import get_env
 from whale_alpha.db.session import create_engine, create_session_factory
-from whale_alpha.integrations.solana_connection import create_connection
-from whale_alpha.engines.screener import start_screener_loop
 from whale_alpha.engines.price_alerts import start_price_alert_loop
 from whale_alpha.engines.scheduler import start_scheduler
+from whale_alpha.engines.screener import start_screener_loop
+from whale_alpha.integrations.solana_connection import create_connection
 from whale_alpha.utils.logger import child_logger, configure_logging
 
 log = child_logger("main")
@@ -27,7 +27,12 @@ log = child_logger("main")
 async def main() -> None:
     env = get_env()
     configure_logging(env.LOG_LEVEL, env.NODE_ENV)
-    log.info("Whale Alpha token hunter starting", mode="INTELLIGENCE_ONLY", trading_enabled=env.ENABLE_LEGACY_TRADING)
+    log.info(
+        "Whale Alpha starting",
+        token_screener=env.TOKEN_HUNTER_ENABLED,
+        trading_engine=env.ENABLE_TRADING_ENGINE,
+        legacy_trading=env.ENABLE_LEGACY_TRADING,
+    )
 
     engine = create_engine(env)
     session_factory = create_session_factory(engine)
@@ -39,7 +44,6 @@ async def main() -> None:
     redis_healthy = True
     try:
         await redis.ping()
-        # PING can succeed while MISCONF rejects every write, so probe a real write.
         await redis.set("__whale_alpha_startup_probe__", "1", ex=30)
         log.info("Redis connected")
     except RedisError as err:
@@ -48,18 +52,24 @@ async def main() -> None:
 
     http_client = httpx.AsyncClient(timeout=20.0)
     bot, dp = create_bot(env, redis, session_factory, http_client, use_redis_storage=redis_healthy)
+
     stop_hunter = None
     stop_scheduler = None
     stop_price_alerts = start_price_alert_loop(env, session_factory, bot, http_client)
     solana_connection = None
     if env.TOKEN_HUNTER_ENABLED or env.ENABLE_TRADING_ENGINE:
         solana_connection = create_connection(env)
+
     if env.TOKEN_HUNTER_ENABLED and solana_connection is not None:
         stop_hunter = start_screener_loop(env, session_factory, bot, http_client, solana_connection)
         log.info("DexScreener Token Screener started")
+    elif not env.TOKEN_HUNTER_ENABLED:
+        log.warning("Token Screener disabled via TOKEN_HUNTER_ENABLED=false")
+
     if env.ENABLE_TRADING_ENGINE and solana_connection is not None:
         stop_scheduler = start_scheduler(env, session_factory, bot, http_client, solana_connection)
         log.info("Professional trading engine started", auto_signal_mode="fixed", manual_buy_mode=True)
+
     stop_event = asyncio.Event()
 
     def _handle_signal() -> None:
@@ -81,7 +91,6 @@ async def main() -> None:
         await stop_hunter()
     if stop_scheduler is not None:
         await stop_scheduler()
-        await stop_hunter()
     await stop_price_alerts()
     await http_client.aclose()
     if solana_connection is not None:
