@@ -154,6 +154,7 @@ async def _load_wallet_snapshot(connection, address: str, http_client=None, env:
 
 
 def register_wallet_commands(session_factory: async_sessionmaker[AsyncSession], env: Env, connection=None) -> Router:
+    log.info("Wallet dashboard commands registered", wallet_command="/wallet", rpc_ready=connection is not None)
 
     @router.message(Command("wallet"))
     async def wallet_handler(message: Message) -> None:

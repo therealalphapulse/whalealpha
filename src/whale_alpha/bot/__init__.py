@@ -87,9 +87,11 @@ def create_bot(
 
     dp.include_router(register_scanner_commands(env, http_client))
     dp.include_router(register_whales_command(session_factory))
+    # Wallet dashboard is a core wallet feature and must not disappear when the
+    # trading engine toggle changes. Trading-specific routers remain gated.
+    dp.include_router(register_wallet_commands(session_factory, env, solana_connection))
     if env.ENABLE_TRADING_ENGINE:
         dp.include_router(register_trading_commands(session_factory))
-        dp.include_router(register_wallet_commands(session_factory, env, solana_connection))
         dp.include_router(register_manual_trading_commands(session_factory, env, http_client))
         dp.include_router(register_alert_commands(session_factory, env, http_client))
     dp.include_router(register_admin_commands(session_factory))

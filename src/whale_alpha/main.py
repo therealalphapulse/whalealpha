@@ -51,9 +51,8 @@ async def main() -> None:
         log.error("Redis unavailable; continuing with in-memory bot FSM", err=str(err))
 
     http_client = httpx.AsyncClient(timeout=20.0)
-    solana_connection = None
-    if env.TOKEN_HUNTER_ENABLED or env.ENABLE_TRADING_ENGINE:
-        solana_connection = create_connection(env)
+    # Wallet dashboard needs live Solana RPC independently of trading/screener.
+    solana_connection = create_connection(env)
     bot, dp = create_bot(
         env, session_factory=session_factory, redis=redis, http_client=http_client,
         solana_connection=solana_connection, use_redis_storage=redis_healthy
