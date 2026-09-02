@@ -1,4 +1,4 @@
-"""Whale Alpha production entrypoint — intelligence-only DexScreener token screener."""
+"""Whale Alpha production entrypoint — intelligence-only token screener."""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +24,7 @@ log = child_logger("main")
 async def main() -> None:
     env = get_env()
     configure_logging(env.LOG_LEVEL, env.NODE_ENV)
-    log.info("Whale Alpha screener starting", mode="INTELLIGENCE_ONLY", trading_enabled=env.ENABLE_LEGACY_TRADING)
+    log.info("Whale Alpha token hunter starting", mode="INTELLIGENCE_ONLY", trading_enabled=env.ENABLE_LEGACY_TRADING)
     if env.ENABLE_LEGACY_TRADING:
         raise RuntimeError("ENABLE_LEGACY_TRADING must remain false in Whale Alpha token-screener production mode")
 
@@ -40,14 +40,14 @@ async def main() -> None:
 
     http_client = httpx.AsyncClient(timeout=20.0)
     bot, dp = create_bot(env, redis, session_factory, http_client)
-    stop_screener = None
+    stop_hunter = None
     solana_connection = None
     if env.TOKEN_HUNTER_ENABLED:
         solana_connection = create_connection(env)
-        stop_screener = start_screener_loop(env, session_factory, bot, http_client, solana_connection)
-        log.info("DexScreener token screener started")
+        stop_hunter = start_screener_loop(env, session_factory, bot, http_client, solana_connection)
+        log.info("DexScreener Token Screener started")
     else:
-        log.warning("Token screener disabled via TOKEN_HUNTER_ENABLED=false")
+        log.warning("Token Screener disabled via TOKEN_HUNTER_ENABLED=false")
 
     stop_event = asyncio.Event()
 
@@ -66,8 +66,8 @@ async def main() -> None:
     await stop_event.wait()
 
     polling_task.cancel()
-    if stop_screener is not None:
-        await stop_screener()
+    if stop_hunter is not None:
+        await stop_hunter()
     await http_client.aclose()
     if solana_connection is not None:
         await solana_connection.close()
