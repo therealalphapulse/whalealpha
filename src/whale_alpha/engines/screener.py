@@ -96,8 +96,6 @@ async def run_screener_cycle(
         "approved": 0,
         "alert_attempted": 0,
         "alert_delivered": 0,
-        "deep_checked": 0,
-        "deep_confirmed": 0,
     }
 
     candidates = await discover_dexscreener_profiles(client, env)
@@ -177,20 +175,6 @@ async def run_screener_cycle(
             ranked.append((score.total, eligible, candidate, score, age, gate_flags))
 
         ranked.sort(key=lambda x: x[0], reverse=True)
-        fast_eligible = [x for x in ranked if x[1]][:3]
-        deep_results = {}
-        if fast_eligible:
-            # Fast scoring is discovery intelligence; the existing reversal evaluator is
-            # the expensive evidence layer. Only the top three candidates reach it so we
-            # can use holders, smart-money/top-trader flow, OHLCV structure, security and
-            # cross-source reconciliation without turning every discovery cycle into a
-            # provider storm. Any deep-evaluation failure is fail-closed.
-            deep = await evaluate_candidates(
-                client, env, [x[2] for x in fast_eligible], connection, now
-            )
-            deep_results = {item.snapshot.mint: item for item in deep}
-            funnel["deep_checked"] = len(deep)
-
         for _, eligible, candidate, score, age, gate_flags in ranked[: env.TOKEN_HUNTER_MAX_UNIQUE_PER_CYCLE]:
             if not eligible:
                 log.info(
@@ -203,38 +187,12 @@ async def run_screener_cycle(
                 )
                 continue
 
-            deep = deep_results.get(candidate.snapshot.mint)
-            if deep is None or not deep.approved or deep.score < max(env.WHALE_ALPHA_MIN_CONFIDENCE, 87):
-                log.info(
-                    "screener_deep_rejected",
-                    mint=candidate.snapshot.mint,
-                    fast_score=score.total,
-                    deep_score=deep.score if deep else None,
-                    findings=list(deep.hard_rejects) if deep else ["DEEP_EVALUATION_NOT_RUN"],
-                )
-                continue
-
-            # Final conviction blends broad market screening with independent deep
-            # structure/flow/on-chain evidence. The alert cannot be released on the
-            # fast score alone.
-            conviction = round(score.total * 0.35 + deep.score * 0.65, 2)
-            if conviction < 90:
-                log.info(
-                    "screener_conviction_rejected",
-                    mint=candidate.snapshot.mint,
-                    fast_score=score.total,
-                    deep_score=deep.score,
-                    conviction=conviction,
-                )
-                continue
-
-            funnel["deep_confirmed"] += 1
             o = await _persist(session, candidate.snapshot, score, "dexscreener", now, age)
             funnel["approved"] += 1
             if o.last_alerted_at is not None and now - o.last_alerted_at < timedelta(minutes=env.TOKEN_HUNTER_ALERT_COOLDOWN_MINUTES):
                 continue
 
-            text = format_alert(candidate.snapshot, score, age, now) + f"\n\n<b>Conviction:</b> {conviction:.1f}/100"
+            text = format_alert(candidate.snapshot, score, age, now)
             delivered = 0
             message_ids: dict[str, int] = {}
             errors: list[str] = []
