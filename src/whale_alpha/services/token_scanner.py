@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from html import escape
 
 from whale_alpha.integrations.token_hunter_market import TokenMarketSnapshot
 
@@ -70,19 +71,13 @@ def build_expert_alert_card(
     trend: str | None = None,
     detected_at: datetime | None = None,
 ) -> str:
-    """Render Whale Alpha's compact Telegram card in the reference-bot layout.
-
-    The visual structure intentionally mirrors the supplied screenshot. Fields
-    unavailable from our live provider are shown as N/A rather than fabricated.
-    """
+    """Render Whale Alpha's compact Telegram intelligence card."""
     symbol = escape(snapshot.symbol or "UNKNOWN")
     name = escape(snapshot.name or "Unknown Token")
     mint = escape(snapshot.mint)
     dex = escape(getattr(snapshot, "dex_id", None) or "N/A")
     pair = escape(getattr(snapshot, "pair_address", None) or "N/A")
     age = _age(getattr(snapshot, "created_at_ms", None), int((detected_at or datetime.now(UTC)).timestamp() * 1000)) if age_minutes is None else f"{max(age_minutes, 0):.0f}m"
-    if age_minutes is None and age != "Unknown":
-        age = age
     mc = _money(snapshot.market_cap_usd)
     liq = _money(snapshot.liquidity_usd)
     vol = _money(snapshot.volume_1h_usd)
