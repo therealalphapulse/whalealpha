@@ -51,14 +51,17 @@ async def main() -> None:
         log.error("Redis unavailable; continuing with in-memory bot FSM", err=str(err))
 
     http_client = httpx.AsyncClient(timeout=20.0)
-    bot, dp = create_bot(env, redis, session_factory, http_client, use_redis_storage=redis_healthy)
+    solana_connection = None
+    if env.TOKEN_HUNTER_ENABLED or env.ENABLE_TRADING_ENGINE:
+        solana_connection = create_connection(env)
+    bot, dp = create_bot(
+        env, session_factory=session_factory, redis=redis, http_client=http_client,
+        solana_connection=solana_connection, use_redis_storage=redis_healthy
+    )
 
     stop_hunter = None
     stop_scheduler = None
     stop_price_alerts = start_price_alert_loop(env, session_factory, bot, http_client)
-    solana_connection = None
-    if env.TOKEN_HUNTER_ENABLED or env.ENABLE_TRADING_ENGINE:
-        solana_connection = create_connection(env)
 
     if env.TOKEN_HUNTER_ENABLED and solana_connection is not None:
         stop_hunter = start_screener_loop(env, session_factory, bot, http_client, solana_connection)

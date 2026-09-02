@@ -33,6 +33,7 @@ def create_bot(
     redis: Redis,
     session_factory: async_sessionmaker[AsyncSession],
     http_client: httpx.AsyncClient,
+    solana_connection=None,
     *,
     use_redis_storage: bool = True,
 ) -> tuple[Bot, Dispatcher]:
@@ -88,7 +89,7 @@ def create_bot(
     dp.include_router(register_whales_command(session_factory))
     if env.ENABLE_TRADING_ENGINE:
         dp.include_router(register_trading_commands(session_factory))
-        dp.include_router(register_wallet_commands(session_factory, env))
+        dp.include_router(register_wallet_commands(session_factory, env, solana_connection))
         dp.include_router(register_manual_trading_commands(session_factory, env, http_client))
         dp.include_router(register_alert_commands(session_factory, env, http_client))
     dp.include_router(register_admin_commands(session_factory))
