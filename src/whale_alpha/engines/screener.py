@@ -1,10 +1,4 @@
-"""DexScreener-first token screener for Whale Alpha production.
-
-This replaces the production token-hunter orchestration's dependency on the
-strict dip/consolidation/reversal detector. Discovery and market data come
-from DexScreener; existing cheap filters, scoring, market-regime gates and
-alert/quote delivery remain authoritative.
-"""
+"""DexScreener-first token screener for Whale Alpha production."""
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +16,6 @@ from whale_alpha.config import Env
 from whale_alpha.db.models import User
 from whale_alpha.engines.market_regime import classify_market_regime, market_regime_gate
 from whale_alpha.engines.token_hunter import (
-    _outcomes,
     _persist,
     build_alert_keyboard,
     format_alert,
@@ -160,11 +153,6 @@ async def run_screener_cycle(
                 funnel["alert_delivered"] += delivered
             funnel["alert_attempted"] += 1
 
-        await session.commit()
-
-    # Preserve existing quote/milestone replies for screener-generated alerts.
-    async with session_factory() as session:
-        await _outcomes(session, client, env, now, bot)
         await session.commit()
 
     log.info("WHALE ALPHA SCREENER CYCLE COMPLETE", **funnel)
