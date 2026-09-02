@@ -1,4 +1,4 @@
-"""Whale Alpha production entrypoint — intelligence-only token hunter."""
+"""Whale Alpha production entrypoint — intelligence-only DexScreener token screener."""
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +15,7 @@ from whale_alpha.bot import create_bot
 from whale_alpha.config import get_env
 from whale_alpha.db.session import create_engine, create_session_factory
 from whale_alpha.integrations.solana_connection import create_connection
-from whale_alpha.engines.token_hunter import start_token_hunter_loop
+from whale_alpha.engines.screener import start_screener_loop
 from whale_alpha.utils.logger import child_logger, configure_logging
 
 log = child_logger("main")
@@ -24,9 +24,9 @@ log = child_logger("main")
 async def main() -> None:
     env = get_env()
     configure_logging(env.LOG_LEVEL, env.NODE_ENV)
-    log.info("Whale Alpha token hunter starting", mode="INTELLIGENCE_ONLY", trading_enabled=env.ENABLE_LEGACY_TRADING)
+    log.info("Whale Alpha screener starting", mode="INTELLIGENCE_ONLY", trading_enabled=env.ENABLE_LEGACY_TRADING)
     if env.ENABLE_LEGACY_TRADING:
-        raise RuntimeError("ENABLE_LEGACY_TRADING must remain false in Whale Alpha token-hunter production mode")
+        raise RuntimeError("ENABLE_LEGACY_TRADING must remain false in Whale Alpha token-screener production mode")
 
     engine = create_engine(env)
     session_factory = create_session_factory(engine)
@@ -40,14 +40,14 @@ async def main() -> None:
 
     http_client = httpx.AsyncClient(timeout=20.0)
     bot, dp = create_bot(env, redis, session_factory, http_client)
-    stop_hunter = None
+    stop_screener = None
     solana_connection = None
     if env.TOKEN_HUNTER_ENABLED:
         solana_connection = create_connection(env)
-        stop_hunter = start_token_hunter_loop(env, session_factory, bot, http_client, solana_connection)
-        log.info("Token Hunter started")
+        stop_screener = start_screener_loop(env, session_factory, bot, http_client, solana_connection)
+        log.info("DexScreener token screener started")
     else:
-        log.warning("Token Hunter disabled via TOKEN_HUNTER_ENABLED=false")
+        log.warning("Token screener disabled via TOKEN_HUNTER_ENABLED=false")
 
     stop_event = asyncio.Event()
 
@@ -62,12 +62,12 @@ async def main() -> None:
 
     polling_task = asyncio.create_task(dp.start_polling(bot))
     log.info("Telegram polling started")
-    log.info("Application Ready — intelligence only; no trading workers are started")
+    log.info("Application Ready — intelligence only; DexScreener screener active; no trading workers are started")
     await stop_event.wait()
 
     polling_task.cancel()
-    if stop_hunter is not None:
-        await stop_hunter()
+    if stop_screener is not None:
+        await stop_screener()
     await http_client.aclose()
     if solana_connection is not None:
         await solana_connection.close()
