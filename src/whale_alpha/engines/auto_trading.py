@@ -19,7 +19,8 @@ from sqlalchemy.orm import selectinload
 
 from whale_alpha.config import Env
 from whale_alpha.db.models import AutoTradingConfig, Trade, TradeSide, TradeSource, TradeStatus, User
-from whale_alpha.engines.risk import AutoTradingRules, UserTradingState, evaluate_auto_trade
+from whale_alpha.engines.risk import UserTradingState, evaluate_auto_trade
+from whale_alpha.engines.trading_engine import fixed_auto_rules
 from whale_alpha.engines.signal import SignalCandidate
 from whale_alpha.engines.trade_executor import ExecuteTradeParams, execute_trade
 from whale_alpha.integrations.solana_connection import get_sol_balance
@@ -180,19 +181,8 @@ async def build_eligible_users(
 
         state = await _load_trading_state(session, solana_connection, user, sol_price_usd)
 
-        rules = AutoTradingRules(
-            enabled=cfg.enabled,
-            max_slippage_bps=cfg.max_slippage_bps,
-            min_liquidity_usd=cfg.min_liquidity_usd,
-            max_open_positions=cfg.max_open_positions,
-            max_daily_trades=cfg.max_daily_trades,
-            max_daily_exposure_usd=cfg.max_daily_exposure_usd,
-            cooldown_minutes=cfg.cooldown_minutes,
-            fixed_trade_amount_usd=cfg.fixed_trade_amount_usd,
-            percent_allocation=cfg.percent_allocation,
-            max_market_cap_usd=cfg.max_market_cap_usd,
-            token_blacklist=cfg.token_blacklist,
-        )
+        # Auto-buy is intentionally fixed; database values cannot override the production policy.
+        rules = fixed_auto_rules(cfg.enabled)
 
         eligible.append(
             EligibleUser(

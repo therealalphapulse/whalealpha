@@ -258,6 +258,8 @@ class Env(BaseSettings):
     # are disabled by default and must be explicitly opted into (never set in
     # the production hunter deployment).
     ENABLE_LEGACY_TRADING: bool = False
+    # New production trading engine; legacy trading remains separately disabled.
+    ENABLE_TRADING_ENGINE: bool = False
     TOKEN_HUNTER_ENABLED: bool = True
     TOKEN_HUNTER_INTERVAL_SECONDS: float = Field(45, ge=10)
     TOKEN_HUNTER_STARTUP_DELAY_SECONDS: float = Field(5, ge=0)

@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from whale_alpha.config import Env
 from whale_alpha.db.models import Trade, TradeSide, TradeSource, TradeStatus, User
 from whale_alpha.engines.trade_executor import ExecuteTradeParams, execute_trade
+from whale_alpha.engines.trading_engine import validate_manual_buy
 from whale_alpha.integrations import price_feed
 from whale_alpha.integrations.solana_connection import (
     create_connection,
@@ -77,6 +78,10 @@ def register_manual_trading_commands(
             return
         if usd_amount <= 0:
             await message.answer("usd_amount must be greater than 0.")
+            return
+        validation_error = validate_manual_buy(usd_amount, slippage_bps)
+        if validation_error:
+            await message.answer(f"⚠️ {validation_error}")
             return
 
         if message.from_user is None:
