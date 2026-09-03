@@ -1,0 +1,116 @@
+# NEW in v4 (Bible §3 — Physical Deployment Architecture). Implements the
+# multi-service topology described there: a Postgres + Redis backing pair,
+# the Bot Gateway (webhook mode, horizontally scalable), and the two
+# isolated worker pools — Signal/Trading and Intelligence — replacing v3's
+# single `worker: python main.py` process.
+#
+# For local development, `python main.py` (the single-process fallback,
+# Bible §15) or `app_platform.gateway.polling_entrypoint` remain simpler
+# — this compose file is the production-shaped topology, useful for
+# staging/local testing of the actual multi-service architecture before
+# deploying it for real.
+#
+# Not run against a live Docker daemon in the environment this was
+# authored in (none available) — validate with `docker compose up` in
+# CI/staging before relying on it.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: alphapulse
+      POSTGRES_USER: alphapulse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alphapulse_dev_only}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alphapulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  bootstrap:
+    build: .
+    command: python -m app_platform.gateway.bootstrap
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+
+  gateway:
+    build: .
+    command: python -m app_platform.gateway.webhook_entrypoint
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      REDIS_URL: redis://redis:6379/0
+      LOG_FORMAT: json
+    ports:
+      - "8080:8080"   # webhook + /health
+      - "9090:9090"   # /metrics
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 2   # horizontally scalable — the whole point of webhook mode (Bible §3/§9)
+
+  signal-trading-worker:
+    build: .
+    command: python -m workers.signal_trading_worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      REDIS_URL: redis://redis:6379/0
+      LOG_FORMAT: json
+    ports:
+      - "9091:9091"   # /metrics
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+
+  intelligence-worker:
+    build: .
+    command: python -m workers.intelligence_worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      REDIS_URL: redis://redis:6379/0
+      LOG_FORMAT: json
+      # Same flag as v3 (Bible §11) — this worker idles its Premium-engine
+      # jobs (KOL sync still runs) unless explicitly enabled.
+      PREMIUM_BACKGROUND_SCHEDULERS_ENABLED: "false"
+    ports:
+      - "9092:9092"   # /metrics
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+
+volumes:
+  db_data:
