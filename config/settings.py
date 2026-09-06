@@ -581,3 +581,101 @@ DISCOVERY_PROFILE_REQUIRED = _env_bool("DISCOVERY_PROFILE_REQUIRED", True)
 # spend — keeps discovery a cheap pre-filter in front of expensive
 # scoring rather than an unbounded crawler.
 DISCOVERY_CANDIDATE_LIMIT = _env_int("DISCOVERY_CANDIDATE_LIMIT", 50)
+
+# ---------------------------------------------------------------------
+# Discovery Engine A — Solana Profitable Wallet Consensus
+# ---------------------------------------------------------------------
+# Reuses the existing Premium Wallet Intelligence tables (PremiumWallet,
+# PremiumWalletTrade) as the Wallet / WalletPurchase entities. These
+# settings govern the NEW public consensus -> Telegram signal bridge
+# (domain/signals/wallet_consensus_engine.py), independent of Premium
+# membership gating.
+WALLET_CONSENSUS_MIN_WALLETS = _env_int("WALLET_CONSENSUS_MIN_WALLETS", 3)
+WALLET_CONSENSUS_WINDOW_MINUTES = _env_float("WALLET_CONSENSUS_WINDOW_MINUTES", 60.0)
+# Minimum reputation_score (0-100, see premium_wallet_scorer.py) a wallet
+# must have to count toward consensus at all — this is the "qualifying
+# profitable wallet" bar. Defaults to the same bar the wallet has to
+# clear to leave "candidate" status in the first place.
+WALLET_CONSENSUS_MIN_WALLET_SCORE = _env_float(
+    "WALLET_CONSENSUS_MIN_WALLET_SCORE", PREMIUM_WALLET_MIN_ACTIVATE_SCORE
+)
+# When True (default), only wallets whose classification tags include
+# "profitable_trader" (see premium_wallet_scorer._classify_wallet_archetypes)
+# count toward consensus — not merely any active/watch wallet above the
+# score bar. Can be relaxed for narrower deployments/back-testing.
+WALLET_CONSENSUS_REQUIRE_PROFITABLE_CLASSIFICATION = _env_bool(
+    "WALLET_CONSENSUS_REQUIRE_PROFITABLE_CLASSIFICATION", True
+)
+# A wallet's buy only counts toward consensus if it was detected within
+# this many minutes — separate from (and normally >=) the observation
+# window itself, guards against re-using a stale trade row on a slow
+# monitor cadence.
+WALLET_CONSENSUS_MAX_PURCHASE_AGE_MINUTES = _env_float(
+    "WALLET_CONSENSUS_MAX_PURCHASE_AGE_MINUTES", 180.0
+)
+WALLET_CONSENSUS_COOLDOWN_HOURS = _env_float("WALLET_CONSENSUS_COOLDOWN_HOURS", 24.0)
+WALLET_CONSENSUS_CYCLE_INTERVAL_SECONDS = _env_int(
+    "WALLET_CONSENSUS_CYCLE_INTERVAL_SECONDS", 120
+)
+# Comma-separated chat IDs / @usernames for WALLET_CONSENSUS alerts. Falls
+# back to PUMP_ALERT_CHANNEL_IDS (the same channels the free Signal
+# Engine already broadcasts to) when unset, so this works out of the box.
+WALLET_CONSENSUS_ALERT_CHANNEL_IDS = os.getenv("WALLET_CONSENSUS_ALERT_CHANNEL_IDS", "").strip()
+WALLET_CONSENSUS_ENABLED = _env_bool("WALLET_CONSENSUS_ENABLED", True)
+
+# ---------------------------------------------------------------------
+# Discovery Engine B — Robinhood Chain Token Discovery (DexScreener)
+# ---------------------------------------------------------------------
+# DexScreener's own chainId slug for Robinhood Chain. ASSUMPTION: at the
+# time this engine was written the exact DexScreener chainId for
+# "Robinhood Chain" could not be independently verified (no network
+# access to confirm against DexScreener's live chain list); it defaults
+# to "robinhood" and MUST be confirmed/overridden via this env var before
+# relying on discovery results in production.
+ROBINHOOD_CHAIN_ID = os.getenv("ROBINHOOD_CHAIN_ID", "robinhood").strip().lower()
+# Optional numeric GoPlus chain_id for Robinhood Chain (GoPlus's EVM
+# token-security endpoint is keyed by numeric chain id, e.g. "1" for
+# Ethereum). Unset by default — see providers/marketdata/goplus.py
+# check_token_security_for_chain(); when unset, Robinhood security
+# checks fail closed per ROBINHOOD_REQUIRE_SECURITY_CHECK below rather
+# than silently skipping verification.
+ROBINHOOD_CHAIN_GOPLUS_ID = os.getenv("ROBINHOOD_CHAIN_GOPLUS_ID", "").strip()
+ROBINHOOD_REQUIRE_SECURITY_CHECK = _env_bool("ROBINHOOD_REQUIRE_SECURITY_CHECK", True)
+
+ROBINHOOD_DISCOVERY_INTERVAL_SECONDS = _env_int("ROBINHOOD_DISCOVERY_INTERVAL_SECONDS", 300)
+ROBINHOOD_MAX_CANDIDATES_PER_CYCLE = _env_int("ROBINHOOD_MAX_CANDIDATES_PER_CYCLE", 60)
+ROBINHOOD_MAX_ALERTS_PER_CYCLE = _env_int("ROBINHOOD_MAX_ALERTS_PER_CYCLE", 3)
+
+# "New token" bucket — freshly-created Robinhood Chain pairs.
+ROBINHOOD_NEW_MAX_AGE_HOURS = _env_float("ROBINHOOD_NEW_MAX_AGE_HOURS", 24.0)
+# "Renewed activity" bucket — older pairs showing a fresh acceleration in
+# activity are not excluded by age; only by the activity thresholds below.
+ROBINHOOD_RENEWED_MIN_AGE_HOURS = _env_float("ROBINHOOD_RENEWED_MIN_AGE_HOURS", 24.0)
+ROBINHOOD_RENEWED_MIN_VOLUME_ACCELERATION = _env_float(
+    "ROBINHOOD_RENEWED_MIN_VOLUME_ACCELERATION", 1.5
+)
+
+ROBINHOOD_MIN_LIQUIDITY_USD = _env_float("ROBINHOOD_MIN_LIQUIDITY_USD", 10_000.0)
+ROBINHOOD_MIN_VOLUME_1H_USD = _env_float("ROBINHOOD_MIN_VOLUME_1H_USD", 2_500.0)
+ROBINHOOD_MIN_TXNS_1H = _env_int("ROBINHOOD_MIN_TXNS_1H", 5)
+ROBINHOOD_MAX_MC_LIQUIDITY_RATIO = _env_float("ROBINHOOD_MAX_MC_LIQUIDITY_RATIO", 50.0)
+
+# Potential-score weights. Configurable so the exact scoring formula can
+# be tuned without a code change; raw volume alone is deliberately never
+# sufficient on its own (kept as one weighted component among several).
+ROBINHOOD_SCORE_WEIGHT_LIQUIDITY = _env_float("ROBINHOOD_SCORE_WEIGHT_LIQUIDITY", 0.20)
+ROBINHOOD_SCORE_WEIGHT_LIQUIDITY_CHANGE = _env_float("ROBINHOOD_SCORE_WEIGHT_LIQUIDITY_CHANGE", 0.10)
+ROBINHOOD_SCORE_WEIGHT_VOLUME = _env_float("ROBINHOOD_SCORE_WEIGHT_VOLUME", 0.15)
+ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION = _env_float(
+    "ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION", 0.20
+)
+ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE = _env_float("ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE", 0.15)
+ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION = _env_float("ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION", 0.10)
+ROBINHOOD_SCORE_WEIGHT_MOMENTUM = _env_float("ROBINHOOD_SCORE_WEIGHT_MOMENTUM", 0.10)
+ROBINHOOD_MIN_SCORE_TO_ALERT = _env_float("ROBINHOOD_MIN_SCORE_TO_ALERT", 60.0)
+
+ROBINHOOD_COOLDOWN_HOURS = _env_float("ROBINHOOD_COOLDOWN_HOURS", 24.0)
+# Comma-separated chat IDs / @usernames for ROBINHOOD_DISCOVERY alerts.
+# Falls back to PUMP_ALERT_CHANNEL_IDS when unset.
+ROBINHOOD_ALERT_CHANNEL_IDS = os.getenv("ROBINHOOD_ALERT_CHANNEL_IDS", "").strip()
+ROBINHOOD_DISCOVERY_ENABLED = _env_bool("ROBINHOOD_DISCOVERY_ENABLED", True)

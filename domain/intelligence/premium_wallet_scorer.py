@@ -308,6 +308,24 @@ def _classify_wallet_archetypes(
     if final_score >= PREMIUM_WALLET_ELITE_SCORE:
         tags.append("smart_money")
 
+    # Discovery Engine A classification categories (WhaleAlpha multi-
+    # discovery spec): "profitable trader" is a wallet with enough closed
+    # trades to be statistically meaningful (same MIN_TRADES_FOR_FULL_
+    # CONFIDENCE bar the rest of this function already uses) and a
+    # genuinely positive track record — win rate and average ROI both
+    # above a conservative bar, not merely "not losing".
+    if (
+        trade_count >= MIN_TRADES_FOR_FULL_CONFIDENCE
+        and win_rate is not None
+        and avg_roi is not None
+        and win_rate >= 50.0
+        and avg_roi > 0.0
+    ):
+        tags.append("profitable_trader")
+
+    if wallet.source == "kol_provider":
+        tags.append("kol")
+
     if trade_count >= MIN_TRADES_FOR_FULL_CONFIDENCE:
         if avg_hold is not None:
             if avg_hold < 15:
