@@ -202,8 +202,15 @@ async def log_action(admin_user_id: int, action: str, target_user_id: int | None
     try:
         async with async_session() as session:
             session.add(AdminActivityLog(
-                admin_user_id=admin_user_id, admin_username=admin_username,
-                action=action, target_user_id=target_user_id, detail=detail,
+                # AdminActivityLog.admin_user_id/target_user_id are String,
+                # matching the live users.telegram_id column type (see
+                # models/admin_activity_log.py) -- callers here pass ints
+                # (Telegram user IDs), so stringify explicitly rather than
+                # relying on asyncpg to coerce int -> varchar, which it
+                # does not do.
+                admin_user_id=str(admin_user_id), admin_username=admin_username,
+                action=action, target_user_id=str(target_user_id) if target_user_id is not None else None,
+                detail=detail,
             ))
             await session.commit()
     except Exception as e:
