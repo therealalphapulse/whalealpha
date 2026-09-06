@@ -123,7 +123,7 @@ def _to_float(value, default: float = 0.0) -> float:
         return default
 
 
-async def get_token_card_info(contract_address: str) -> dict | None:
+async def get_token_card_info(contract_address: str, chain_id: str = "solana") -> dict | None:
     """
     Fetch richer token info for the automatic contract scanner.
 
@@ -141,12 +141,12 @@ async def get_token_card_info(contract_address: str) -> dict | None:
         if not pairs:
             return None
 
-        solana_pairs = [
+        chain_pairs = [
             pair for pair in pairs
-            if pair.get("chainId") == "solana"
+            if pair.get("chainId") == chain_id
         ]
 
-        usable_pairs = solana_pairs or pairs
+        usable_pairs = chain_pairs or pairs
 
         pair = max(
             usable_pairs,
@@ -282,3 +282,115 @@ async def get_latest_boosted_tokens() -> list[dict]:
     url = f"{DEXSCREENER_ROOT_API}/token-boosts/latest/v1"
     data = await get_json(url, cache_ttl_seconds=30, timeout_seconds=10)
     return data if isinstance(data, list) else []
+
+
+def _pair_to_card(pair: dict, contract_address: str) -> dict:
+    """Shared DexScreener pair -> card-shaped dict mapping, factored out
+    of get_token_card_info() so search_pairs_by_chain() (Discovery Engine
+    B) produces snapshots in the exact same shape without duplicating
+    field-mapping logic."""
+    base_token = pair.get("baseToken") or {}
+    liquidity = pair.get("liquidity") or {}
+    volume = pair.get("volume") or {}
+    price_change = pair.get("priceChange") or {}
+    txns = pair.get("txns") or {}
+    info = pair.get("info") or {}
+
+    websites = info.get("websites") or []
+    socials = info.get("socials") or []
+
+    website_url = ""
+    twitter_url = ""
+    telegram_url = ""
+
+    if websites and isinstance(websites, list):
+        first_site = websites[0]
+        if isinstance(first_site, dict):
+            website_url = first_site.get("url", "")
+
+    if socials and isinstance(socials, list):
+        for social in socials:
+            if not isinstance(social, dict):
+                continue
+            social_type = (social.get("type") or "").lower()
+            social_url = social.get("url", "")
+            if social_type in ["twitter", "x"]:
+                twitter_url = social_url
+            elif social_type == "telegram":
+                telegram_url = social_url
+
+    h1_txns = txns.get("h1") or {}
+    h24_txns = txns.get("h24") or {}
+
+    return {
+        "name": base_token.get("name", "Unknown"),
+        "symbol": base_token.get("symbol", "???"),
+        "contract": contract_address,
+        "chain": pair.get("chainId", "unknown"),
+
+        "price": pair.get("priceUsd", "N/A"),
+        "market_cap": pair.get("marketCap", "N/A"),
+        "fdv": pair.get("fdv", "N/A"),
+        "liquidity": liquidity.get("usd", "N/A"),
+
+        "volume_1h": volume.get("h1", "N/A"),
+        "volume_24h": volume.get("h24", "N/A"),
+
+        "price_change_5m": price_change.get("m5", "N/A"),
+        "price_change_1h": price_change.get("h1", "N/A"),
+        "price_change_6h": price_change.get("h6", "N/A"),
+        "price_change_24h": price_change.get("h24", "N/A"),
+
+        "txns_1h_buys": h1_txns.get("buys", "N/A"),
+        "txns_1h_sells": h1_txns.get("sells", "N/A"),
+        "txns_24h_buys": h24_txns.get("buys", "N/A"),
+        "txns_24h_sells": h24_txns.get("sells", "N/A"),
+
+        "pair_created": pair.get("pairCreatedAt", "N/A"),
+        "dex": pair.get("dexId", "Unknown"),
+        "pair_url": pair.get("url", ""),
+        "pool_address": pair.get("pairAddress", ""),
+
+        "image_url": info.get("imageUrl", ""),
+        "website_url": website_url,
+        "twitter_url": twitter_url,
+        "telegram_url": telegram_url,
+    }
+
+
+async def search_pairs_by_chain(chain_id: str, query: str, limit: int = 50) -> list[dict]:
+    """
+    Discovery Engine B (Robinhood Chain) building block: DexScreener's
+    public /search endpoint, filtered client-side to `chain_id` and
+    normalized to the same card shape as get_token_card_info().
+
+    NOTE: DexScreener's public API has no "list every pair on chain X"
+    endpoint -- /search requires a query term. `query` is caller-
+    supplied (config.settings.ROBINHOOD_CHAIN_ID by default) so this is
+    an approximation of "every Robinhood Chain pair", not an exhaustive
+    chain scan. Combined with get_latest_token_profiles()/
+    get_latest_boosted_tokens() (both true full-feed, chain-filterable
+    endpoints) in the discovery layer for better coverage.
+
+    Cached 20s via the shared resilience helper, same as every other
+    DexScreener call in this module.
+    """
+    url = f"{DEXSCREENER_API}/search?q={query}"
+    data = await get_json(url, cache_ttl_seconds=20, timeout_seconds=10)
+    if not data:
+        return []
+
+    pairs = data.get("pairs") or []
+    results = []
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        if (pair.get("chainId") or "").strip().lower() != chain_id.strip().lower():
+            continue
+        contract = ((pair.get("baseToken") or {}).get("address") or "").strip()
+        if not contract:
+            continue
+        results.append(_pair_to_card(pair, contract))
+        if len(results) >= limit:
+            break
+    return results

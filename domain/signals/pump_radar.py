@@ -1497,7 +1497,20 @@ def _security_line(sec: dict) -> str:
     return "🔒 " + " · ".join(parts)
 
 
-def _build_pump_card_text(candidate: dict) -> str:
+def _build_pump_card_text(
+    candidate: dict,
+    *,
+    title: str | None = None,
+    extra_block: list | None = None,
+) -> str:
+    """Renders the existing rich signal card.
+
+    `title` and `extra_block` are optional, backward-compatible additions
+    (default None -> identical output to before) used by the Wallet
+    Consensus and Robinhood Discovery engines to prepend a signal-type
+    header and append their own evidence section, without forking a
+    second card implementation.
+    """
     d = candidate["data"]
     pump = candidate.get("pump") or {}
     sec = candidate.get("security_data") or {}
@@ -1776,10 +1789,12 @@ def _build_pump_card_text(candidate: dict) -> str:
         return "\n".join(l for l in block_lines if l)
 
     sections = [
+        title.strip() if title else None,
         _render_block(hero_block),
         _render_block(market_block),
         _render_block(distribution_block),
         _render_block(intelligence_block),
+        _render_block(extra_block) if extra_block else None,
         _render_block(footer_block),
     ]
 
@@ -1788,9 +1803,9 @@ def _build_pump_card_text(candidate: dict) -> str:
     return text
 
 
-async def send_pump_card(bot, chat_id, candidate):
+async def send_pump_card(bot, chat_id, candidate, *, title: str | None = None, extra_block: list | None = None):
     d = candidate["data"]
-    text = _build_pump_card_text(candidate)
+    text = _build_pump_card_text(candidate, title=title, extra_block=extra_block)
 
     kb = build_token_actions_keyboard(
         candidate["contract"],

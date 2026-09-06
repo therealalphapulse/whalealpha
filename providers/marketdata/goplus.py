@@ -284,3 +284,37 @@ def format_security_report(data: dict, contract: str) -> str:
     )
 
     return report
+
+
+async def check_token_security_for_chain(contract_address: str, chain_id: str) -> dict | None:
+    """
+    Generalized GoPlus token-security check for a non-Solana chain,
+    keyed by GoPlus's numeric EVM chain_id (see config.settings.
+    ROBINHOOD_CHAIN_GOPLUS_ID). Used by Discovery Engine B (Robinhood
+    Chain) instead of the Solana-specific check_token_security() above.
+
+    Returns None (an explicit "unverified", never treated as "safe") if
+    chain_id is blank or the request fails -- callers must fail closed
+    on None exactly as the Solana path already does, per config.settings
+    .ROBINHOOD_REQUIRE_SECURITY_CHECK.
+    """
+    if not chain_id:
+        return None
+
+    url = f"{GOPLUS_API}/token_security/{chain_id}"
+    params = {"contract_addresses": contract_address}
+
+    try:
+        payload = await get_json(url, params=params, cache_ttl_seconds=30, timeout_seconds=10)
+        if payload is None:
+            logger.warning(f"GoPlus fetch failed for {url}")
+            return None
+
+        token_data = _extract_token_data(payload, contract_address)
+        if not token_data:
+            return None
+
+        return _normalize_token_security(token_data)
+    except Exception as e:
+        logger.error(f"GoPlus chain={chain_id} error for {contract_address}: {e}")
+        return None
