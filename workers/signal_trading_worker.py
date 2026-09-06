@@ -37,6 +37,14 @@ from domain.trading.real.real_automation_engine import real_automation_loop
 from domain.trading.real.real_exit_engine import real_exit_engine_loop
 from domain.trading.real.real_limit_order_engine import real_limit_order_engine_loop
 from domain.payments.premium_payments import payment_expiry_sweep_loop
+from config.settings import (
+    WALLET_CONSENSUS_ENABLED,
+    WALLET_CONSENSUS_CYCLE_INTERVAL_SECONDS,
+    ROBINHOOD_DISCOVERY_ENABLED,
+    ROBINHOOD_DISCOVERY_INTERVAL_SECONDS,
+)
+from domain.signals.wallet_consensus_engine import wallet_consensus_loop
+from domain.signals.robinhood_discovery import robinhood_discovery_loop
 
 logger = logging.getLogger("AlphaPulse.Worker.SignalTrading")
 
@@ -123,6 +131,29 @@ async def main() -> None:
         run_as_leader("loop:payment_expiry_sweep", lambda: payment_expiry_sweep_loop(interval_seconds=900),
                        lease_seconds=90, renew_interval_seconds=30),
     ]
+
+    # Discovery Engine A (Solana Profitable Wallet Consensus) and
+    # Discovery Engine B (Robinhood Chain Token Discovery) -- two fully
+    # independent pipelines feeding the same shared validation/signal
+    # infrastructure the loops above already use. Each is individually
+    # toggleable via config.settings so either can be disabled without
+    # touching the other or any existing loop.
+    if WALLET_CONSENSUS_ENABLED:
+        jobs.append(
+            run_as_leader(
+                "loop:wallet_consensus",
+                lambda: wallet_consensus_loop(bot, interval_seconds=WALLET_CONSENSUS_CYCLE_INTERVAL_SECONDS),
+                lease_seconds=90, renew_interval_seconds=30,
+            )
+        )
+    if ROBINHOOD_DISCOVERY_ENABLED:
+        jobs.append(
+            run_as_leader(
+                "loop:robinhood_discovery",
+                lambda: robinhood_discovery_loop(bot, interval_seconds=ROBINHOOD_DISCOVERY_INTERVAL_SECONDS),
+                lease_seconds=90, renew_interval_seconds=30,
+            )
+        )
 
     await asyncio.gather(*jobs)
 

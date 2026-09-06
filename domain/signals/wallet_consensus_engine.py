@@ -85,6 +85,68 @@ def _wallet_qualifies(wallet: PremiumWallet) -> bool:
     return True
 
 
+def _group_consensus_candidates(
+    rows: list[tuple],
+    *,
+    window_start: datetime,
+    min_wallets: int = WALLET_CONSENSUS_MIN_WALLETS,
+) -> list[dict]:
+    """
+    Pure grouping/threshold logic, factored out of
+    find_wallet_consensus_candidates() so it is directly unit-testable
+    with plain (trade, wallet) tuples -- no DB/session mocking required.
+
+    `rows` is expected to already be (trade, wallet) pairs for side=="buy"
+    trades on active wallets (the SQL query below applies that same
+    filter), ordered ascending by detected_at. This function re-applies
+    the observation-window cutoff itself (belt-and-braces against any
+    caller that hands it unfiltered rows -- e.g. tests) and is the ONLY
+    place the "distinct wallet" / "3+ threshold" / "one buy or many buys
+    counts once" rules live.
+    """
+    if window_start.tzinfo is None:
+        window_start = window_start.replace(tzinfo=timezone.utc)
+
+    by_token: dict[str, dict[str, tuple]] = defaultdict(dict)
+    token_symbols: dict[str, str] = {}
+
+    for trade, wallet in rows:
+        detected_at = trade.detected_at
+        if detected_at is not None:
+            if detected_at.tzinfo is None:
+                detected_at = detected_at.replace(tzinfo=timezone.utc)
+            if detected_at < window_start:
+                continue  # outside the observation window -- does not count
+        if not _wallet_qualifies(wallet):
+            continue
+        # keep the EARLIEST qualifying buy per wallet per token as the
+        # evidence row (rows are expected ordered ascending) -- multiple
+        # buys / transactions by the same wallet still count as exactly
+        # one contributor, regardless of how many rows it has here.
+        by_token[trade.token_mint].setdefault(wallet.wallet_address, (trade, wallet))
+        if trade.token_symbol:
+            token_symbols[trade.token_mint] = trade.token_symbol
+
+    candidates = []
+    for mint, contributors in by_token.items():
+        if len(contributors) < min_wallets:
+            continue
+
+        wallets = [w for _, w in contributors.values()]
+        avg_rep = sum((w.reputation_score or 0) for w in wallets) / len(wallets)
+
+        candidates.append(
+            {
+                "mint": mint,
+                "token_symbol": token_symbols.get(mint),
+                "contributors": contributors,  # {address: (trade, wallet)}
+                "avg_reputation": round(avg_rep, 1),
+            }
+        )
+
+    return candidates
+
+
 async def find_wallet_consensus_candidates(session) -> list[dict]:
     """
     Finds Solana tokens where >= WALLET_CONSENSUS_MIN_WALLETS DISTINCT
@@ -116,36 +178,7 @@ async def find_wallet_consensus_candidates(session) -> list[dict]:
     )
     rows = res.all()
 
-    by_token: dict[str, dict[str, tuple]] = defaultdict(dict)
-    token_symbols: dict[str, str] = {}
-    for trade, wallet in rows:
-        if not _wallet_qualifies(wallet):
-            continue
-        # keep the EARLIEST qualifying buy per wallet per token as the
-        # evidence row (rows are ordered ascending) -- multiple buys by
-        # the same wallet still count as exactly one contributor.
-        by_token[trade.token_mint].setdefault(wallet.wallet_address, (trade, wallet))
-        if trade.token_symbol:
-            token_symbols[trade.token_mint] = trade.token_symbol
-
-    candidates = []
-    for mint, contributors in by_token.items():
-        if len(contributors) < WALLET_CONSENSUS_MIN_WALLETS:
-            continue
-
-        wallets = [w for _, w in contributors.values()]
-        avg_rep = sum((w.reputation_score or 0) for w in wallets) / len(wallets)
-
-        candidates.append(
-            {
-                "mint": mint,
-                "token_symbol": token_symbols.get(mint),
-                "contributors": contributors,  # {address: (trade, wallet)}
-                "avg_reputation": round(avg_rep, 1),
-            }
-        )
-
-    return candidates
+    return _group_consensus_candidates(rows, window_start=effective_start)
 
 
 async def _get_or_init_signal_row(session, mint: str) -> WalletConsensusSignal | None:
