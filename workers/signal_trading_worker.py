@@ -42,6 +42,7 @@ from config.settings import (
     WALLET_CONSENSUS_CYCLE_INTERVAL_SECONDS,
     ROBINHOOD_DISCOVERY_ENABLED,
     ROBINHOOD_DISCOVERY_INTERVAL_SECONDS,
+    REAL_AUTOMATION_ENABLED,
 )
 from domain.signals.wallet_consensus_engine import wallet_consensus_loop
 from domain.signals.robinhood_discovery import robinhood_discovery_loop
@@ -122,8 +123,6 @@ async def main() -> None:
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:real_dca", lambda: real_dca_scheduler_loop(bot, interval_seconds=30),
                        lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:real_automation", lambda: real_automation_loop(bot, interval_seconds=20),
-                       lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:real_exit_engine", lambda: real_exit_engine_loop(bot, interval_seconds=20),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:real_limit_orders", lambda: real_limit_order_engine_loop(bot, interval_seconds=20),
@@ -138,6 +137,12 @@ async def main() -> None:
     # infrastructure the loops above already use. Each is individually
     # toggleable via config.settings so either can be disabled without
     # touching the other or any existing loop.
+    #
+    # Robinhood Discovery (Engine B) is now the primary/default engine:
+    # WALLET_CONSENSUS_ENABLED defaults to False (Engine A off) and
+    # REAL_AUTOMATION_ENABLED defaults to False (real-money auto-buy off).
+    # Both switches live in config/settings.py -- no code was deleted, so
+    # either can be flipped back on by setting the corresponding env var.
     if WALLET_CONSENSUS_ENABLED:
         jobs.append(
             run_as_leader(
@@ -154,6 +159,20 @@ async def main() -> None:
                 lease_seconds=90, renew_interval_seconds=30,
             )
         )
+    if REAL_AUTOMATION_ENABLED:
+        jobs.append(
+            run_as_leader(
+                "loop:real_automation",
+                lambda: real_automation_loop(bot, interval_seconds=20),
+                lease_seconds=90, renew_interval_seconds=30,
+            )
+        )
+
+    logger.info(
+        "Engine status -- WalletConsensus(A)=%s | RobinhoodDiscovery(B, primary)=%s | "
+        "RealAutomation(auto-buy)=%s",
+        WALLET_CONSENSUS_ENABLED, ROBINHOOD_DISCOVERY_ENABLED, REAL_AUTOMATION_ENABLED,
+    )
 
     await asyncio.gather(*jobs)
 
