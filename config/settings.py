@@ -582,6 +582,20 @@ DISCOVERY_PROFILE_REQUIRED = _env_bool("DISCOVERY_PROFILE_REQUIRED", True)
 # scoring rather than an unbounded crawler.
 DISCOVERY_CANDIDATE_LIMIT = _env_int("DISCOVERY_CANDIDATE_LIMIT", 50)
 
+# Master on/off switch for the Solana GeckoTerminal / Pump.fun discovery
+# loop (domain/signals/pump_radar.py::pump_radar_loop, wired
+# unconditionally in workers/signal_trading_worker.py before this flag
+# was added). This is Solana-chain TOKEN discovery -- separate from the
+# Solana Profitable WALLET Consensus engine (WALLET_CONSENSUS_ENABLED,
+# below) and the Premium Smart WALLET Discovery scheduler
+# (PREMIUM_BACKGROUND_SCHEDULERS_ENABLED, above). Defaults to False:
+# Robinhood Chain Token Discovery (Engine B) is now the sole default
+# discovery/alerting engine, matching WALLET_CONSENSUS_ENABLED's default.
+# No discovery code was removed -- set PUMP_RADAR_ENABLED=true in the
+# environment to re-enable Solana pump.fun/GeckoTerminal discovery
+# alongside Robinhood Discovery.
+PUMP_RADAR_ENABLED = _env_bool("PUMP_RADAR_ENABLED", False)
+
 # ---------------------------------------------------------------------
 # Discovery Engine A — Solana Profitable Wallet Consensus
 # ---------------------------------------------------------------------
