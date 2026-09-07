@@ -38,6 +38,7 @@ from domain.trading.real.real_exit_engine import real_exit_engine_loop
 from domain.trading.real.real_limit_order_engine import real_limit_order_engine_loop
 from domain.payments.premium_payments import payment_expiry_sweep_loop
 from config.settings import (
+    PUMP_RADAR_ENABLED,
     WALLET_CONSENSUS_ENABLED,
     WALLET_CONSENSUS_CYCLE_INTERVAL_SECONDS,
     ROBINHOOD_DISCOVERY_ENABLED,
@@ -113,8 +114,6 @@ async def main() -> None:
     jobs = [
         run_as_leader("loop:alert_engine", lambda: alert_loop(bot),
                        lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:pump_radar", lambda: pump_radar_loop(bot, interval_seconds=45),
-                       lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:signal_lifecycle", lambda: signal_lifecycle_loop(bot, interval_seconds=45),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:scheduled_broadcasts", lambda: scheduled_broadcast_loop(bot, interval_seconds=120),
@@ -131,18 +130,28 @@ async def main() -> None:
                        lease_seconds=90, renew_interval_seconds=30),
     ]
 
-    # Discovery Engine A (Solana Profitable Wallet Consensus) and
-    # Discovery Engine B (Robinhood Chain Token Discovery) -- two fully
+    # Solana GeckoTerminal/Pump.fun token discovery (pump_radar_loop),
+    # Discovery Engine A (Solana Profitable Wallet Consensus), and
+    # Discovery Engine B (Robinhood Chain Token Discovery) -- three fully
     # independent pipelines feeding the same shared validation/signal
     # infrastructure the loops above already use. Each is individually
-    # toggleable via config.settings so either can be disabled without
-    # touching the other or any existing loop.
+    # toggleable via config.settings so any of them can be disabled
+    # without touching the others or any existing loop.
     #
     # Robinhood Discovery (Engine B) is now the primary/default engine:
-    # WALLET_CONSENSUS_ENABLED defaults to False (Engine A off) and
-    # REAL_AUTOMATION_ENABLED defaults to False (real-money auto-buy off).
-    # Both switches live in config/settings.py -- no code was deleted, so
-    # either can be flipped back on by setting the corresponding env var.
+    # PUMP_RADAR_ENABLED and WALLET_CONSENSUS_ENABLED both default to
+    # False (Solana token/wallet discovery off) and REAL_AUTOMATION_ENABLED
+    # defaults to False (real-money auto-buy off). All switches live in
+    # config/settings.py -- no code was deleted, so any of them can be
+    # flipped back on by setting the corresponding env var.
+    if PUMP_RADAR_ENABLED:
+        jobs.append(
+            run_as_leader(
+                "loop:pump_radar",
+                lambda: pump_radar_loop(bot, interval_seconds=45),
+                lease_seconds=90, renew_interval_seconds=30,
+            )
+        )
     if WALLET_CONSENSUS_ENABLED:
         jobs.append(
             run_as_leader(
@@ -169,9 +178,9 @@ async def main() -> None:
         )
 
     logger.info(
-        "Engine status -- WalletConsensus(A)=%s | RobinhoodDiscovery(B, primary)=%s | "
-        "RealAutomation(auto-buy)=%s",
-        WALLET_CONSENSUS_ENABLED, ROBINHOOD_DISCOVERY_ENABLED, REAL_AUTOMATION_ENABLED,
+        "Engine status -- PumpRadar(Solana token discovery)=%s | WalletConsensus(A, Solana wallets)=%s | "
+        "RobinhoodDiscovery(B, primary)=%s | RealAutomation(auto-buy)=%s",
+        PUMP_RADAR_ENABLED, WALLET_CONSENSUS_ENABLED, ROBINHOOD_DISCOVERY_ENABLED, REAL_AUTOMATION_ENABLED,
     )
 
     await asyncio.gather(*jobs)
