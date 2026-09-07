@@ -621,7 +621,10 @@ WALLET_CONSENSUS_CYCLE_INTERVAL_SECONDS = _env_int(
 # back to PUMP_ALERT_CHANNEL_IDS (the same channels the free Signal
 # Engine already broadcasts to) when unset, so this works out of the box.
 WALLET_CONSENSUS_ALERT_CHANNEL_IDS = os.getenv("WALLET_CONSENSUS_ALERT_CHANNEL_IDS", "").strip()
-WALLET_CONSENSUS_ENABLED = _env_bool("WALLET_CONSENSUS_ENABLED", True)
+WALLET_CONSENSUS_ENABLED = _env_bool("WALLET_CONSENSUS_ENABLED", False)  # Discovery Engine A disabled by default -- Robinhood Discovery (Engine B)
+# is now the primary/default discovery engine. Set WALLET_CONSENSUS_ENABLED=true
+# in the environment to re-enable Engine A. Nothing about Engine A itself was
+# removed; this only flips the default it starts with.
 
 # ---------------------------------------------------------------------
 # Discovery Engine B — Robinhood Chain Token Discovery (DexScreener)
@@ -678,4 +681,13 @@ ROBINHOOD_COOLDOWN_HOURS = _env_float("ROBINHOOD_COOLDOWN_HOURS", 24.0)
 # Comma-separated chat IDs / @usernames for ROBINHOOD_DISCOVERY alerts.
 # Falls back to PUMP_ALERT_CHANNEL_IDS when unset.
 ROBINHOOD_ALERT_CHANNEL_IDS = os.getenv("ROBINHOOD_ALERT_CHANNEL_IDS", "").strip()
-ROBINHOOD_DISCOVERY_ENABLED = _env_bool("ROBINHOOD_DISCOVERY_ENABLED", True)
+ROBINHOOD_DISCOVERY_ENABLED = _env_bool("ROBINHOOD_DISCOVERY_ENABLED", True)  # primary/default discovery engine
+
+# Global real-money auto-buy kill switch, independent of any per-user
+# RealWallet.auto_trading_enabled setting -- this is an additional gate on
+# top of that. Disabled by default now that Robinhood Discovery is the
+# primary engine: WhaleAlpha is discovery/alerting-only unless this is
+# explicitly turned back on. Set REAL_AUTOMATION_ENABLED=true in the
+# environment to re-enable unattended real-wallet auto-buys
+# (workers/signal_trading_worker.py). No automation code was removed.
+REAL_AUTOMATION_ENABLED = _env_bool("REAL_AUTOMATION_ENABLED", False)
