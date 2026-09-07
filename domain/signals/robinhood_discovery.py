@@ -319,6 +319,7 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                 f"📡 Source: DexScreener ({'new pair' if source == 'dexscreener_new' else 'renewed activity'})",
                 f"🧮 Discovery score: <b>{score}/100</b>",
                 f"💧 Liquidity: ${_f(data.get('liquidity')):,.0f} | 📊 1h Volume: ${_f(data.get('volume_1h')):,.0f}",
+                "📚 Standard educational on-chain and fundamental analysis only — not financial advice. DYOR.",
             ]
 
             if existing is None:
