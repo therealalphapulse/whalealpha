@@ -81,7 +81,7 @@ async def ensure_owner_bootstrapped() -> None:
         return
     try:
         async with async_session() as session:
-            result = await session.execute(select(AdminRole).where(AdminRole.user_id == str(OWNER_ID)))
+            result = await session.execute(select(AdminRole).where(AdminRole.user_id == OWNER_ID))
             row = result.scalar_one_or_none()
             if row:
                 if row.role != "owner" or not row.is_active:
@@ -89,7 +89,7 @@ async def ensure_owner_bootstrapped() -> None:
                     row.is_active = True
                     await session.commit()
             else:
-                session.add(AdminRole(user_id=str(OWNER_ID), role="owner", is_active=True, added_by="system"))
+                session.add(AdminRole(user_id=OWNER_ID, role="owner", is_active=True, added_by="system"))
                 await session.commit()
                 logger.info(f"Owner bootstrapped: {OWNER_ID}")
     except Exception as e:
@@ -101,7 +101,7 @@ async def get_role(user_id: int) -> str | None:
         return "owner"
     async with async_session() as session:
         result = await session.execute(
-            select(AdminRole).where(AdminRole.user_id == str(user_id), AdminRole.is_active == True)  # noqa: E712
+            select(AdminRole).where(AdminRole.user_id == user_id, AdminRole.is_active == True)  # noqa: E712
         )
         row = result.scalar_one_or_none()
         return row.role if row else None
@@ -132,7 +132,7 @@ async def list_admins() -> list[AdminRole]:
 
 async def get_admin(user_id: int) -> AdminRole | None:
     async with async_session() as session:
-        result = await session.execute(select(AdminRole).where(AdminRole.user_id == str(user_id)))
+        result = await session.execute(select(AdminRole).where(AdminRole.user_id == user_id))
         return result.scalar_one_or_none()
 
 
@@ -143,7 +143,7 @@ async def add_admin(user_id: int, role: str, username: str | None, added_by: int
         return False, "That user is already the Owner."
 
     async with async_session() as session:
-        result = await session.execute(select(AdminRole).where(AdminRole.user_id == str(user_id)))
+        result = await session.execute(select(AdminRole).where(AdminRole.user_id == user_id))
         existing = result.scalar_one_or_none()
         if existing:
             if existing.is_active:
@@ -155,7 +155,7 @@ async def add_admin(user_id: int, role: str, username: str | None, added_by: int
             await session.commit()
         else:
             session.add(AdminRole(
-                user_id=str(user_id), role=role, username=username,
+                user_id=user_id, role=role, username=username,
                 is_active=True, added_by=str(added_by),
             ))
             await session.commit()
@@ -168,7 +168,7 @@ async def remove_admin(user_id: int, removed_by: int) -> tuple[bool, str]:
     if user_id == OWNER_ID:
         return False, "The Owner cannot be removed."
     async with async_session() as session:
-        result = await session.execute(select(AdminRole).where(AdminRole.user_id == str(user_id)))
+        result = await session.execute(select(AdminRole).where(AdminRole.user_id == user_id))
         row = result.scalar_one_or_none()
         if not row or not row.is_active:
             return False, "That user isn't an active administrator."
@@ -185,7 +185,7 @@ async def change_role(user_id: int, new_role: str, changed_by: int) -> tuple[boo
     if new_role not in ROLES or new_role == "owner":
         return False, "Invalid role."
     async with async_session() as session:
-        result = await session.execute(select(AdminRole).where(AdminRole.user_id == str(user_id)))
+        result = await session.execute(select(AdminRole).where(AdminRole.user_id == user_id))
         row = result.scalar_one_or_none()
         if not row or not row.is_active:
             return False, "That user isn't an active administrator."
@@ -202,15 +202,8 @@ async def log_action(admin_user_id: int, action: str, target_user_id: int | None
     try:
         async with async_session() as session:
             session.add(AdminActivityLog(
-                # AdminActivityLog.admin_user_id/target_user_id are String,
-                # matching the live users.telegram_id column type (see
-                # models/admin_activity_log.py) -- callers here pass ints
-                # (Telegram user IDs), so stringify explicitly rather than
-                # relying on asyncpg to coerce int -> varchar, which it
-                # does not do.
-                admin_user_id=str(admin_user_id), admin_username=admin_username,
-                action=action, target_user_id=str(target_user_id) if target_user_id is not None else None,
-                detail=detail,
+                admin_user_id=admin_user_id, admin_username=admin_username,
+                action=action, target_user_id=target_user_id, detail=detail,
             ))
             await session.commit()
     except Exception as e:
@@ -229,11 +222,7 @@ async def get_admin_ids_with_permission(permission: str) -> list[int]:
         if not a.is_active:
             continue
         if permission in ROLE_PERMISSIONS.get(a.role, set()):
-            # a.user_id is String (see models/admin_role.py) -- convert
-            # back to int so this function's declared list[int] return
-            # type actually holds, since it's merged with ADMIN_IDS/
-            # OWNER_ID (both int) and used as Telegram chat IDs.
-            ids.add(int(a.user_id))
+            ids.add(a.user_id)
     return list(ids)
 
 
