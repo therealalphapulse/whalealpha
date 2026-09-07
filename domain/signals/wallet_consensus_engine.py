@@ -61,7 +61,10 @@ WALLET_CONSENSUS_TITLE = "🐋 <b>WHALEALPHA — WALLET CONSENSUS</b>"
 
 
 def _now():
-    return datetime.now(timezone.utc)
+    # Naive UTC, matching every other DateTime column in this codebase
+    # (TIMESTAMP WITHOUT TIME ZONE) -- a tz-aware datetime cannot be bound
+    # to those columns by asyncpg.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _short(addr: str, size: int = 5) -> str:
@@ -104,8 +107,8 @@ def _group_consensus_candidates(
     place the "distinct wallet" / "3+ threshold" / "one buy or many buys
     counts once" rules live.
     """
-    if window_start.tzinfo is None:
-        window_start = window_start.replace(tzinfo=timezone.utc)
+    if window_start.tzinfo is not None:
+        window_start = window_start.replace(tzinfo=None)
 
     by_token: dict[str, dict[str, tuple]] = defaultdict(dict)
     token_symbols: dict[str, str] = {}
@@ -113,8 +116,8 @@ def _group_consensus_candidates(
     for trade, wallet in rows:
         detected_at = trade.detected_at
         if detected_at is not None:
-            if detected_at.tzinfo is None:
-                detected_at = detected_at.replace(tzinfo=timezone.utc)
+            if detected_at.tzinfo is not None:
+                detected_at = detected_at.replace(tzinfo=None)
             if detected_at < window_start:
                 continue  # outside the observation window -- does not count
         if not _wallet_qualifies(wallet):
@@ -195,8 +198,8 @@ def _cooldown_active(row: WalletConsensusSignal | None) -> bool:
         return False
     now = _now()
     expires = row.cooldown_expires_at
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+    if expires.tzinfo is not None:
+        expires = expires.replace(tzinfo=None)
     return expires > now
 
 

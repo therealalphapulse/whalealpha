@@ -68,7 +68,10 @@ ROBINHOOD_TITLE = "🚀 <b>WHALEALPHA — ROBINHOOD DISCOVERY</b>"
 
 
 def _now():
-    return datetime.now(timezone.utc)
+    # Naive UTC, matching every other DateTime column in this codebase
+    # (TIMESTAMP WITHOUT TIME ZONE) -- a tz-aware datetime cannot be bound
+    # to those columns by asyncpg.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _f(value, default: float = 0.0) -> float:
@@ -85,7 +88,7 @@ def _pair_age_hours(pair_created_at) -> float | None:
         ms = float(pair_created_at)
     except (TypeError, ValueError):
         return None
-    created = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    created = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).replace(tzinfo=None)
     return (_now() - created).total_seconds() / 3600.0
 
 
@@ -235,8 +238,8 @@ def _cooldown_active(row: RobinhoodDiscoverySignal | None) -> bool:
     if row is None or row.cooldown_expires_at is None:
         return False
     expires = row.cooldown_expires_at
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+    if expires.tzinfo is not None:
+        expires = expires.replace(tzinfo=None)
     return expires > _now()
 
 
