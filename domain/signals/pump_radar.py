@@ -1700,106 +1700,110 @@ def _build_pump_card_text(
     lock_conf = estimate_liquidity_lock_score(d, contract) * 100
 
     narrative = _narrative_tag(d)
-    narrative_line = f"🧵 <b>{html.escape(narrative)}</b>" if narrative else None
-
     dex = d.get("dex")
     dex_line = f" · 🏦 {html.escape(str(dex))}" if dex and dex != "Unknown" else ""
 
-    pair_url = d.get("pair_url") or f"https://dexscreener.com/solana/{contract}"
+    # ── Professional signal-bot card (Photon/Trojan/BonkBot-style):
+    # a tight "3-second scan" -- name, verdict, a compact stat grid,
+    # and warnings ONLY when something actually needs attention. This
+    # replaced a 4-block, always-show-everything report that routinely
+    # ran 1,500-2,500+ chars -- comfortably past Telegram's 1024-char
+    # photo-caption limit, which was silently dropping every photo+card
+    # alert until send_pump_card grew a text-message fallback. Every
+    # underlying signal (fake-vol/wash/sniper risk, funding clusters,
+    # deployer history, price-mismatch, momentum, score breakdown,
+    # confidence) is still computed and still shown -- just only when
+    # it's non-routine, instead of dumped unconditionally every time.
+    header = (
+        f"🔥 <b>{html.escape(d.get('name', 'Unknown'))}</b> "
+        f"(${html.escape(str(d.get('symbol', '???')))}) · <b>{tier}</b>"
+    )
+    subheader = (
+        f"🕒 {format_age(d.get('pair_created'))}{dex_line} · {_security_line(sec)}"
+    )
+    if narrative:
+        subheader += f" · 🧵 {html.escape(narrative)}"
 
-    twitter_url = d.get("twitter_url")
-    telegram_url = d.get("telegram_url")
-    website_url = d.get("website_url")
+    stat_line_1 = (
+        f"💰 MC <b>{_fmt_usd(effective_market_cap(d) or None)}</b>"
+        f"  ·  💧 Liq <b>{_fmt_usd(d.get('liquidity'))}</b> ({lock_conf:.0f}% locked)"
+    )
+    stat_line_2 = (
+        f"📈 Vol1h <b>{_fmt_usd(d.get('volume_1h'))}</b>"
+        f"  ·  ⚖️ {buy_pct:.0f}%/{sell_pct:.0f}% ({int(total_tx)} txns)"
+    )
+    stat_line_3 = (
+        f"👥 <b>{holders_count}</b> holders"
+        f"  ·  Top10 <b>{_fmt_pct(holder_analysis.get('top10_pct'))}</b>"
+        f"  ·  Dev <b>{_fmt_pct(dev_pct)}</b>"
+    )
+    stat_block = [stat_line_1, stat_line_2, stat_line_3]
 
-    link_parts = [f'<a href="{pair_url}">📊 Chart</a>']
-    if twitter_url:
-        link_parts.append(f'<a href="{html.escape(twitter_url)}">🐦 X</a>')
-    if telegram_url:
-        link_parts.append(f'<a href="{html.escape(telegram_url)}">💬 TG</a>')
-    if website_url:
-        link_parts.append(f'<a href="{html.escape(website_url)}">🌐 Site</a>')
-    links_line = " · ".join(link_parts)
+    # ── Warnings: only surfaced when something crosses a real threshold.
+    # A clean token shows none of these lines at all -- that silence IS
+    # the "all clear" signal, the same way a professional bot only
+    # flags what actually needs a trader's attention.
+    RISK_THRESHOLD = 30
+    elevated = []
+    if fake_vol_risk >= RISK_THRESHOLD:
+        elevated.append(f"Fake-Vol {fake_vol_risk:.0f}%")
+    if wash_risk >= RISK_THRESHOLD:
+        elevated.append(f"Wash {wash_risk:.0f}%")
+    if sniper_risk >= RISK_THRESHOLD:
+        elevated.append(f"Sniper {sniper_risk:.0f}%")
+    if bundle_wallets:
+        elevated.append(f"Bundled {bundle_wallets}w ({_fmt_pct(bundle_pct)})")
+    warning_lines = []
+    if elevated:
+        warning_lines.append(f"⚠️ <b>{' · '.join(elevated)}</b>")
+    fc_line = _funding_cluster_line()
+    if fc_line and "None found" not in fc_line:
+        warning_lines.append(fc_line)
+    dh_line = _deployer_history_line()
+    if dh_line and "No prior launches" not in dh_line:
+        warning_lines.append(dh_line)
+    pm_line = _price_mismatch_line()
+    if pm_line:
+        warning_lines.append(pm_line)
 
-    # ── Block 1: Hero — name, tier, age, security, links. This is the
-    # "3-second scan" block, mirroring the reference card's top section:
-    # everything a person needs to decide whether to keep reading.
-    hero_block = [
-        f"🔥 <b>{html.escape(d.get('name', 'Unknown'))}</b> (${html.escape(str(d.get('symbol', '???')))})"
-        f"  ·  <b>{tier}</b>",
-        _price_mismatch_line(),
-        f"🕒 Age: <b>{format_age(d.get('pair_created'))}</b>{dex_line}"
-        f"  ·  {_security_line(sec)}",
-        narrative_line,
-        links_line,
-    ]
+    # ── Notable-only intelligence: smart money / whale presence, real
+    # verified LP lock, and momentum -- each already self-omits when
+    # there's nothing to report (see their function docstrings above).
+    notable_lines = [l for l in (_smart_money_line(), _whale_line()) if l and "None detected" not in l]
+    extra_notable = [l for l in (_real_lp_lock_line(), _momentum_line()) if l]
+    notable_lines.extend(extra_notable)
 
-    # ── Block 2: Market stats — MC/Liq/Vol/Buy-Sell/Fake-Vol/Holders,
-    # the same numbers a trader checks first on any scanner.
-    market_block = [
-        f"💰 MC: <b>{_fmt_usd(effective_market_cap(d) or None)}</b>"
-        f"  ·  💧 Liq: <b>{_fmt_usd(d.get('liquidity'))}</b> (lock {lock_conf:.0f}%)",
-        f"📈 Vol 1h: <b>{_fmt_usd(d.get('volume_1h'))}</b>"
-        f"  ·  ⚖️ {buy_pct:.0f}%/{sell_pct:.0f}% ({int(total_tx)} txns)",
-        _volume_growth_line(),
-        f"⚠️ Fake-Vol: <b>{fake_vol_risk:.0f}%</b>"
-        f"  ·  Wash: <b>{wash_risk:.0f}%</b>"
-        f"  ·  Sniper: <b>{sniper_risk:.0f}%</b>",
-        f"👥 Holders: <b>{holders_count}</b>",
-    ]
+    def _short_reasons(all_reasons: list, budget: int = 90) -> str:
+        if not all_reasons:
+            return "Cleared all quality gates"
+        kept, used = [], 0
+        for r in all_reasons:
+            add = len(r) + (3 if kept else 0)
+            if used + add > budget and kept:
+                return " · ".join(kept) + f" +{len(all_reasons) - len(kept)} more"
+            kept.append(r)
+            used += add
+        return " · ".join(kept)
 
-    # ── Block 3: Distribution/bundle — who actually holds supply. This
-    # is the block the reference card gives the most visual weight to,
-    # since it's the fastest tell for an obvious rug setup.
-    distribution_block = [
-        f"🎯 Top1: <b>{_fmt_pct(holder_analysis.get('top_holder_pct'))}</b>"
-        f"  ·  Top10: <b>{_fmt_pct(holder_analysis.get('top10_pct'))}</b>",
-        f"🛠 Dev Holding: <b>{_fmt_pct(dev_pct)}</b>",
-        (
-            f"📦 Bundled: <b>{bundle_wallets} wallets</b> ({_fmt_pct(bundle_pct)} of supply)"
-            if bundle_wallets else "📦 Bundled: <b>None detected</b>"
-        ),
-        _funding_cluster_line(),
-    ]
+    score_line = f"🎯 Score <b>{score}/100</b> — {html.escape(_short_reasons(reasons))}"
 
-    # ── Block 4: Intelligence deep-dive — everything that took real
-    # cross-referencing to compute (confidence scoring, smart money/whale
-    # presence, deployer history, verified LP lock, momentum, score
-    # breakdown). Kept together and clearly labeled so a quick reader can
-    # skip it, while a careful reader still gets every signal your
-    # pipeline actually checked — nothing from the original card is lost.
-    intelligence_block = [
-        "🧠 <b>Signal Intelligence</b>",
-        f"AlphaPulse Score: <b>{score}/100</b> — {tier}",
-        _confidence_line(),
-        _pump_probability_line(),
-        _score_breakdown_line(),
-        _momentum_line(),
-        _smart_money_line(),
-        _whale_line(),
-        _real_lp_lock_line(),
-        _deployer_history_line(),
-    ]
-
-    footer_block = [
-        f"📋 Why: {html.escape(reasons_line)}",
-        f"<code>{contract}</code>",
-    ]
+    contract_line = f"<code>{contract}</code>"
 
     def _render_block(block_lines) -> str:
         return "\n".join(l for l in block_lines if l)
 
     sections = [
         title.strip() if title else None,
-        _render_block(hero_block),
-        _render_block(market_block),
-        _render_block(distribution_block),
-        _render_block(intelligence_block),
+        _render_block([header, subheader]),
+        _render_block(stat_block),
+        _render_block(warning_lines) if warning_lines else None,
+        _render_block(notable_lines) if notable_lines else None,
+        score_line,
         _render_block(extra_block) if extra_block else None,
-        _render_block(footer_block),
+        contract_line,
     ]
 
-    divider = "\n━━━━━━━━━━━━━━━━━━━━━\n"
-    text = divider.join(s for s in sections if s)
+    text = "\n\n".join(s for s in sections if s)
     return text
 
 
