@@ -59,7 +59,7 @@ from providers.marketdata.dexscreener import (
     get_token_card_info,
 )
 from domain.signals.candidate_validation import build_validated_candidate
-from domain.signals.pump_radar import send_pump_card
+from domain.signals.pump_radar import send_pump_card, get_pump_subscribers
 from domain.signals.channel_config import load_channel_ids
 
 logger = logging.getLogger("WhaleAlpha.RobinhoodDiscovery")
@@ -250,10 +250,28 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
         "tokens_rejected": 0,
         "tokens_promoted": 0,
         "signals_sent": 0,
+        "signals_skipped_no_recipients": 0,
         "cooldown_skipped": 0,
     }
 
-    channel_ids = load_channel_ids("ROBINHOOD_ALERT_CHANNEL_IDS")
+    # Real subscriber base (users table via pump_alert_subscriptions), the same
+    # list every other alert type (scheduled broadcasts, milestone alerts, the
+    # free Signal Engine) already delivers to -- plus any Robinhood-specific
+    # extra channels from ROBINHOOD_ALERT_CHANNEL_IDS (optional, on top of the
+    # real subscribers, not instead of them).
+    try:
+        recipients = await get_pump_subscribers()
+    except Exception as e:
+        logger.error(f"Robinhood discovery: subscriber fetch failed: {e}")
+        recipients = []
+    extra_channel_ids = load_channel_ids("ROBINHOOD_ALERT_CHANNEL_IDS", fallback_env_var=None)
+    recipients = list(dict.fromkeys(list(recipients) + list(extra_channel_ids)))
+    if not recipients:
+        logger.warning(
+            "Robinhood discovery: no subscribers and no ROBINHOOD_ALERT_CHANNEL_IDS/"
+            "PUMP_ALERT_CHANNEL_IDS configured -- discovered tokens will be scored and "
+            "stored but no alert will be sent to anyone this cycle."
+        )
 
     try:
         candidates = await discover_candidates()
@@ -342,8 +360,8 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
             existing.last_alerted_at = _now()
             existing.cooldown_expires_at = _now() + timedelta(hours=ROBINHOOD_COOLDOWN_HOURS)
 
-            if bot is not None and channel_ids:
-                for chat_id in channel_ids:
+            if bot is not None and recipients:
+                for chat_id in recipients:
                     try:
                         await send_pump_card(
                             bot, chat_id, card,
@@ -352,8 +370,9 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                         )
                     except Exception as e:
                         logger.warning(f"Robinhood discovery: send failed for {contract} -> {chat_id}: {e}")
-
-            stats["signals_sent"] += 1
+                stats["signals_sent"] += 1
+            else:
+                stats["signals_skipped_no_recipients"] += 1
             alerts_sent_this_cycle += 1
 
         await session.commit()
