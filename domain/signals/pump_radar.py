@@ -1816,7 +1816,19 @@ async def send_pump_card(bot, chat_id, candidate, *, title: str | None = None, e
     )
     try:
         if d.get("image_url"):
-            return await bot.send_photo(chat_id, d["image_url"], caption=text, reply_markup=kb)
+            try:
+                return await bot.send_photo(chat_id, d["image_url"], caption=text, reply_markup=kb)
+            except Exception as photo_err:
+                # Photo captions are capped at 1024 chars by Telegram (vs 4096 for
+                # plain messages) -- a card that fits fine as a text message can
+                # still be rejected outright as a caption. Previously this dropped
+                # the alert entirely (logged a warning, returned None, nothing sent
+                # to the user). Fall back to a plain text message instead of
+                # silently failing.
+                if "caption is too long" not in str(photo_err).lower():
+                    raise
+                logger.info(f"send_pump_card: caption too long for {chat_id}, falling back to text message")
+                return await bot.send_message(chat_id, text, reply_markup=kb)
         return await bot.send_message(chat_id, text, reply_markup=kb)
     except Exception as e:
         logger.warning(f"send_pump_card failed for {chat_id}: {e}")
