@@ -1,7 +1,7 @@
 """
 Discovery Engine B — Robinhood Chain Token Discovery (via DexScreener).
 
-    DexScreener Discovery -> Potential Token Scoring -> Validation ->
+    DexScreener Discovery -> Two Intelligence Lanes -> Validation ->
     Snapshot -> Telegram Signal
 
 Completely independent of Discovery Engine A / the Solana wallet
@@ -19,6 +19,28 @@ consensus for Robinhood tokens"). Reuses:
                                  so "Existing hard-reject conditions
                                  remain authoritative" here too)
   * Rich Telegram card       -> domain.signals.pump_radar.send_pump_card
+
+v2 — two intelligence-driven lanes instead of one shared formula that
+rewarded raw pumped %:
+
+  * FRESH lane (new pairs) — scored for quality + moderate/sustained
+    momentum, never a token's already-completed move. A candidate
+    already up 80%+ in the last hour is scored as MORE likely near a
+    local top than "about to pump", not less. Only the top N
+    candidates BY SCORE get alerted each cycle (ROBINHOOD_FRESH_TOP_N_
+    PER_CYCLE) — genuine "top picks", not everything above a static
+    bar. See score_fresh_potential().
+
+  * REVIVAL lane (older pairs) — only ever alerts a token our own
+    cross-cycle history (models.robinhood_token_watch.RobinhoodTokenWatch,
+    updated every cycle for every candidate observed) shows genuinely
+    dumped from a tracked local high and is now recovering off a
+    tracked local low — never just "any old token with rising volume",
+    which is what the previous "renewed" bucket alerted on. See
+    score_revival_potential().
+
+Both lanes share the same pre-filters, safety-validation pipeline,
+cooldown ledger, and Telegram delivery as before.
 """
 
 from __future__ import annotations
@@ -42,16 +64,24 @@ from config.settings import (
     ROBINHOOD_MIN_TXNS_1H,
     ROBINHOOD_MAX_MC_LIQUIDITY_RATIO,
     ROBINHOOD_SCORE_WEIGHT_LIQUIDITY,
-    ROBINHOOD_SCORE_WEIGHT_LIQUIDITY_CHANGE,
     ROBINHOOD_SCORE_WEIGHT_VOLUME,
     ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION,
     ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE,
     ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION,
-    ROBINHOOD_SCORE_WEIGHT_MOMENTUM,
+    ROBINHOOD_SCORE_WEIGHT_MOMENTUM_QUALITY,
     ROBINHOOD_MIN_SCORE_TO_ALERT,
+    ROBINHOOD_FRESH_MAX_PRICE_CHANGE_1H_PCT,
+    ROBINHOOD_FRESH_MAX_PRICE_CHANGE_5M_PCT,
+    ROBINHOOD_FRESH_TOP_N_PER_CYCLE,
+    ROBINHOOD_REVIVAL_MIN_SAMPLES,
+    ROBINHOOD_REVIVAL_MIN_DRAWDOWN_PCT,
+    ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT,
+    ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT,
+    ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE,
     ROBINHOOD_COOLDOWN_HOURS,
 )
 from models.robinhood_discovery_signal import RobinhoodDiscoverySignal
+from models.robinhood_token_watch import RobinhoodTokenWatch
 from providers.marketdata.dexscreener import (
     get_latest_token_profiles,
     get_latest_boosted_tokens,
@@ -65,6 +95,8 @@ from domain.signals.channel_config import load_channel_ids
 logger = logging.getLogger("WhaleAlpha.RobinhoodDiscovery")
 
 ROBINHOOD_TITLE = "🚀 <b>WHALEALPHA — ROBINHOOD DISCOVERY</b>"
+FRESH_TITLE = "🚀 <b>WHALEALPHA — ROBINHOOD DISCOVERY</b> · 🔥 Fresh Pick"
+REVIVAL_TITLE = "🚀 <b>WHALEALPHA — ROBINHOOD DISCOVERY</b> · 🔁 Second Wind"
 
 
 def _now():
@@ -101,6 +133,13 @@ async def discover_candidates() -> list[dict]:
       * older Robinhood Chain tokens showing renewed/high-potential
         activity (via search_pairs_by_chain, age- and
         volume-acceleration-filtered)
+
+    This only decides which DexScreener FEED a candidate came from
+    (source label) and a coarse pre-filter on the "renewed" feed to
+    avoid wasting work on obviously dead pairs. The actual FRESH vs
+    REVIVAL lane assignment happens later in run_robinhood_discovery_
+    cycle, based on the candidate's real observed age and our own
+    tracked price history -- not this label.
 
     Deduplicates by contract address. Never fabricates data -- any pair
     missing usable market data is simply skipped.
@@ -140,9 +179,9 @@ async def discover_candidates() -> list[dict]:
             if contract not in seen:
                 seen[contract] = {"contract": contract, "source": "dexscreener_new", "prefetched_data": pair}
             continue
-        # "Renewed activity": require a real volume acceleration signal
-        # (1h volume annualized-to-24h vs the trailing 24h average),
-        # never raw volume alone.
+        # Coarse pre-filter: require SOME real volume acceleration
+        # signal before this even enters consideration for the REVIVAL
+        # lane's much stricter dump-then-recovery check below.
         vol_1h = _f(pair.get("volume_1h"))
         vol_24h = _f(pair.get("volume_24h"))
         avg_hourly_24h = vol_24h / 24.0 if vol_24h else 0.0
@@ -177,18 +216,190 @@ def _passes_activity_filters(data: dict) -> tuple[bool, list[str]]:
     return (len(reasons) == 0), reasons
 
 
-def score_potential(data: dict) -> tuple[float, dict]:
+async def _get_or_update_token_watch(session, contract: str, data: dict) -> RobinhoodTokenWatch:
     """
-    Configurable weighted potential score. Every weight is a
-    config.settings.ROBINHOOD_SCORE_WEIGHT_* value (see spec: "The
-    exact scoring formula should be configurable and should avoid
-    treating raw volume alone as sufficient evidence") -- raw volume is
-    one of seven weighted components here, never scored alone.
+    Records this observation in the cross-cycle history table and
+    returns the updated row. Called for EVERY candidate that clears
+    the activity pre-filter, whether or not it ends up promoted or
+    alerted -- the REVIVAL lane's drawdown/recovery detection depends
+    on this running continuously, not just on cycles that send
+    something. Tracks a local high (reset whenever a new high is set)
+    and the lowest price seen since that high (the "dump bottom"), so
+    a real dump-then-recovery shape can be measured across cycles
+    instead of guessed from one DexScreener snapshot.
+    """
+    price = _f(data.get("price"))
+    liquidity = _f(data.get("liquidity"))
+    volume_1h = _f(data.get("volume_1h"))
+    now = _now()
 
-    Each component is normalized to 0-100 before weighting.
+    res = await session.execute(
+        select(RobinhoodTokenWatch).where(RobinhoodTokenWatch.token_contract == contract)
+    )
+    row = res.scalar_one_or_none()
+
+    if row is None:
+        row = RobinhoodTokenWatch(
+            token_contract=contract,
+            first_seen_at=now,
+            last_seen_at=now,
+            samples_count=0,
+        )
+        session.add(row)
+
+    if price > 0:
+        if row.local_high_price is None or price > row.local_high_price:
+            # New high -- the drawdown/recovery window resets: this
+            # cycle's price becomes the new peak with no dump recorded
+            # under it yet.
+            row.local_high_price = price
+            row.local_high_at = now
+            row.local_low_price_since_high = None
+            row.local_low_at = None
+        elif row.local_low_price_since_high is None or price < row.local_low_price_since_high:
+            row.local_low_price_since_high = price
+            row.local_low_at = now
+        row.last_price = price
+
+    if liquidity > 0:
+        row.last_liquidity = liquidity
+    if volume_1h > 0:
+        row.last_volume_1h = volume_1h
+
+    row.last_seen_at = now
+    row.samples_count = (row.samples_count or 0) + 1
+    return row
+
+
+def score_fresh_potential(data: dict) -> tuple[float, dict]:
+    """
+    FRESH-lane score -- for new pairs. Rewards quality plus moderate,
+    sustained, multi-timeframe-aligned momentum; never raw pumped %.
+
+    Replaces the old formula, which counted "price already pumped in
+    the last hour" TWICE (once as "momentum", again as a
+    "liquidity_change" proxy that was, per its own old comment,
+    literally the same number -- DexScreener has no real
+    liquidity-change field). That double-counted, unbounded reward for
+    tokens that had ALREADY spiked hard was the single biggest driver
+    of "alert fires right as the token tops out, then dumps".
+
+    momentum_quality below rewards a 5-40% 1h move (the "just starting
+    to build" sweet spot) most highly, decays the reward above that,
+    and actively PENALIZES moves past ROBINHOOD_FRESH_MAX_PRICE_CHANGE_
+    1H_PCT -- an already-extended token is scored as closer to a local
+    top than to an entry. A single 5-minute candle accounting for most
+    of the 1h move (a blow-off-top shape, not a trend) is penalized
+    regardless of the 1h number, and multi-timeframe alignment (5m, 1h,
+    6h all positive) earns a small bonus for looking like a real trend
+    rather than an isolated spike.
     """
     liquidity = _f(data.get("liquidity"))
-    liquidity_change_1h = _f(data.get("price_change_1h"))  # proxy: DexScreener has no direct liq-change field
+    volume_1h = _f(data.get("volume_1h"))
+    volume_24h = _f(data.get("volume_24h"))
+    avg_hourly_24h = volume_24h / 24.0 if volume_24h else 0.0
+    volume_acceleration = (volume_1h / avg_hourly_24h) if avg_hourly_24h > 0 else 1.0
+
+    buys_1h = _f(data.get("txns_1h_buys"))
+    sells_1h = _f(data.get("txns_1h_sells"))
+    buy_sell_pressure = (buys_1h / (buys_1h + sells_1h)) if (buys_1h + sells_1h) > 0 else 0.5
+
+    txns_24h = _f(data.get("txns_24h_buys")) + _f(data.get("txns_24h_sells"))
+    txns_1h_total = buys_1h + sells_1h
+    avg_hourly_txns_24h = txns_24h / 24.0 if txns_24h else 0.0
+    tx_acceleration = (txns_1h_total / avg_hourly_txns_24h) if avg_hourly_txns_24h > 0 else 1.0
+
+    pc_5m = _f(data.get("price_change_5m"))
+    pc_1h = _f(data.get("price_change_1h"))
+    pc_6h = _f(data.get("price_change_6h"))
+
+    def _momentum_quality() -> float:
+        if pc_1h < 0:
+            base = max(0.0, 40.0 + pc_1h)
+        elif pc_1h <= 5:
+            base = 50.0 + pc_1h * 2.0
+        elif pc_1h <= 40:
+            base = 60.0 + (pc_1h - 5.0) * (40.0 / 35.0)
+        elif pc_1h <= ROBINHOOD_FRESH_MAX_PRICE_CHANGE_1H_PCT:
+            span = max(1.0, ROBINHOOD_FRESH_MAX_PRICE_CHANGE_1H_PCT - 40.0)
+            base = 100.0 - (pc_1h - 40.0) * (40.0 / span)
+        else:
+            over = pc_1h - ROBINHOOD_FRESH_MAX_PRICE_CHANGE_1H_PCT
+            base = max(0.0, 60.0 - over * 0.5)
+
+        if pc_1h > 0 and abs(pc_5m) >= ROBINHOOD_FRESH_MAX_PRICE_CHANGE_5M_PCT:
+            base *= 0.5  # blow-off-top shape: most of the move in one 5m candle
+
+        if pc_5m > 0 and pc_1h > 0 and pc_6h > 0:
+            base = min(100.0, base + 10.0)  # aligned trend across timeframes
+
+        return max(0.0, min(100.0, base))
+
+    components = {
+        "liquidity": min(100.0, (liquidity / 100_000.0) * 100),
+        "volume": min(100.0, (volume_1h / 50_000.0) * 100),
+        "volume_acceleration": min(100.0, volume_acceleration * 25),
+        "buy_sell_pressure": buy_sell_pressure * 100,
+        "tx_acceleration": min(100.0, tx_acceleration * 25),
+        "momentum_quality": _momentum_quality(),
+    }
+    weights = {
+        "liquidity": ROBINHOOD_SCORE_WEIGHT_LIQUIDITY,
+        "volume": ROBINHOOD_SCORE_WEIGHT_VOLUME,
+        "volume_acceleration": ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION,
+        "buy_sell_pressure": ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE,
+        "tx_acceleration": ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION,
+        "momentum_quality": ROBINHOOD_SCORE_WEIGHT_MOMENTUM_QUALITY,
+    }
+    total_weight = sum(weights.values()) or 1.0
+    score = sum(components[k] * weights[k] for k in weights) / total_weight
+    return round(score, 1), components
+
+
+def score_revival_potential(data: dict, watch) -> "tuple[float, dict] | None":
+    """
+    REVIVAL-lane score -- for older pairs. Returns None ("not
+    qualified for this lane at all", not just "scored low") unless our
+    own cross-cycle history on `watch` shows a genuine dump-then-
+    recovery shape:
+
+      1. Enough observed history to trust the high/low
+         (samples_count >= ROBINHOOD_REVIVAL_MIN_SAMPLES)
+      2. A real drawdown from the tracked local high
+         (>= ROBINHOOD_REVIVAL_MIN_DRAWDOWN_PCT)
+      3. A real bounce off the tracked local low
+         (>= ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT)
+      4. Not already back near the old high
+         (<= ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT of the drawdown
+         reclaimed) -- past that point this is chasing an
+         already-complete recovery, not catching a fresh one
+
+    An old token with rising volume that never actually corrected
+    first (never dumped) fails step 2 and is rejected outright --
+    that's not a revival, whatever its volume looks like.
+    """
+    if watch is None or (watch.samples_count or 0) < ROBINHOOD_REVIVAL_MIN_SAMPLES:
+        return None
+
+    high = watch.local_high_price
+    low = watch.local_low_price_since_high
+    last = watch.last_price
+    if not high or not low or not last or high <= 0 or low <= 0 or high <= low:
+        return None
+
+    drawdown_pct = (high - low) / high * 100.0
+    if drawdown_pct < ROBINHOOD_REVIVAL_MIN_DRAWDOWN_PCT:
+        return None
+
+    recovery_pct = (last - low) / low * 100.0
+    if recovery_pct < ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT:
+        return None
+
+    recovery_of_drawdown_pct = (last - low) / (high - low) * 100.0
+    if recovery_of_drawdown_pct > ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT:
+        return None
+
+    liquidity = _f(data.get("liquidity"))
     volume_1h = _f(data.get("volume_1h"))
     volume_24h = _f(data.get("volume_24h"))
     avg_hourly_24h = volume_24h / 24.0 if volume_24h else 0.0
@@ -196,34 +407,27 @@ def score_potential(data: dict) -> tuple[float, dict]:
     buys_1h = _f(data.get("txns_1h_buys"))
     sells_1h = _f(data.get("txns_1h_sells"))
     buy_sell_pressure = (buys_1h / (buys_1h + sells_1h)) if (buys_1h + sells_1h) > 0 else 0.5
-    txns_24h = _f(data.get("txns_24h_buys")) + _f(data.get("txns_24h_sells"))
-    txns_1h_total = buys_1h + sells_1h
-    avg_hourly_txns_24h = txns_24h / 24.0 if txns_24h else 0.0
-    tx_acceleration = (txns_1h_total / avg_hourly_txns_24h) if avg_hourly_txns_24h > 0 else 1.0
-    momentum = _f(data.get("price_change_1h"))
 
     components = {
         "liquidity": min(100.0, (liquidity / 100_000.0) * 100),
-        "liquidity_change": max(0.0, min(100.0, 50 + liquidity_change_1h)),
-        "volume": min(100.0, (volume_1h / 50_000.0) * 100),
-        "volume_acceleration": min(100.0, volume_acceleration * 25),
+        # Deeper capitulation reads as a more legitimate reset, up to a point.
+        "drawdown_depth": min(100.0, drawdown_pct * 1.25),
+        # Stronger bounce off the bottom = stronger reversal signal.
+        "recovery_strength": min(100.0, recovery_pct * 2.0),
+        "volume_resurgence": min(100.0, volume_acceleration * 30),
         "buy_sell_pressure": buy_sell_pressure * 100,
-        "tx_acceleration": min(100.0, tx_acceleration * 25),
-        "momentum": max(0.0, min(100.0, 50 + momentum)),
     }
-
     weights = {
-        "liquidity": ROBINHOOD_SCORE_WEIGHT_LIQUIDITY,
-        "liquidity_change": ROBINHOOD_SCORE_WEIGHT_LIQUIDITY_CHANGE,
-        "volume": ROBINHOOD_SCORE_WEIGHT_VOLUME,
-        "volume_acceleration": ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION,
-        "buy_sell_pressure": ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE,
-        "tx_acceleration": ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION,
-        "momentum": ROBINHOOD_SCORE_WEIGHT_MOMENTUM,
+        "liquidity": 0.15,
+        "drawdown_depth": 0.20,
+        "recovery_strength": 0.30,
+        "volume_resurgence": 0.20,
+        "buy_sell_pressure": 0.15,
     }
-
     total_weight = sum(weights.values()) or 1.0
     score = sum(components[k] * weights[k] for k in weights) / total_weight
+    components["drawdown_pct"] = round(drawdown_pct, 1)
+    components["recovery_pct"] = round(recovery_pct, 1)
     return round(score, 1), components
 
 
@@ -249,6 +453,8 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
         "tokens_discovered": 0,
         "tokens_rejected": 0,
         "tokens_promoted": 0,
+        "fresh_promoted": 0,
+        "revival_promoted": 0,
         "signals_sent": 0,
         "signals_skipped_no_recipients": 0,
         "cooldown_skipped": 0,
@@ -280,13 +486,12 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
         return stats
 
     stats["pairs_scanned"] = len(candidates)
-    alerts_sent_this_cycle = 0
+
+    fresh_pool: list = []
+    revival_pool: list = []
 
     async with async_session() as session:
         for entry in candidates:
-            if alerts_sent_this_cycle >= ROBINHOOD_MAX_ALERTS_PER_CYCLE:
-                break
-
             contract = entry["contract"]
             source = entry["source"]
             prefetched = entry.get("prefetched_data")
@@ -313,10 +518,34 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                 stats["tokens_rejected"] += 1
                 continue
 
-            score, breakdown = score_potential(data)
-            if score < ROBINHOOD_MIN_SCORE_TO_ALERT:
-                stats["tokens_rejected"] += 1
-                continue
+            # Always update cross-cycle history, whether or not this
+            # candidate ends up promoted -- the REVIVAL lane's
+            # drawdown/recovery detection needs continuous observation,
+            # not just observations on cycles where something alerts.
+            watch = await _get_or_update_token_watch(session, contract, data)
+
+            age_hours = _pair_age_hours(data.get("pair_created"))
+            is_fresh = age_hours is None or age_hours < ROBINHOOD_NEW_MAX_AGE_HOURS
+
+            if is_fresh:
+                bucket = "fresh"
+                score, breakdown = score_fresh_potential(data)
+                if score < ROBINHOOD_MIN_SCORE_TO_ALERT:
+                    stats["tokens_rejected"] += 1
+                    continue
+            else:
+                bucket = "revival"
+                result = score_revival_potential(data, watch)
+                if result is None:
+                    # No genuine dump-then-recovery shape in our tracked
+                    # history -- reject outright, don't fall back to
+                    # generic scoring for old tokens.
+                    stats["tokens_rejected"] += 1
+                    continue
+                score, breakdown = result
+                if score < ROBINHOOD_MIN_SCORE_TO_ALERT:
+                    stats["tokens_rejected"] += 1
+                    continue
 
             try:
                 card, reject_reasons = await build_validated_candidate(
@@ -331,14 +560,52 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                 stats["tokens_rejected"] += 1
                 continue
 
-            stats["tokens_promoted"] += 1
+            pool_entry = {
+                "contract": contract, "source": source, "data": data, "card": card,
+                "score": score, "breakdown": breakdown, "existing": existing,
+            }
+            (fresh_pool if bucket == "fresh" else revival_pool).append(pool_entry)
 
+        # Rank each lane by score and alert only the true top picks --
+        # "top picks and hot" for fresh, the strongest confirmed
+        # dump-then-recovery setups for revival -- never everything
+        # that merely cleared the static score bar.
+        fresh_pool.sort(key=lambda e: e["score"], reverse=True)
+        revival_pool.sort(key=lambda e: e["score"], reverse=True)
+        to_alert = (
+            [("fresh", e) for e in fresh_pool[:ROBINHOOD_FRESH_TOP_N_PER_CYCLE]]
+            + [("revival", e) for e in revival_pool[:ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE]]
+        )[:ROBINHOOD_MAX_ALERTS_PER_CYCLE]
+
+        for bucket, item in to_alert:
+            contract = item["contract"]
+            source = item["source"]
+            data = item["data"]
+            card = item["card"]
+            score = item["score"]
+            breakdown = item["breakdown"]
+            existing = item["existing"]
+
+            stats["tokens_promoted"] += 1
+            stats["fresh_promoted" if bucket == "fresh" else "revival_promoted"] += 1
+
+            lane_label = (
+                "🔥 Fresh Pick — hot & early" if bucket == "fresh"
+                else "🔁 Second Wind — dumped, now recovering"
+            )
             why_selected = [
-                f"📡 Source: DexScreener ({'new pair' if source == 'dexscreener_new' else 'renewed activity'})",
+                f"📡 Source: DexScreener ({'new pair' if source == 'dexscreener_new' else 'renewed activity'}) · {lane_label}",
                 f"🧮 Discovery score: <b>{score}/100</b>",
                 f"💧 Liquidity: ${_f(data.get('liquidity')):,.0f} | 📊 1h Volume: ${_f(data.get('volume_1h')):,.0f}",
-                "📚 Standard educational on-chain and fundamental analysis only — not financial advice. DYOR.",
             ]
+            if bucket == "revival":
+                why_selected.append(
+                    f"📉 Drawdown <b>{breakdown.get('drawdown_pct')}%</b> from local high"
+                    f" → 📈 Recovery <b>{breakdown.get('recovery_pct')}%</b> off the bottom"
+                )
+            why_selected.append(
+                "📚 Standard educational on-chain and fundamental analysis only — not financial advice. DYOR."
+            )
 
             if existing is None:
                 existing = RobinhoodDiscoverySignal(token_contract=contract)
@@ -350,7 +617,7 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
             existing.token_symbol = data.get("symbol")
             existing.token_name = data.get("name")
             existing.chain = ROBINHOOD_CHAIN_ID
-            existing.discovery_source = source
+            existing.discovery_source = f"{source}:{bucket}"
             existing.discovery_score = score
             existing.score_breakdown_json = json.dumps(breakdown)
             existing.reasons_json = json.dumps(why_selected)
@@ -360,12 +627,13 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
             existing.last_alerted_at = _now()
             existing.cooldown_expires_at = _now() + timedelta(hours=ROBINHOOD_COOLDOWN_HOURS)
 
+            title = FRESH_TITLE if bucket == "fresh" else REVIVAL_TITLE
             if bot is not None and recipients:
                 for chat_id in recipients:
                     try:
                         await send_pump_card(
                             bot, chat_id, card,
-                            title=ROBINHOOD_TITLE,
+                            title=title,
                             extra_block=why_selected,
                         )
                     except Exception as e:
@@ -373,7 +641,6 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                 stats["signals_sent"] += 1
             else:
                 stats["signals_skipped_no_recipients"] += 1
-            alerts_sent_this_cycle += 1
 
         await session.commit()
 
