@@ -287,6 +287,19 @@ ALREADY_EXTENDED_1H_PCT = 150.0
 SMART_MONEY_MAX_BONUS = 6.0
 WHALE_MAX_BONUS = 4.0
 
+# King Token pattern bonus (see domain.intelligence.king_token_profile) --
+# a backward-looking statistical resemblance to this bot's own proven
+# multi-milestone winners (tokens whose SignalEvent history shows 3+
+# genuine positive milestones, e.g. the way $QUEST has), not a live
+# verified position the way smart_money/whale holdings are. Deliberately
+# smaller than SMART_MONEY_MAX_BONUS + WHALE_MAX_BONUS for that reason --
+# a nudge, never a rescue, and never trusted at all until the profile
+# itself is backed by KING_PATTERN_MIN_SAMPLE_SIZE+ proven winners (a
+# single lucky token is not a pattern).
+KING_PATTERN_MAX_BONUS = 4.0
+KING_PATTERN_MIN_SAMPLE_SIZE = 2
+KING_PATTERN_MIN_SIMILARITY = 0.55
+
 # --- Signal Intelligence upgrade: confidence scoring ---
 # `confidence_score` (see compute_confidence()) measures how trustworthy
 # the collected EVIDENCE is — never how bullish the token looks. Prior to
@@ -917,6 +930,91 @@ def _smart_money_whale_bonus(
     return min(bonus, SMART_MONEY_MAX_BONUS + WHALE_MAX_BONUS), notes
 
 
+# Component -> max raw points, used only to normalize the closeness
+# comparison below onto a common 0-1 scale (see the momentum_norm /
+# liq_norm / holder_norm normalization in _estimate_pump_probability()
+# for the same pattern applied elsewhere in this module).
+_KING_COMPONENT_SCALES = {
+    "liquidity_lp_integrity": 25.0,
+    "holder_distribution": 25.0,
+    "momentum_quality": 30.0,
+    "wallet_deployer_behavior": 20.0,
+}
+
+
+def _king_pattern_bonus(
+    base_score: float,
+    liq_pts: float,
+    holder_pts: float,
+    momentum_pts: float,
+    wallet_pts: float,
+    king_profile: dict | None,
+) -> tuple[float, list[str]]:
+    """
+    King Token pattern bonus -- additive-only, same non-negotiable rule
+    as every other bonus category: only ever applied on top of an
+    already-qualifying on-chain score, never able to rescue a token
+    that failed on liquidity/holders/momentum/wallet quality.
+
+    `king_profile` is the output of
+    domain.intelligence.king_token_profile.get_cached_king_profile() --
+    optional and backward compatible; any existing caller that doesn't
+    pass it scores exactly as before (bonus simply evaluates to 0).
+
+    Compares this candidate's own liquidity/holder/momentum/wallet
+    sub-scores against the King profile's centroid (the average of
+    those same sub-scores across every token that has proven itself a
+    repeat winner, i.e. cleared 3+ genuine positive milestones). Only
+    ever rewards a genuinely close match (KING_PATTERN_MIN_SIMILARITY),
+    and only once the profile itself is backed by
+    KING_PATTERN_MIN_SAMPLE_SIZE+ proven winners -- a single lucky
+    token is not treated as a repeatable pattern.
+    """
+    notes = []
+    if base_score < HARD_FLOOR_CUTOFF:
+        return 0.0, notes
+    if not king_profile:
+        return 0.0, notes
+
+    sample_size = king_profile.get("sample_size") or 0
+    if sample_size < KING_PATTERN_MIN_SAMPLE_SIZE:
+        return 0.0, notes
+
+    centroid = king_profile.get("centroid") or {}
+    candidate_values = {
+        "liquidity_lp_integrity": liq_pts,
+        "holder_distribution": holder_pts,
+        "momentum_quality": momentum_pts,
+        "wallet_deployer_behavior": wallet_pts,
+    }
+
+    closeness_scores = []
+    for key, scale in _KING_COMPONENT_SCALES.items():
+        king_value = centroid.get(key)
+        if king_value is None:
+            continue
+        diff = abs(candidate_values[key] - king_value) / scale
+        closeness_scores.append(max(0.0, 1.0 - diff))
+
+    if len(closeness_scores) < 2:
+        return 0.0, notes
+
+    similarity = sum(closeness_scores) / len(closeness_scores)
+    if similarity < KING_PATTERN_MIN_SIMILARITY:
+        return 0.0, notes
+
+    bonus = KING_PATTERN_MAX_BONUS * (
+        (similarity - KING_PATTERN_MIN_SIMILARITY) / (1.0 - KING_PATTERN_MIN_SIMILARITY)
+    )
+    bonus = round(min(KING_PATTERN_MAX_BONUS, bonus), 2)
+    if bonus > 0:
+        notes.append(
+            f"Resembles {sample_size} proven multi-milestone winner"
+            f"{'s' if sample_size != 1 else ''} ({similarity * 100:.0f}% match)"
+        )
+    return bonus, notes
+
+
 def _estimate_graduation_probability(data: dict, holder_analysis: dict, contract: str) -> tuple[float, float, list[str]]:
     """
     Pump.fun graduation-probability heuristic. Returns
@@ -1044,6 +1142,7 @@ def score_candidate(
     contract: str,
     smart_money: list | None = None,
     whale_holders: list | None = None,
+    king_profile: dict | None = None,
 ) -> dict:
     """
     Full conviction scoring pass for a candidate that has already
@@ -1057,6 +1156,11 @@ def score_candidate(
     compatible — any existing caller that doesn't pass them scores
     exactly as before (bonus simply evaluates to 0). See
     _smart_money_whale_bonus() docstring for what they represent.
+
+    `king_profile` is likewise optional and backward compatible -- the
+    output of domain.intelligence.king_token_profile.
+    get_cached_king_profile(). See _king_pattern_bonus() docstring for
+    what it represents.
     """
     sec = sec or {}
     holder_analysis = holder_analysis or {}
@@ -1070,6 +1174,9 @@ def score_candidate(
     base_score = liq_pts + holder_pts + momentum_pts + wallet_pts
     multiplier, social_notes = _narrative_social_multiplier(data, base_score)
     smart_whale_bonus, smart_whale_notes = _smart_money_whale_bonus(base_score, smart_money, whale_holders)
+    king_bonus, king_notes = _king_pattern_bonus(
+        base_score, liq_pts, holder_pts, momentum_pts, wallet_pts, king_profile,
+    )
     grad_probability, grad_bonus, grad_notes = _estimate_graduation_probability(data, holder_analysis, contract)
     grad_bonus = grad_bonus if base_score >= HARD_FLOOR_CUTOFF else 0.0
     pump_probability, pump_prob_notes = _estimate_pump_probability(
@@ -1085,7 +1192,7 @@ def score_candidate(
     # behind it. Every category's own docstring says "additive-only,
     # can never rescue a weak token" — this is what actually makes that
     # true in aggregate, not just per-category.
-    total_bonus = min(multiplier + smart_whale_bonus + grad_bonus, MAX_MULTIPLIER)
+    total_bonus = min(multiplier + smart_whale_bonus + grad_bonus + king_bonus, MAX_MULTIPLIER)
     final_score = min(100.0, base_score + total_bonus)
 
     # Blueprint 1.3 absolute floor: a base_score below HARD_FLOOR_CUTOFF
@@ -1100,7 +1207,7 @@ def score_candidate(
     # block for why that silently breaks the whole Signal Engine.
     eligible = base_score >= HARD_FLOOR_CUTOFF
 
-    all_notes = liq_notes + holder_notes + momentum_notes + wallet_notes + social_notes + smart_whale_notes + grad_notes + pump_prob_notes
+    all_notes = liq_notes + holder_notes + momentum_notes + wallet_notes + social_notes + smart_whale_notes + king_notes + grad_notes + pump_prob_notes
     # Most relevant few, for the alert's "why" line (Blueprint 4.3).
     reasons = all_notes[:4] if all_notes else ["Cleared all quality gates"]
 
@@ -1111,11 +1218,13 @@ def score_candidate(
         "wallet_deployer_behavior": round(wallet_pts, 1),
         "narrative_social_multiplier": round(multiplier, 1),
         "smart_money_whale_bonus": round(smart_whale_bonus, 1),
+        "king_pattern_bonus": round(king_bonus, 1),
+        "king_profile_sample_size": (king_profile or {}).get("sample_size", 0),
         "graduation_probability": grad_probability,
         "graduation_bonus": round(grad_bonus, 1),
         "pump_probability": pump_probability,
         "total_bonus_applied": round(total_bonus, 1),
-        "total_bonus_capped": (multiplier + smart_whale_bonus + grad_bonus) > MAX_MULTIPLIER,
+        "total_bonus_capped": (multiplier + smart_whale_bonus + grad_bonus + king_bonus) > MAX_MULTIPLIER,
     }
 
     return {

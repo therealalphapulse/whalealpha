@@ -24,6 +24,15 @@ deployer history, cross-provider price agreement) are simply omitted
 _build_pump_card_text() already tolerates missing/None values for
 these fields, so the shared card degrades gracefully rather than
 guessing at chain-specific risk it cannot actually evaluate.
+
+Both chains DO share one more enrichment: the King Token profile
+(domain.intelligence.king_token_profile) -- a small, cached, bounded
+scoring bonus for candidates that resemble this bot's own proven
+multi-milestone winners. It is fetched once per validation call and
+handed to score_candidate() on both paths below; see
+domain.signals.scoring._king_pattern_bonus() for exactly how it's
+used (additive-only, capped, never able to rescue a token that failed
+a hard gate).
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ import logging
 
 from config.settings import ROBINHOOD_CHAIN_GOPLUS_ID, ROBINHOOD_REQUIRE_SECURITY_CHECK
 from domain.intelligence.holders import get_holder_analysis
+from domain.intelligence.king_token_profile import get_cached_king_profile
 from domain.signals.scoring import hard_reject_reasons, score_candidate
 from providers.marketdata.dexscreener import get_token_card_info
 from providers.marketdata.goplus import check_token_security, check_token_security_for_chain
@@ -55,6 +65,16 @@ async def build_validated_candidate(
         token must not be alerted on ("Existing hard-reject conditions
         remain authoritative" -- this function never overrides them).
     """
+    king_profile = None
+    try:
+        king_profile = await get_cached_king_profile()
+    except Exception as e:
+        # Best-effort enrichment -- a King-profile lookup failure must
+        # never block validation; score_candidate() already treats
+        # king_profile=None as "no bonus", same as any caller that
+        # predates this enrichment.
+        logger.warning(f"King token profile lookup failed for {contract}: {e}")
+
     if chain == "solana":
         data = prefetched_data or await get_token_card_info(contract, "solana")
         if not data:
@@ -69,7 +89,7 @@ async def build_validated_candidate(
         if reasons:
             return None, reasons
 
-        pump = score_candidate(data, sec, holder_analysis, holders, contract)
+        pump = score_candidate(data, sec, holder_analysis, holders, contract, king_profile=king_profile)
 
         candidate = {
             "contract": contract,
@@ -111,7 +131,7 @@ async def build_validated_candidate(
     if reasons:
         return None, reasons
 
-    pump = score_candidate(data, sec, None, None, contract)
+    pump = score_candidate(data, sec, None, None, contract, king_profile=king_profile)
 
     candidate = {
         "contract": contract,
