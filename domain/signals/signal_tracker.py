@@ -111,6 +111,7 @@ async def migrate_signal_schema():
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'ENTRY'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'PCT_25'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'PCT_50'",
+        "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'PCT_75'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'TWO_X'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'THREE_X'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'FOUR_X'",
@@ -123,6 +124,7 @@ async def migrate_signal_schema():
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS 'entry'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS '25pct'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS '50pct'",
+        "ALTER TYPE milestone ADD VALUE IF NOT EXISTS '75pct'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS '2x'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS '3x'",
         "ALTER TYPE milestone ADD VALUE IF NOT EXISTS '4x'",
@@ -535,6 +537,7 @@ def _milestone_enum(label: str) -> Milestone:
     mapping = {
         "+25%": Milestone.PCT_25,
         "+50%": Milestone.PCT_50,
+        "+75%": Milestone.PCT_75,
         "2X": Milestone.TWO_X,
         "3X": Milestone.THREE_X,
         "4X": Milestone.FOUR_X,
@@ -572,7 +575,7 @@ def _milestone_enum(label: str) -> Milestone:
 #      correct named milestone.
 #
 # _milestones_crossed() replaces that with an explicit, pure function over
-# the fixed ladder (+25% -> +50% -> 2X -> 3X -> ... -> NX indefinitely) that
+# the fixed ladder (+25% -> +50% -> +75% -> 2X -> 3X -> ... -> NX indefinitely) that
 # returns every rung in (last_alerted, gain], in order, so the caller can
 # fire one alert per rung — never zero (missed) and never more than once
 # per rung (spam/duplicate), regardless of how far the price jumped in a
@@ -586,7 +589,7 @@ _MAX_MILESTONES_PER_POLL = 500  # safety cap: guards against a runaway loop
 def _milestones_crossed(last_alerted: float, gain: float) -> list:
     """
     Returns every Quote Alert ladder rung in (last_alerted, gain], ascending,
-    as (threshold, label) pairs: (1.25, "+25%"), (1.5, "+50%"),
+    as (threshold, label) pairs: (1.25, "+25%"), (1.5, "+50%"), (1.75, "+75%"),
     (2.0, "2X"), (3.0, "3X"), ... continuing for every integer X.
     """
     crossed = []
@@ -595,6 +598,8 @@ def _milestones_crossed(last_alerted: float, gain: float) -> list:
         crossed.append((1.25, "+25%"))
     if last_alerted < 1.50 <= gain:
         crossed.append((1.50, "+50%"))
+    if last_alerted < 1.75 <= gain:
+        crossed.append((1.75, "+75%"))
 
     next_x = max(2, math.floor(last_alerted) + 1)
     while next_x <= gain and len(crossed) < _MAX_MILESTONES_PER_POLL:

@@ -21,8 +21,8 @@ never more than once per rung (duplicate/spam) — regardless of how far the
 price moved in a single poll. This file exercises it directly, plus
 _milestone_enum()'s mapping of ladder labels to the DB enum bucket.
 
-Ladder under test: +25% -> +50% -> 2X -> 3X -> ... -> NX, for every integer
-X indefinitely.
+Ladder under test: +25% -> +50% -> +75% -> 2X -> 3X -> ... -> NX, for every
+integer X indefinitely.
 """
 
 import os
@@ -71,8 +71,11 @@ class SingleRungBoundaryTests(unittest.TestCase):
     def test_pct_50_boundary_from_pct_25(self):
         self.assertEqual(_milestones_crossed(1.25, 1.50), [(1.50, "+50%")])
 
-    def test_2x_boundary_from_pct_50(self):
-        self.assertEqual(_milestones_crossed(1.50, 2.0), [(2.0, "2X")])
+    def test_pct_75_boundary_from_pct_50(self):
+        self.assertEqual(_milestones_crossed(1.50, 1.75), [(1.75, "+75%")])
+
+    def test_2x_boundary_from_pct_75(self):
+        self.assertEqual(_milestones_crossed(1.75, 2.0), [(2.0, "2X")])
 
     def test_3x_boundary_from_2x(self):
         self.assertEqual(_milestones_crossed(2.0, 3.0), [(3.0, "3X")])
@@ -101,10 +104,10 @@ class MultiMilestoneJumpTests(unittest.TestCase):
     """A price that jumps several rungs in one poll must yield ALL of them,
     in order, without skipping or duplicating any."""
 
-    def test_jump_from_start_straight_to_2x_hits_25_50_2x(self):
+    def test_jump_from_start_straight_to_2x_hits_25_50_75_2x(self):
         self.assertEqual(
             _milestones_crossed(1.0, 2.5),
-            [(1.25, "+25%"), (1.50, "+50%"), (2.0, "2X")],
+            [(1.25, "+25%"), (1.50, "+50%"), (1.75, "+75%"), (2.0, "2X")],
         )
 
     def test_jump_from_start_to_9x_hits_every_rung_in_order(self):
@@ -113,6 +116,7 @@ class MultiMilestoneJumpTests(unittest.TestCase):
             [
                 (1.25, "+25%"),
                 (1.50, "+50%"),
+                (1.75, "+75%"),
                 (2.0, "2X"),
                 (3.0, "3X"),
                 (4.0, "4X"),
@@ -154,6 +158,7 @@ class MilestoneEnumMappingTests(unittest.TestCase):
     def test_named_rungs_map_to_their_own_enum_value(self):
         self.assertEqual(_milestone_enum("+25%"), Milestone.PCT_25)
         self.assertEqual(_milestone_enum("+50%"), Milestone.PCT_50)
+        self.assertEqual(_milestone_enum("+75%"), Milestone.PCT_75)
         self.assertEqual(_milestone_enum("2X"), Milestone.TWO_X)
         self.assertEqual(_milestone_enum("3X"), Milestone.THREE_X)
         self.assertEqual(_milestone_enum("4X"), Milestone.FOUR_X)

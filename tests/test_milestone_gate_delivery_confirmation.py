@@ -152,7 +152,7 @@ class MilestoneGateAllowsUndeliveredInitialAlertTests(unittest.TestCase):
             last_alerted=1.0,
         )
         self.assertTrue(delivered)
-        self.assertEqual(crossed, [(1.25, "+25%"), (1.50, "+50%"), (2.0, "2X"), (3.0, "3X")])
+        self.assertEqual(crossed, [(1.25, "+25%"), (1.50, "+50%"), (1.75, "+75%"), (2.0, "2X"), (3.0, "3X")])
 
     def test_not_currently_trading_still_suppresses_regardless_of_delivery(self):
         # Unrelated filter (24h trading volume gate) must be preserved.
