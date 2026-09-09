@@ -677,19 +677,55 @@ ROBINHOOD_MIN_VOLUME_1H_USD = _env_float("ROBINHOOD_MIN_VOLUME_1H_USD", 2_500.0)
 ROBINHOOD_MIN_TXNS_1H = _env_int("ROBINHOOD_MIN_TXNS_1H", 5)
 ROBINHOOD_MAX_MC_LIQUIDITY_RATIO = _env_float("ROBINHOOD_MAX_MC_LIQUIDITY_RATIO", 50.0)
 
-# Potential-score weights. Configurable so the exact scoring formula can
-# be tuned without a code change; raw volume alone is deliberately never
-# sufficient on its own (kept as one weighted component among several).
+# ── Potential-score weights (FRESH lane) ────────────────────────────
+# v2 rewrite: the original formula counted the same underlying "price
+# already pumped in the last hour" signal TWICE -- once as "momentum"
+# and again as a "liquidity_change" proxy that, per its own old code
+# comment, was literally price_change_1h again (DexScreener has no real
+# liquidity-change field). That double-counted, unbounded reward for
+# tokens that had ALREADY spiked hard was the single biggest driver of
+# "alert fires right as the token tops out, then dumps" -- rewarding an
+# already-completed move looks nothing like rewarding an early one.
+# liquidity_change/momentum are retired; momentum_quality replaces both
+# with a capped, multi-timeframe-aware component (see
+# domain.signals.robinhood_discovery.score_fresh_potential) that
+# rewards moderate/sustained/aligned momentum and actively penalizes
+# overextension instead of just failing to reward it further.
 ROBINHOOD_SCORE_WEIGHT_LIQUIDITY = _env_float("ROBINHOOD_SCORE_WEIGHT_LIQUIDITY", 0.20)
-ROBINHOOD_SCORE_WEIGHT_LIQUIDITY_CHANGE = _env_float("ROBINHOOD_SCORE_WEIGHT_LIQUIDITY_CHANGE", 0.10)
 ROBINHOOD_SCORE_WEIGHT_VOLUME = _env_float("ROBINHOOD_SCORE_WEIGHT_VOLUME", 0.15)
 ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION = _env_float(
     "ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION", 0.20
 )
 ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE = _env_float("ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE", 0.15)
 ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION = _env_float("ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION", 0.10)
-ROBINHOOD_SCORE_WEIGHT_MOMENTUM = _env_float("ROBINHOOD_SCORE_WEIGHT_MOMENTUM", 0.10)
+ROBINHOOD_SCORE_WEIGHT_MOMENTUM_QUALITY = _env_float("ROBINHOOD_SCORE_WEIGHT_MOMENTUM_QUALITY", 0.20)
 ROBINHOOD_MIN_SCORE_TO_ALERT = _env_float("ROBINHOOD_MIN_SCORE_TO_ALERT", 60.0)
+
+# A FRESH candidate already up beyond these within the given window is
+# treated as more likely near a local top than "about to pump" --
+# momentum_quality actively penalizes past these thresholds, it doesn't
+# just stop rewarding further gains.
+ROBINHOOD_FRESH_MAX_PRICE_CHANGE_1H_PCT = _env_float("ROBINHOOD_FRESH_MAX_PRICE_CHANGE_1H_PCT", 80.0)
+ROBINHOOD_FRESH_MAX_PRICE_CHANGE_5M_PCT = _env_float("ROBINHOOD_FRESH_MAX_PRICE_CHANGE_5M_PCT", 35.0)
+# Only the top N FRESH candidates BY SCORE get alerted each cycle --
+# genuine "top picks", not just everything that clears a static bar.
+ROBINHOOD_FRESH_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_FRESH_TOP_N_PER_CYCLE", 2)
+
+# ── REVIVAL lane ("dumped, now showing a genuine second wind") ─────
+# The old "renewed activity" bucket alerted on ANY older token with
+# rising volume -- including ones that had simply been pumping the
+# whole time and never actually corrected first, which isn't a revival
+# at all. This lane now requires real evidence of a dump-then-recovery
+# shape, tracked across cycles in our own history table
+# (models.robinhood_token_watch.RobinhoodTokenWatch, populated by
+# domain.signals.robinhood_discovery._update_token_watch) rather than
+# DexScreener's rolling windows alone, since a genuine "second wind" is
+# a multi-cycle pattern a single snapshot can't show.
+ROBINHOOD_REVIVAL_MIN_SAMPLES = _env_int("ROBINHOOD_REVIVAL_MIN_SAMPLES", 3)
+ROBINHOOD_REVIVAL_MIN_DRAWDOWN_PCT = _env_float("ROBINHOOD_REVIVAL_MIN_DRAWDOWN_PCT", 40.0)
+ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT = _env_float("ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT", 15.0)
+ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT = _env_float("ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT", 85.0)
+ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE", 2)
 
 ROBINHOOD_COOLDOWN_HOURS = _env_float("ROBINHOOD_COOLDOWN_HOURS", 24.0)
 # Comma-separated chat IDs / @usernames for ROBINHOOD_DISCOVERY alerts.
