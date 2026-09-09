@@ -46,6 +46,8 @@ from models.real_exit_rule import RealExitRule  # noqa: F401
 from models.real_limit_order import RealLimitOrder  # noqa: F401
 from models.real_trade import RealTrade  # noqa: F401
 from models.real_wallet import RealWallet  # noqa: F401
+from models.robinhood_discovery_signal import RobinhoodDiscoverySignal  # noqa: F401
+from models.robinhood_token_watch import RobinhoodTokenWatch  # noqa: F401
 from models.signal_event import Milestone, SignalEvent  # noqa: F401
 from models.signal_milestone import SignalMilestone  # noqa: F401
 from models.signal_token import SignalToken  # noqa: F401
@@ -53,6 +55,7 @@ from models.system_flag import SystemFlag  # noqa: F401
 from models.tracked_wallet import TrackedWallet  # noqa: F401
 from models.user import User  # noqa: F401
 from models.wallet_withdrawal import WalletWithdrawal  # noqa: F401
+from models.wallet_consensus_signal import WalletConsensusSignal  # noqa: F401
 from models.watchlist import Watchlist  # noqa: F401
 
 __all__ = [
@@ -86,6 +89,8 @@ __all__ = [
     "RealLimitOrder",
     "RealTrade",
     "RealWallet",
+    "RobinhoodDiscoverySignal",
+    "RobinhoodTokenWatch",
     "Milestone",
     "SignalEvent",
     "SignalMilestone",
@@ -93,6 +98,7 @@ __all__ = [
     "SystemFlag",
     "TrackedWallet",
     "User",
+    "WalletConsensusSignal",
     "WalletWithdrawal",
     "Watchlist",
 ]
