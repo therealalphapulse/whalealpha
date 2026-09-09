@@ -10,6 +10,7 @@ class Milestone(str, Enum):
     ENTRY = "entry"
     PCT_25 = "25pct"
     PCT_50 = "50pct"
+    PCT_75 = "75pct"
     TWO_X = "2x"
     THREE_X = "3x"
     FOUR_X = "4x"
