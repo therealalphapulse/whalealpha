@@ -46,6 +46,10 @@ from models.real_exit_rule import RealExitRule  # noqa: F401
 from models.real_limit_order import RealLimitOrder  # noqa: F401
 from models.real_trade import RealTrade  # noqa: F401
 from models.real_wallet import RealWallet  # noqa: F401
+from models.auto_trade_policy import AutoTradePolicy  # noqa: F401
+from models.auto_trade_position import AutoTradePosition  # noqa: F401
+from models.auto_trade_execution import AutoTradeExecution  # noqa: F401
+from models.auto_trade_claim import AutoTradeClaim  # noqa: F401
 from models.robinhood_discovery_signal import RobinhoodDiscoverySignal  # noqa: F401
 from models.robinhood_token_watch import RobinhoodTokenWatch  # noqa: F401
 from models.signal_event import Milestone, SignalEvent  # noqa: F401
@@ -89,6 +93,10 @@ __all__ = [
     "RealLimitOrder",
     "RealTrade",
     "RealWallet",
+    "AutoTradePolicy",
+    "AutoTradePosition",
+    "AutoTradeExecution",
+    "AutoTradeClaim",
     "RobinhoodDiscoverySignal",
     "RobinhoodTokenWatch",
     "Milestone",
