@@ -10,6 +10,15 @@ class SignalToken(Base):
     name = Column(String, nullable=True)
     symbol = Column(String, nullable=True)
 
+    # Discovery-engine origin (Discovery Engine A: Wallet Consensus and
+    # Discovery Engine B: Robinhood Chain also create SignalToken rows
+    # now -- see signal_tracker.create_signal_from_candidate()'s
+    # enforce_pumpfun_policy/chain params -- so the lifecycle loop and
+    # Quote Alert milestone system know which market to re-poll on).
+    # Nullable/defaulted so every pre-existing row (all classic Solana
+    # Pump.fun signals) reads as "solana" without a backfill.
+    chain = Column(String, nullable=True, default="solana")
+
     # Socials for Leaderboard
     twitter_url = Column(String, nullable=True)
     telegram_url = Column(String, nullable=True)

@@ -54,6 +54,7 @@ from domain.intelligence.funding_graph import get_funding_clusters
 from domain.signals.candidate_validation import build_validated_candidate
 from domain.signals.pump_radar import send_pump_card
 from domain.signals.channel_config import load_channel_ids
+from domain.signals.signal_tracker import create_signal_from_candidate, update_signal_message_ids
 
 logger = logging.getLogger("WhaleAlpha.WalletConsensusEngine")
 
@@ -295,6 +296,16 @@ async def run_wallet_consensus_cycle(bot=None) -> dict:
                 )
             extra_lines.append(f"⭐ Avg wallet reputation: {candidate['avg_reputation']}/100")
 
+            # Captured BEFORE `existing` is possibly reassigned just
+            # below -- same convention as robinhood_discovery.py's
+            # is_first_alert: the one moment a SignalToken row + message
+            # ids get created for this contract, so it joins
+            # signal_lifecycle_loop()'s Quote Alert milestone tracking.
+            # Every later re-alert on cooldown keeps updating the
+            # WalletConsensusSignal row below as before, but never
+            # touches SignalToken again.
+            is_first_alert = existing is None
+
             if existing is None:
                 existing = WalletConsensusSignal(token_contract=mint)
                 session.add(existing)
@@ -319,18 +330,37 @@ async def run_wallet_consensus_cycle(bot=None) -> dict:
             existing.last_alerted_at = _now()
             existing.cooldown_expires_at = _now() + timedelta(hours=WALLET_CONSENSUS_COOLDOWN_HOURS)
 
+            msg_ids = {}
             if bot is not None and channel_ids:
                 for chat_id in channel_ids:
                     try:
-                        await send_pump_card(
+                        sent = await send_pump_card(
                             bot, chat_id, card,
                             title=WALLET_CONSENSUS_TITLE,
                             extra_block=extra_lines,
                         )
+                        if is_first_alert and sent and hasattr(sent, "message_id"):
+                            msg_ids[str(chat_id)] = sent.message_id
                     except Exception as e:
                         logger.warning(f"Wallet consensus: send failed for {mint} -> {chat_id}: {e}")
 
             stats["signals_sent"] += 1
+
+            if is_first_alert:
+                # Best-effort: a failure here must never break the
+                # WalletConsensusSignal row/re-alert flow above, which
+                # has already been committed to `existing` in this same
+                # session regardless of what happens next.
+                try:
+                    created = await create_signal_from_candidate(
+                        {"contract": mint, "data": d, "pump": card.get("pump") or {}},
+                        enforce_pumpfun_policy=False,
+                        chain="solana",
+                    )
+                    if created and msg_ids:
+                        await update_signal_message_ids(mint, msg_ids)
+                except Exception as e:
+                    logger.error(f"Wallet consensus: SignalToken creation failed for {mint}: {e}")
 
         await session.commit()
 
