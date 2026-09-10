@@ -31,7 +31,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest
 
 from domain.trading.real.robinhood_wallet import get_real_wallet
-from domain.trading.real.robinhood_swap import get_eth_balance
+from domain.trading.real.robinhood_swap import get_native_balance as get_eth_balance
 from domain.intelligence.robinhood_wallet_portfolio import get_wallet_portfolio_value, format_usd
 
 from domain.trading.auto_trade import policy_service, position_manager, pnl
