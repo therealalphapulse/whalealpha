@@ -23,7 +23,7 @@ from infra.db.session import async_session, engine
 from models.auto_trade_policy import AutoTradePolicy
 
 from .constants import (
-    DEFAULT_SOL_PER_TRADE,
+    DEFAULT_ETH_PER_TRADE,
     DEFAULT_DAILY_TRADE_LIMIT,
     DEFAULT_MAX_OPEN_POSITIONS,
     DEFAULT_COOLDOWN_SECONDS,
@@ -86,7 +86,7 @@ async def get_or_create_policy(user_id: int) -> AutoTradePolicy:
     async with async_session() as session:
         policy = AutoTradePolicy(
             user_id=user_id,
-            buy_amount_sol=DEFAULT_SOL_PER_TRADE,
+            buy_amount_sol=DEFAULT_ETH_PER_TRADE,
             daily_trade_limit=DEFAULT_DAILY_TRADE_LIMIT,
             max_open_positions=DEFAULT_MAX_OPEN_POSITIONS,
             cooldown_seconds=DEFAULT_COOLDOWN_SECONDS,
@@ -125,7 +125,7 @@ async def update_policy_field(user_id: int, field: str, value) -> bool:
 def snapshot_policy(policy: AutoTradePolicy) -> TradePolicySnapshot:
     return TradePolicySnapshot(
         auto_trade_enabled=bool(policy.auto_trade_enabled),
-        buy_amount_sol=float(policy.buy_amount_sol or DEFAULT_SOL_PER_TRADE),
+        buy_amount_sol=float(policy.buy_amount_sol or DEFAULT_ETH_PER_TRADE),
         take_profit_pct=policy.take_profit_pct,
         stop_loss_pct=policy.stop_loss_pct,
         trailing_stop_enabled=bool(policy.trailing_stop_enabled),
@@ -233,7 +233,7 @@ async def migrate_auto_trade_schema() -> None:
     buy_amount_usdt -> buy_amount_sol: the per-trade size was stored and
     labeled as a USDT amount but spent as-is on-chain (never actually
     converted at the point of storage). Existing dollar-denominated values
-    can't be safely reinterpreted as a SOL amount, so the rename resets
+    can't be safely reinterpreted as a ETH amount, so the rename resets
     them to the new field's safe default -- this only fires once, the
     moment the old column is found and renamed; every boot after that the
     old column no longer exists, so this is a no-op.
@@ -250,8 +250,8 @@ async def migrate_auto_trade_schema() -> None:
                 WHERE table_name='auto_trade_policies' AND column_name='buy_amount_sol'
             ) THEN
                 ALTER TABLE auto_trade_policies RENAME COLUMN buy_amount_usdt TO buy_amount_sol;
-                UPDATE auto_trade_policies SET buy_amount_sol = {DEFAULT_SOL_PER_TRADE};
-                ALTER TABLE auto_trade_policies ALTER COLUMN buy_amount_sol SET DEFAULT {DEFAULT_SOL_PER_TRADE};
+                UPDATE auto_trade_policies SET buy_amount_sol = {DEFAULT_ETH_PER_TRADE};
+                ALTER TABLE auto_trade_policies ALTER COLUMN buy_amount_sol SET DEFAULT {DEFAULT_ETH_PER_TRADE};
             END IF;
         END $$;
         """,
@@ -259,7 +259,7 @@ async def migrate_auto_trade_schema() -> None:
         # (init_db()'s create_all would already create this correctly from
         # the model, but this keeps the function self-sufficient like its
         # siblings).
-        f"ALTER TABLE auto_trade_policies ADD COLUMN IF NOT EXISTS buy_amount_sol FLOAT DEFAULT {DEFAULT_SOL_PER_TRADE}",
+        f"ALTER TABLE auto_trade_policies ADD COLUMN IF NOT EXISTS buy_amount_sol FLOAT DEFAULT {DEFAULT_ETH_PER_TRADE}",
         # Trailing Activation (%) / Trailing Retracement (%): additive,
         # nullable columns for the Auto-Trade trailing-stop feature. NULL
         # preserves existing behavior (trailing arms immediately, and the

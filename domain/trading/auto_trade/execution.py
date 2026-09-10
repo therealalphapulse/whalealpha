@@ -3,7 +3,7 @@
 §11 (Buy Execution Engine), §12 (Transaction Confirmation), §13
 (Critical Retry Rule), §23 (Sell Execution), §24 (Sell Retry Logic).
 
-Thin orchestration layer over domain/trading/real/jupiter_swap.py's
+Thin orchestration layer over domain/trading/real/robinhood_swap.py's
 existing quote/build/sign/send/confirm/on-chain-delta primitives --
 deliberately NOT over real_trade_engine.py, so this stays isolated from
 models/real_trade.py while reusing the shared, battle-tested execution
@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import logging
 
-from domain.trading.real import jupiter_swap
-from domain.trading.real.jupiter_swap import WRAPPED_SOL_MINT, SwapError
-from domain.trading.real.solana_wallet import get_real_wallet, PRIORITY_FEE_TIERS
+from domain.trading.real import robinhood_swap as robinhood_swap
+from domain.trading.real.robinhood_swap import NATIVE_ETH_ADDRESS, SwapError
+from domain.trading.real.robinhood_wallet import get_real_wallet, PRIORITY_FEE_TIERS
 from infra.kms.wallet_crypto import decrypt_secret
 
 logger = logging.getLogger("AlphaPulse.AutoTrade.Execution")
@@ -43,21 +43,21 @@ async def execute_buy_swap(
     slippage_bps: int = 150,
     priority_fee_tier: str = "auto",
 ) -> dict:
-    """SOL -> token buy."""
+    """ETH -> token buy."""
     wallet = await get_real_wallet(user_id)
     if not wallet:
         return {"ok": False, "uncertain": False, "reason": "No active wallet."}
     if sol_amount <= 0:
-        return {"ok": False, "uncertain": False, "reason": "Amount must be greater than 0 SOL."}
+        return {"ok": False, "uncertain": False, "reason": "Amount must be greater than 0 ETH."}
 
-    lamports = int(sol_amount * 1_000_000_000)
-    priority_fee_lamports = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
+    wei = int(sol_amount * 1_000_000_000_000_000_000)
+    priority_fee_wei = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
 
     try:
-        quote = await jupiter_swap.get_quote(
-            input_mint=WRAPPED_SOL_MINT, output_mint=contract, amount_lamports=lamports, slippage_bps=slippage_bps
+        quote = await robinhood_swap.get_quote(
+            input_mint=NATIVE_ETH_ADDRESS, output_mint=contract, amount_wei=wei, slippage_bps=slippage_bps
         )
-        tx_b64 = await jupiter_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_lamports=priority_fee_lamports)
+        tx_b64 = await robinhood_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_wei=priority_fee_wei)
     except SwapError as e:
         logger.warning("[AutoTrade] buy quote/build failed user=%s contract=%s: %s", user_id, contract, e)
         return {"ok": False, "uncertain": False, "reason": str(e)}
@@ -67,7 +67,7 @@ async def execute_buy_swap(
 
     secret_bytes = decrypt_secret(wallet.encrypted_secret, wallet.encryption_nonce)
     try:
-        send_result = await jupiter_swap.sign_send_and_confirm(tx_b64, secret_bytes)
+        send_result = await robinhood_swap.sign_send_and_confirm(tx_b64, secret_bytes)
     except SwapError as e:
         logger.warning("[AutoTrade] buy sign/send failed user=%s contract=%s: %s", user_id, contract, e)
         return {"ok": False, "uncertain": True, "reason": str(e)}
@@ -86,7 +86,7 @@ async def execute_buy_swap(
 
     signature = send_result["signature"]
     try:
-        decimals = await jupiter_swap.get_mint_decimals(contract)
+        decimals = await robinhood_swap.get_mint_decimals(contract)
     except SwapError:
         decimals = _output_decimals(quote)
 
@@ -95,7 +95,7 @@ async def execute_buy_swap(
     quantity_source = "quote_estimate"
     onchain_fill_confirmed = False
     try:
-        fill = await jupiter_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
+        fill = await robinhood_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
         if fill["token_delta_raw"] > 0:
             token_quantity = fill["token_delta_raw"] / (10 ** decimals)
             quantity_source = "onchain_confirmed"
@@ -132,7 +132,7 @@ async def execute_sell_swap(
     slippage_bps: int = 150,
     priority_fee_tier: str = "auto",
 ) -> dict:
-    """Token -> SOL sell for `token_amount` (UI units, not raw)."""
+    """Token -> ETH sell for `token_amount` (UI units, not raw)."""
     wallet = await get_real_wallet(user_id)
     if not wallet:
         return {"ok": False, "uncertain": False, "reason": "No active wallet."}
@@ -140,13 +140,13 @@ async def execute_sell_swap(
         return {"ok": False, "uncertain": False, "reason": "Nothing to sell."}
 
     raw_amount = int(token_amount * (10 ** decimals))
-    priority_fee_lamports = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
+    priority_fee_wei = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
 
     try:
-        quote = await jupiter_swap.get_quote(
-            input_mint=contract, output_mint=WRAPPED_SOL_MINT, amount_lamports=raw_amount, slippage_bps=slippage_bps
+        quote = await robinhood_swap.get_quote(
+            input_mint=contract, output_mint=NATIVE_ETH_ADDRESS, amount_wei=raw_amount, slippage_bps=slippage_bps
         )
-        tx_b64 = await jupiter_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_lamports=priority_fee_lamports)
+        tx_b64 = await robinhood_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_wei=priority_fee_wei)
     except SwapError as e:
         logger.warning("[AutoTrade] sell quote/build failed user=%s contract=%s: %s", user_id, contract, e)
         return {"ok": False, "uncertain": False, "reason": str(e)}
@@ -156,7 +156,7 @@ async def execute_sell_swap(
 
     secret_bytes = decrypt_secret(wallet.encrypted_secret, wallet.encryption_nonce)
     try:
-        send_result = await jupiter_swap.sign_send_and_confirm(tx_b64, secret_bytes)
+        send_result = await robinhood_swap.sign_send_and_confirm(tx_b64, secret_bytes)
     except SwapError as e:
         logger.warning("[AutoTrade] sell sign/send failed user=%s contract=%s: %s", user_id, contract, e)
         return {"ok": False, "uncertain": True, "reason": str(e)}
@@ -178,9 +178,9 @@ async def execute_sell_swap(
     actual_amount_sold = token_amount
     onchain_confirmed = False
     try:
-        fill = await jupiter_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
-        if fill["sol_delta_lamports"] and fill["sol_delta_lamports"] > 0:
-            sol_received = fill["sol_delta_lamports"] / 1_000_000_000
+        fill = await robinhood_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
+        if fill["sol_delta_wei"] and fill["sol_delta_wei"] > 0:
+            sol_received = fill["sol_delta_wei"] / 1_000_000_000_000_000_000
             onchain_confirmed = True
         if fill["token_delta_raw"] and fill["token_delta_raw"] < 0:
             actual_amount_sold = abs(fill["token_delta_raw"]) / (10 ** decimals)
@@ -194,7 +194,7 @@ async def execute_sell_swap(
         }
 
     if sol_received is None:
-        sol_received = float(quote.get("outAmount", 0)) / 1_000_000_000
+        sol_received = float(quote.get("outAmount", 0)) / 1_000_000_000_000_000_000
 
     return {
         "ok": True, "uncertain": False,

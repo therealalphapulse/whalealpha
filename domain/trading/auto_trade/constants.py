@@ -6,7 +6,8 @@ policy_service.py, risk_gate.py, and orchestrator.py can share it
 without import cycles.
 """
 
-DEFAULT_SOL_PER_TRADE = 0.1
+DEFAULT_ETH_PER_TRADE = 0.01
+DEFAULT_ETH_PER_TRADE = DEFAULT_ETH_PER_TRADE
 DEFAULT_DAILY_TRADE_LIMIT = 5
 DEFAULT_MAX_OPEN_POSITIONS = 5
 DEFAULT_COOLDOWN_SECONDS = 120

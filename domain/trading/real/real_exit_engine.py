@@ -30,7 +30,7 @@ from infra.db.session import async_session
 from models.real_exit_rule import RealExitRule
 from models.real_trade import RealTrade
 from providers.marketdata.dexscreener import get_token_card_info
-from domain.trading.real.solana_wallet import get_wallet_settings
+from domain.trading.real.robinhood_wallet import get_wallet_settings
 from domain.trading.real import real_trade_engine
 
 logger = logging.getLogger("AlphaPulse.RealExitEngine")
@@ -183,7 +183,7 @@ async def _fire_rule(bot, rule: RealExitRule, trade: RealTrade, current_price: f
     if not result["ok"] and result["reason"] not in _TERMINAL_SELL_REASONS:
         # The rule condition has already been met (price crossed the
         # trigger threshold) — that decision is final. Everything past
-        # this point (on-chain balance verification, the Jupiter
+        # this point (on-chain balance verification, the Uniswap
         # quote/build/broadcast, an on-chain rejection because the price
         # kept moving and slippage was exceeded, or any other RPC/network
         # hiccup) is an *execution* concern, not a re-litigation of
@@ -233,7 +233,7 @@ async def _fire_rule(bot, rule: RealExitRule, trade: RealTrade, current_price: f
             bot, rule.user_id,
             f"{KIND_LABELS[rule.kind]} triggered on {trade.symbol or trade.contract[:6]} at +{rule.trigger_pct if rule.kind != 'sl' else -rule.trigger_pct}% "
             f"from entry.\nSold {rule.sell_fraction * 100:.0f}% of the position.\n"
-            f"Received: {result.get('sol_received', 0):.4f} SOL\n"
+            f"Received: {result.get('sol_received', 0):.4f} ETH\n"
             f"Tx: <code>{result['signature']}</code>",
         )
     else:

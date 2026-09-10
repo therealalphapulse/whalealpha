@@ -5,7 +5,7 @@ single-screen readout of the Auto-Trade Engine's view of the user's
 wallet -- balance, open positions, Auto-Trade status, buy amount, and
 TP/SL settings -- plus inline buttons to manage those settings directly.
 
-This is a NEW, separate command from the existing /realwallet ("rw")
+This is a NEW, separate command from the existing /wallet ("rw")
 menu (app_platform/commands/real_wallet.py), which remains completely
 untouched. /wallet only reads the user's RealWallet (existing, shared
 infra) for address/balance, plus this engine's own AutoTradePolicy /
@@ -13,7 +13,7 @@ AutoTradePosition tables -- it does not read or write anything the
 existing AutoBuy implementation owns.
 
 The settings buttons below mirror the exact edit-flow convention already
-used by /realwallet's Auto-Buy Filters panel (app_platform/commands/
+used by /wallet's Auto-Buy Filters panel (app_platform/commands/
 real_wallet.py's "rw:auto_filter_edit:<field>" -> FSM state -> validate
 -> update_filter()), just under this command's own "atw:" callback-data
 namespace so it can never collide with that router.
@@ -30,14 +30,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest
 
-from domain.trading.real.solana_wallet import get_real_wallet
-from domain.trading.real.jupiter_swap import get_sol_balance
-from domain.intelligence.wallet_portfolio import get_wallet_portfolio_value, format_usd
+from domain.trading.real.robinhood_wallet import get_real_wallet
+from domain.trading.real.robinhood_swap import get_eth_balance
+from domain.intelligence.robinhood_wallet_portfolio import get_wallet_portfolio_value, format_usd
 
 from domain.trading.auto_trade import policy_service, position_manager, pnl
 from app_platform.keyboards.auto_trade_wallet import auto_trade_wallet_menu_kb
+from app_platform.keyboards.real_wallet import real_wallet_onboarding_kb
 
-logger = logging.getLogger("AlphaPulse.AutoTradeWalletCmd")
+logger = logging.getLogger("WhaleAlpha.AutoTradeWalletCmd")
 router = Router()
 
 
@@ -47,7 +48,7 @@ class AutoTradeWalletStates(StatesGroup):
 
 # Labels shown in the "send a value" prompt for each editable field.
 _EDIT_FIELD_LABELS = {
-    "buy_amount_sol": "buy amount in SOL (e.g. 0.1)",
+    "buy_amount_sol": "buy amount in ETH (e.g. 0.1)",
     "take_profit_pct": "take-profit percent (e.g. 50)",
     "stop_loss_pct": "stop-loss percent (e.g. 30)",
     "trailing_stop_pct": "trailing-stop percent (e.g. 15)",
@@ -83,16 +84,16 @@ async def _build_wallet_text(user_id: int) -> str:
         return (
             "\U0001F4BC <b>Auto-Trade Wallet</b>\n\n"
             "You don't have an active Real Wallet yet. Set one up with "
-            "/realwallet first, then come back here to configure Auto-Trade."
+            "/wallet first, then come back here to configure Auto-Trade."
         )
 
     policy = await policy_service.get_or_create_policy(user_id)
 
     try:
-        sol_balance = await get_sol_balance(wallet.public_key)
+        eth_balance = await get_eth_balance(wallet.public_key)
     except Exception as e:
-        logger.error("[AutoTradeWallet] SOL balance fetch failed for %s: %s", wallet.public_key, e)
-        sol_balance = None
+        logger.error("[AutoTradeWallet] ETH balance fetch failed for %s: %s", wallet.public_key, e)
+        eth_balance = None
 
     try:
         portfolio = await get_wallet_portfolio_value(wallet.public_key)
@@ -104,7 +105,7 @@ async def _build_wallet_text(user_id: int) -> str:
     live_positions = await position_manager.get_live_positions_view(user_id)
     summary = await pnl.get_realized_pnl_summary(user_id)
 
-    bal_line = f"{sol_balance:.4f} SOL" if sol_balance is not None else "\u2014"
+    bal_line = f"{eth_balance:.4f} ETH" if eth_balance is not None else "\u2014"
     value_line = format_usd(portfolio_value_usd) if portfolio_value_usd is not None else "\u2014"
 
     tp_line = f"+{policy.take_profit_pct:g}%" if policy.take_profit_pct else "\u2014"
@@ -124,11 +125,11 @@ async def _build_wallet_text(user_id: int) -> str:
         "",
         f"\U0001F45B <b>Address:</b>\n<code>{wallet.public_key}</code>",
         "",
-        f"\U0001F4B0 <b>SOL Balance:</b> {bal_line}",
+        f"\U0001F4B0 <b>ETH Balance:</b> {bal_line}",
         f"\U0001F4C8 <b>Portfolio Value:</b> {value_line}",
         "",
         f"\u2699\uFE0F <b>Auto-Trade:</b> {_status_line(policy)}",
-        f"\U0001F4B5 <b>Buy Amount:</b> {policy.buy_amount_sol:.4f} SOL per trade",
+        f"\U0001F4B5 <b>Buy Amount:</b> {policy.buy_amount_sol:.4f} ETH per trade",
         f"\U0001F3AF <b>Take-Profit:</b> {tp_line}  |  \U0001F6E1\uFE0F <b>Stop-Loss:</b> {sl_line}",
         f"\U0001F4C9 <b>Trailing Stop:</b> {trailing_line}",
     ]
@@ -149,7 +150,7 @@ async def _build_wallet_text(user_id: int) -> str:
             stale = " (price stale)" if view["price_stale"] else ""
             lines.append(
                 f"\u2022 {position.symbol or position.contract[:6]}: "
-                f"{view['current_value_sol']:.4f} SOL  ({roi}){stale}"
+                f"{view['current_value_sol']:.4f} ETH  ({roi}){stale}"
             )
         if len(live_positions) > 10:
             lines.append(f"\u2026and {len(live_positions) - 10} more.")
@@ -158,7 +159,7 @@ async def _build_wallet_text(user_id: int) -> str:
 
     lines.append("")
     lines.append(
-        f"\U0001F4D2 <b>Realized P&amp;L:</b> {summary.realized_pnl_sol:+.4f} SOL "
+        f"\U0001F4D2 <b>Realized P&amp;L:</b> {summary.realized_pnl_sol:+.4f} ETH "
         f"({_fmt_pct(summary.realized_pnl_pct)}) across {summary.closed_trade_count} closed trades"
     )
     if summary.closed_trade_count:
@@ -166,7 +167,7 @@ async def _build_wallet_text(user_id: int) -> str:
 
     lines.append("")
     lines.append(
-        "Use the buttons below to manage Auto-Trade, or /realwallet to manage your wallet."
+        "Use the buttons below to manage Auto-Trade, or /wallet to manage your wallet."
     )
 
     return "\n".join(lines)
@@ -176,7 +177,7 @@ async def _render_wallet(user_id: int) -> tuple[str, InlineKeyboardMarkup | None
     text = await _build_wallet_text(user_id)
     wallet = await get_real_wallet(user_id)
     if not wallet:
-        return text, None
+        return text, real_wallet_onboarding_kb()
     policy = await policy_service.get_or_create_policy(user_id)
     return text, auto_trade_wallet_menu_kb(policy)
 
@@ -224,7 +225,7 @@ async def cb_toggle(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
     wallet = await get_real_wallet(user_id)
     if not wallet:
-        await callback.answer("Set up /realwallet first, then come back to turn Auto-Trade on.", show_alert=True)
+        await callback.answer("Set up /wallet first, then come back to turn Auto-Trade on.", show_alert=True)
         return
     policy = await policy_service.get_or_create_policy(user_id)
     new_value = not policy.auto_trade_enabled

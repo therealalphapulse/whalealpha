@@ -1,7 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from domain.trading.real.solana_wallet import AUTO_DAILY_CAP_PRESETS_SOL
+from domain.trading.real.robinhood_wallet import AUTO_DAILY_CAP_PRESETS_ETH
 
-BUY_PRESETS_SOL = [0.1, 0.5, 1.0, 2.0]
+BUY_PRESETS_ETH = [0.01, 0.05, 0.1, 0.25]
 SLIPPAGE_LABELS_BPS = {50: "0.5%", 100: "1%", 150: "1.5%", 300: "3%", 500: "5%"}
 PRIORITY_LABELS = {"auto": "⚙️ Auto", "fast": "🚀 Fast", "turbo": "⚡ Turbo"}
 
@@ -42,7 +42,7 @@ def real_wallet_export_warning_kb() -> InlineKeyboardMarkup:
 
 
 def real_wallet_buy_presets_kb(contract: str) -> InlineKeyboardMarkup:
-    preset_row = [InlineKeyboardButton(text=f"{amt} SOL", callback_data=f"rwbuy:exec:{contract}:{amt}") for amt in BUY_PRESETS_SOL]
+    preset_row = [InlineKeyboardButton(text=f"{amt} ETH", callback_data=f"rwbuy:exec:{contract}:{amt}") for amt in BUY_PRESETS_ETH]
     return InlineKeyboardMarkup(inline_keyboard=[preset_row[:2], preset_row[2:], [InlineKeyboardButton(text="✏️ Custom amount", callback_data=f"rwbuy:custom:{contract}")], [InlineKeyboardButton(text="❌ Cancel", callback_data="rw:menu")]])
 
 
@@ -120,7 +120,7 @@ def real_wallet_withdraw_confirm_kb() -> InlineKeyboardMarkup:
 def real_wallet_automation_kb(auto_enabled: bool, kill_switch: bool, daily_cap_sol: float) -> InlineKeyboardMarkup:
     toggle_label = "🟢 Turn Automation OFF" if auto_enabled else "⚪ Turn Automation ON"
     kill_label = "🛑 Kill Switch: ON (tap to release)" if kill_switch else "🛑 Kill Switch (emergency stop)"
-    cap_row = [InlineKeyboardButton(text=("✅ " if cap == daily_cap_sol else "") + f"{cap} SOL/day", callback_data=f"rw:auto_set_cap:{cap}") for cap in AUTO_DAILY_CAP_PRESETS_SOL]
+    cap_row = [InlineKeyboardButton(text=("✅ " if cap == daily_cap_sol else "") + f"{cap} ETH/day", callback_data=f"rw:auto_set_cap:{cap}") for cap in AUTO_DAILY_CAP_PRESETS_ETH]
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_label, callback_data="rw:auto_toggle")],
         cap_row[:3], cap_row[3:],

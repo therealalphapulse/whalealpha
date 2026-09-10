@@ -2,15 +2,15 @@
 
 This module is intentionally narrow: it does not change token selection,
 quote logic, spending limits, or transaction execution. It only prevents a
-buy from reaching Jupiter/signing when the wallet balance is already known to
-be below the requested SOL amount.
+buy from reaching Uniswap/signing when the wallet balance is already known to
+be below the requested ETH amount.
 
 Performance note: execute_real_buy() itself already performs this exact
-check (see BUY_NETWORK_RESERVE_LAMPORTS handling in real_trade_engine.py),
+check (see BUY_NETWORK_RESERVE_WEI handling in real_trade_engine.py),
 using a threshold that is a strict superset of this wrapper's threshold (it
-also reserves lamports for network fees/priority fee on top of the raw SOL
+also reserves wei for network fees/priority fee on top of the raw ETH
 amount checked here). This wrapper previously re-fetched the wallet row
-(DB query) and the on-chain SOL balance (RPC round trip) a second time
+(DB query) and the on-chain ETH balance (RPC round trip) a second time
 before calling through -- duplicating work that gates the exact same
 outcome. That duplicate fetch has been removed: the safety property (no
 buy is ever submitted when the wallet can't afford it) is unchanged and is

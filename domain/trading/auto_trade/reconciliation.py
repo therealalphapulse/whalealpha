@@ -21,8 +21,8 @@ from sqlalchemy import select
 from infra.db.session import async_session
 from models.auto_trade_position import AutoTradePosition, AutoTradeState
 from models.auto_trade_claim import AutoTradeClaim
-from domain.trading.real.jupiter_swap import get_confirmed_transaction_deltas, SwapError
-from domain.trading.real.solana_wallet import get_real_wallet
+from domain.trading.real.robinhood_swap import get_confirmed_transaction_deltas, SwapError
+from domain.trading.real.robinhood_wallet import get_real_wallet
 
 from . import claims, position_manager
 from .constants import CLAIM_RECONCILE_GRACE_SECONDS

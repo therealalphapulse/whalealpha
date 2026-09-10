@@ -30,7 +30,7 @@ from infra.db.session import async_session
 from models.real_dca_schedule import RealDCASchedule
 from models.real_dca_fill import RealDCAFill
 from providers.marketdata.dexscreener import get_token_card_info
-from domain.trading.real.solana_wallet import (
+from domain.trading.real.robinhood_wallet import (
     get_real_wallet,
     get_wallet_settings,
     register_auto_spend,
@@ -62,7 +62,7 @@ def _validate_new_schedule(
     price_ceiling: float | None,
 ) -> None:
     if amount_per_order_sol <= 0:
-        raise DCAValidationError("Amount per order must be greater than 0 SOL.")
+        raise DCAValidationError("Amount per order must be greater than 0 ETH.")
     if interval_seconds < MIN_INTERVAL_SECONDS:
         raise DCAValidationError(f"Interval must be at least {MIN_INTERVAL_SECONDS} seconds.")
     if not (1 <= total_orders <= MAX_TOTAL_ORDERS):
@@ -322,7 +322,7 @@ async def _process_one_schedule(schedule_id: int, bot=None) -> None:
         bot, schedule.user_id,
         f"🧬 <b>DCA order {order_index}/{schedule.total_orders} filled</b> — "
         f"bought {trade.token_quantity:,.2f} {trade.symbol or ''} for "
-        f"{schedule.amount_per_order_sol:.4f} SOL.{completed_note}",
+        f"{schedule.amount_per_order_sol:.4f} ETH.{completed_note}",
     )
 
 

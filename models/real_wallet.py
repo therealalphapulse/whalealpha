@@ -3,13 +3,15 @@ from infra.db.session import Base
 
 
 class RealWallet(Base):
-    """A user's encrypted mainnet Solana wallet and automation safety state."""
+    """A user's encrypted Robinhood Chain EVM wallet and automation safety state."""
 
     __tablename__ = "real_wallets"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False, unique=True, index=True)
     public_key = Column(String, nullable=False, index=True)
+    chain_id = Column(Integer, nullable=True, index=True)
+    network = Column(String, nullable=True)
     encrypted_secret = Column(String, nullable=False)
     encryption_nonce = Column(String, nullable=False)
     source = Column(String, nullable=False, default="created")

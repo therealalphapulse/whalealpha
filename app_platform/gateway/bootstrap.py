@@ -44,7 +44,7 @@ from domain.payments.premium_plans import ensure_default_plans_seeded
 from domain.signals.signal_tracker import migrate_signal_schema
 from domain.intelligence.kol_tracker import migrate_kol_wallet_schema, sync_kol_wallets_from_provider
 from domain.trading.paper.paper_engine import migrate_paper_trade_schema
-from domain.trading.real.solana_wallet import migrate_real_wallet_schema
+from domain.trading.real.robinhood_wallet import migrate_real_wallet_schema
 from domain.trading.auto_trade.policy_service import migrate_auto_trade_schema
 from domain.signals.pump_radar import subscribe_all_users_to_pump_alerts
 

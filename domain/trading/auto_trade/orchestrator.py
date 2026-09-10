@@ -94,15 +94,15 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
         logger.info("[AutoTrade] daily limit reached user=%s: %s", user_id, buy_slot["reason"])
         return
 
-    # Buy Amount fix: policy.buy_amount_sol is the SOL amount to spend,
+    # Buy Amount fix: policy.buy_amount_sol is the ETH amount to spend,
     # entered directly by the user -- no market-price conversion needed
     # to size the swap (previously this divided a USDT figure by a
-    # freshly-fetched SOL/USD price, which also silently skipped the
+    # freshly-fetched ETH/USD price, which also silently skipped the
     # trade whenever that price lookup failed).
     sol_amount = float(policy.buy_amount_sol or 0.0)
     # NOTE: register_exposure/max_total_exposure_usdt remains a
     # USDT-denominated cap (a separate, unrelated setting, out of scope
-    # for this fix) -- passing a SOL amount through it means that cap
+    # for this fix) -- passing a ETH amount through it means that cap
     # no longer compares like units against what a user configures there.
     exposure_check = await policy_service.register_exposure(user_id, sol_amount, policy.max_total_exposure_usdt)
     if not exposure_check["ok"]:
@@ -128,7 +128,7 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
             contract=signal.contract, name=signal.name, symbol=signal.symbol,
             state=AutoTradeState.BUY_SUBMITTED,
             policy_snapshot_json=snapshot.to_json(),
-            # requested_usdt now holds the SOL amount requested (Buy Amount fix);
+            # requested_usdt now holds the ETH amount requested (Buy Amount fix);
             # field kept for backward compatibility with existing rows/queries.
             signal_price=signal.price, requested_usdt=sol_amount,
         )
@@ -138,7 +138,7 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
 
     await _notify(
         bot, user_id,
-        f"🤖 <b>Auto-Trade</b>\nStatus: BUYING\nToken: {signal.symbol}\nAmount: {sol_amount:.4f} SOL",
+        f"🤖 <b>Auto-Trade</b>\nStatus: BUYING\nToken: {signal.symbol}\nAmount: {sol_amount:.4f} ETH",
     )
 
     result = await execution.execute_buy_swap(
@@ -185,7 +185,7 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
         await session.commit()
 
     logger.info(
-        "[AutoTrade][trade=%s] BUY_CONFIRMED user=%s contract=%s spent=%.4f SOL received=%.4f entry=%.8f",
+        "[AutoTrade][trade=%s] BUY_CONFIRMED user=%s contract=%s spent=%.4f ETH received=%.4f entry=%.8f",
         position.id, user_id, signal.contract, result["sol_spent"], token_quantity, entry_price or 0.0,
     )
 
@@ -195,7 +195,7 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
         bot, user_id,
         "✅ <b>Auto-Trade Buy Confirmed</b>\n"
         f"Token: {signal.symbol}\n"
-        f"Spent: {result['sol_spent']:.4f} SOL\n"
+        f"Spent: {result['sol_spent']:.4f} ETH\n"
         f"Received: {token_quantity:,.2f} {signal.symbol}\n"
         f"Entry: {entry_price:.8f}\n"
         f"Transaction: CONFIRMED\n"

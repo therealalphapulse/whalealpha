@@ -11,7 +11,7 @@ from models.real_wallet import RealWallet
 from models.real_autobuy_filter import RealAutoBuyFilter
 from models.real_trade import RealTrade
 from models.signal_token import SignalToken
-from domain.trading.real.solana_wallet import (
+from domain.trading.real.robinhood_wallet import (
     get_wallet_settings,
     register_auto_spend,
     release_auto_spend,
@@ -19,13 +19,13 @@ from domain.trading.real.solana_wallet import (
     release_auto_buy,
 )
 from domain.trading.real import real_trade_engine, real_exit_engine
-from domain.trading.real.jupiter_swap import WRAPPED_SOL_MINT
+from domain.trading.real.robinhood_swap import NATIVE_ETH_ADDRESS
 from providers.marketdata.dexscreener import get_token_card_info
 
 logger = logging.getLogger("AlphaPulse.RealAutomationEngine")
 
 SIGNAL_LOOKBACK_MINUTES = 20
-DEFAULT_SOL_PER_TRADE = 0.1
+DEFAULT_ETH_PER_TRADE = 0.1
 DEFAULT_AUTO_BUY_AMOUNT_USDT = 10.0
 DEFAULT_DAILY_AUTO_BUY_LIMIT = 5
 _FAILURE_COOLDOWN_STEPS_SECONDS = [120, 600, 1800]
@@ -91,7 +91,7 @@ async def get_or_create_filter(user_id: int) -> RealAutoBuyFilter:
             user_id=user_id,
             auto_buy_amount_usdt=DEFAULT_AUTO_BUY_AMOUNT_USDT,
             daily_auto_buy_limit=DEFAULT_DAILY_AUTO_BUY_LIMIT,
-            sol_per_trade=DEFAULT_SOL_PER_TRADE,
+            sol_per_trade=DEFAULT_ETH_PER_TRADE,
         )
         session.add(filt)
         await session.commit()
@@ -239,17 +239,17 @@ async def _notify(bot, user_id: int, text: str) -> None:
 
 async def _get_sol_usd_price() -> float | None:
     try:
-        info = await get_token_card_info(WRAPPED_SOL_MINT)
+        info = await get_token_card_info(NATIVE_ETH_ADDRESS)
         if info and info.get("price") not in (None, "N/A"):
             price = float(info["price"])
             return price if price > 0 else None
     except Exception as e:
-        logger.warning("Unable to resolve SOL/USD price for USDT auto-buy: %s", e)
+        logger.warning("Unable to resolve ETH/USD price for USDT auto-buy: %s", e)
     return None
 
 
 async def _resolve_auto_buy_sol_amount(filt: RealAutoBuyFilter) -> float | None:
-    """Convert the user's canonical USDT amount to SOL at execution time."""
+    """Convert the user's canonical USDT amount to ETH at execution time."""
     amount_usdt = filt.auto_buy_amount_usdt
     if amount_usdt is not None:
         if amount_usdt <= 0:
@@ -259,8 +259,8 @@ async def _resolve_auto_buy_sol_amount(filt: RealAutoBuyFilter) -> float | None:
             return None
         return amount_usdt / sol_price
     # Legacy rows created before the USDT setting existed continue safely
-    # using their stored SOL amount until the user chooses a custom amount.
-    return filt.sol_per_trade if filt.sol_per_trade and filt.sol_per_trade > 0 else DEFAULT_SOL_PER_TRADE
+    # using their stored ETH amount until the user chooses a custom amount.
+    return filt.sol_per_trade if filt.sol_per_trade and filt.sol_per_trade > 0 else DEFAULT_ETH_PER_TRADE
 
 
 async def _try_auto_buy(bot, wallet: RealWallet, signal: SignalToken, filt: RealAutoBuyFilter) -> None:
@@ -360,7 +360,7 @@ async def _execute_auto_buy(bot, wallet: RealWallet, signal: SignalToken, filt: 
         bot, wallet.user_id,
         f"🤖 <b>Automation bought {trade.symbol or ''}</b>\n"
         f"Auto-buy amount: ${float(filt.auto_buy_amount_usdt or 0):.2f} USDT\n"
-        f"Spent: {trade.sol_spent:.4f} SOL\n"
+        f"Spent: {trade.sol_spent:.4f} ETH\n"
         f"Received: {trade.token_quantity:,.2f} {trade.symbol or ''}\n"
         f"TP: {float(filt.take_profit_pct):g}% | SL: {float(filt.stop_loss_pct):g}%\n"
         f"Tx: <code>{result['signature']}</code>\n\n"
