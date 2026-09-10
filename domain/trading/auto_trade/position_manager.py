@@ -14,34 +14,34 @@ from sqlalchemy import select, func as sa_func
 
 from infra.db.session import async_session
 from models.auto_trade_position import AutoTradePosition, AutoTradeState
-from domain.trading.real.jupiter_swap import get_token_balance, SwapError, WRAPPED_SOL_MINT
-from domain.trading.real.solana_wallet import get_real_wallet
+from domain.trading.real.robinhood_swap import get_token_balance, SwapError, NATIVE_ETH_ADDRESS
+from domain.trading.real.robinhood_wallet import get_real_wallet
 from providers.marketdata.dexscreener import get_token_card_info
 
 logger = logging.getLogger("AlphaPulse.AutoTrade.PositionManager")
 
 
 async def _get_sol_usd_price() -> float | None:
-    """SOL/USD price, used only to convert DexScreener's USD-denominated
-    token price into the SOL-per-token domain that entry_price is
+    """ETH/USD price, used only to convert DexScreener's USD-denominated
+    token price into the ETH-per-token domain that entry_price is
     stored in (orchestrator.try_auto_trade sets entry_price from the
     actual on-chain buy fill: sol_amount / token_quantity). Every
     caller of get_live_positions_view (TP/SL/trailing trigger
     evaluation in exit_engine.py, and the /wallet live PnL display)
     compares current_price against entry_price directly, so the two
     MUST be in the same unit -- comparing a USD/token figure against a
-    SOL/token figure silently inflates the computed % change by
-    roughly the SOL/USD rate and can fire a false "tp"/"sl"/"trailing"
+    ETH/token figure silently inflates the computed % change by
+    roughly the ETH/USD rate and can fire a false "tp"/"sl"/"trailing"
     trigger after no real token-price movement at all. Returns None on
     any failure; never a guessed price."""
     try:
-        info = await get_token_card_info(WRAPPED_SOL_MINT)
+        info = await get_token_card_info(NATIVE_ETH_ADDRESS)
         raw_price = info.get("price") if info else None
         price = float(raw_price)
         if price > 0:
             return price
     except Exception as exc:
-        logger.warning("[AutoTrade] unable to resolve SOL/USD price for exit pricing: %s", exc)
+        logger.warning("[AutoTrade] unable to resolve ETH/USD price for exit pricing: %s", exc)
     return None
 
 
@@ -147,13 +147,13 @@ async def get_live_positions_view(user_id: int) -> list[dict]:
                 sol_usd = await _get_sol_usd_price()
                 if sol_usd and sol_usd > 0:
                     # Convert DexScreener's USD-per-token price into the
-                    # SOL-per-token domain entry_price is stored in --
+                    # ETH-per-token domain entry_price is stored in --
                     # see _get_sol_usd_price's docstring. Without this
                     # conversion, current_price (USD/token) and
-                    # entry_price (SOL/token) are not comparable -- that
+                    # entry_price (ETH/token) are not comparable -- that
                     # unit mismatch was the root cause of false
                     # Take-Profit triggers (and a broken /wallet PnL
-                    # display). If the SOL/USD price is unavailable, fall
+                    # display). If the ETH/USD price is unavailable, fall
                     # through to the stale-price fallback below rather
                     # than compare mismatched units.
                     price_sol = price_usd / sol_usd
@@ -190,7 +190,7 @@ async def resolve_sellable_balance(user_id: int, position: AutoTradePosition) ->
     """§22 -- reconcile the DB's remaining_quantity against the actual
     on-chain token balance before selling. Never assumes zero on a
     transient RPC failure; the caller is responsible for treating a
-    failed lookup as SELL_BALANCE_RESOLVING (retry), not as "no
+    failed lookup as SELL_BALANCE_REETHVING (retry), not as "no
     balance"."""
     wallet = await get_real_wallet(user_id)
     if not wallet:

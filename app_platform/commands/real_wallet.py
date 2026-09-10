@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from domain.admin.user_service import get_or_create_user
 from providers.marketdata.dexscreener import get_token_card_info
-from domain.trading.real.solana_wallet import (
+from domain.trading.real.robinhood_wallet import (
     get_real_wallet,
     create_wallet,
     import_wallet,
@@ -26,14 +26,14 @@ from domain.trading.real.solana_wallet import (
     set_auto_daily_cap,
     WalletImportError,
 )
-from domain.trading.real.jupiter_swap import get_sol_balance, get_mint_decimals, WRAPPED_SOL_MINT
+from domain.trading.real.robinhood_swap import get_native_balance, get_mint_decimals, NATIVE_ETH_ADDRESS
 from domain.trading.real import real_trade_engine
-from domain.trading.real import wallet_withdraw
+from domain.trading.real import robinhood_withdraw as wallet_withdraw
 from domain.trading.real import real_dca_engine
 from domain.trading.real import real_automation_engine
 from domain.trading.real import real_exit_engine
 from domain.trading.real import real_limit_order_engine
-from domain.intelligence.wallet_portfolio import (
+from domain.intelligence.robinhood_wallet_portfolio import (
     fetch_wallet_fungible_tokens,
     build_wallet_portfolio_report,
     get_wallet_portfolio_value,
@@ -63,10 +63,10 @@ from app_platform.keyboards.real_wallet import (
     real_wallet_limit_list_kb,
     real_wallet_limit_detail_kb,
     real_wallet_limit_direction_kb,
-    BUY_PRESETS_SOL,
+    BUY_PRESETS_ETH,
 )
 
-logger = logging.getLogger("AlphaPulse.RealWalletCmd")
+logger = logging.getLogger("WhaleAlpha.RealWalletCmd")
 router = Router()
 
 # Every user gets the full DCA engine (see on_dca_total_orders_message()
@@ -98,20 +98,20 @@ class RealWalletStates(StatesGroup):
 ONBOARDING_TEXT = (
     "🔐 <b>Real Wallet</b>\n\n"
     "Trade with real funds directly from Telegram — same experience as "
-    "Paper Trade, but every buy/sell is a real Solana transaction.\n\n"
+    "Paper Trade, but every buy/sell is a real Robinhood Chain transaction.\n\n"
     "Choose how you'd like to set up your wallet:"
 )
 
 INFO_TEXT = (
     "ℹ️ <b>How Real Wallet works</b>\n\n"
     "• Your private key is <b>encrypted</b> before it's ever stored — "
-    "AlphaPulse never keeps it in plain text.\n"
+    "WhaleAlpha never keeps it in plain text.\n"
     "• The key is only decrypted for a split second, in memory, to sign "
     "a trade you initiated — then discarded.\n"
     "• You can export your key or disconnect your wallet at any time from "
     "the Real Wallet menu.\n"
     "• This is real money — trade sizes you're comfortable with, "
-    "especially while you're getting used to it. Solana transactions "
+    "especially while you're getting used to it. Robinhood Chain transactions "
     "are irreversible once confirmed.\n"
     "• Automation and DCA both spend unattended once turned on — set a "
     "daily spend cap you're comfortable with, and use the kill switch "
@@ -121,18 +121,18 @@ INFO_TEXT = (
 
 def _menu_text(
     public_key: str,
-    sol_balance: float | None,
+    eth_balance: float | None,
     portfolio_value_usd: float | None,
     auto_enabled: bool,
 ) -> str:
-    bal_line = f"{sol_balance:.4f} SOL" if sol_balance is not None else "—"
+    bal_line = f"{eth_balance:.4f} ETH" if eth_balance is not None else "—"
     value_line = format_usd(portfolio_value_usd) if portfolio_value_usd is not None else "—"
     auto_line = "🟢 ON" if auto_enabled else "⚪ OFF (manual trading only)"
     return (
-        "💼 <b>AlphaPulse Real Wallet</b>\n"
+        "💼 <b>WhaleAlpha Robinhood Wallet</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👛 <b>Address</b> <i>(tap to copy)</i>:\n<code>{public_key}</code>\n\n"
-        f"💰 <b>SOL Balance:</b> {bal_line}\n"
+        f"💰 <b>ETH Balance:</b> {bal_line}\n"
         f"📈 <b>Portfolio Value:</b> {value_line}\n"
         f"🤖 <b>Automation:</b> {auto_line}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -142,10 +142,10 @@ def _menu_text(
 
 async def _fetch_balance_safe(public_key: str) -> float | None:
     try:
-        return await get_sol_balance(public_key)
+        return await get_native_balance(public_key)
     except Exception as e:
         # Root-cause investigation (see chat): this used to be a bare
-        # `except Exception: return None` with zero logging — any SOL
+        # `except Exception: return None` with zero logging — any ETH
         # balance failure (bad RPC response, Helius format change,
         # timeout) was completely invisible in Railway logs. Return
         # value/behavior is unchanged (still None -> "—" displayed);
@@ -160,16 +160,16 @@ async def _fetch_portfolio_value_safe(public_key: str) -> float | None:
 
 
 def _menu_text_loading(public_key: str, auto_enabled: bool) -> str:
-    # Placeholder shown the instant the menu opens, before the SOL
+    # Placeholder shown the instant the menu opens, before the ETH
     # balance + portfolio value RPC/API calls resolve. Keeps the handler
     # from ever blocking Telegram on network I/O (see performance
     # requirements: respond immediately, then update in place).
     auto_line = "🟢 ON" if auto_enabled else "⚪ OFF (manual trading only)"
     return (
-        "💼 <b>AlphaPulse Real Wallet</b>\n"
+        "💼 <b>WhaleAlpha Robinhood Wallet</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👛 <b>Address</b> <i>(tap to copy)</i>:\n<code>{public_key}</code>\n\n"
-        "💰 <b>SOL Balance:</b> ⏳ Loading...\n"
+        "💰 <b>ETH Balance:</b> ⏳ Loading...\n"
         "📈 <b>Portfolio Value:</b> ⏳ Loading...\n"
         f"🤖 <b>Automation:</b> {auto_line}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -193,7 +193,7 @@ async def _send_or_edit(target, text: str, kb, edit: bool):
 
 async def _show_menu(target, user_id: int, edit: bool):
     # get_real_wallet() is a DB read only — safe to await inline. The
-    # SOL balance + portfolio value calls are the slow part (live
+    # ETH balance + portfolio value calls are the slow part (live
     # RPC/Helius), so those must never delay the first response the
     # user sees.
     wallet = await get_real_wallet(user_id)
@@ -238,7 +238,7 @@ async def cmd_real_wallet(message: Message):
 
 @router.callback_query(F.data == "rw:menu")
 async def cb_menu(callback: CallbackQuery):
-    # Ack Telegram immediately — _show_menu() does a live SOL balance +
+    # Ack Telegram immediately — _show_menu() does a live ETH balance +
     # portfolio value fetch (Helius-backed), which can take long enough
     # under load that answering afterward risks "query is too old"
     # (Telegram callback queries expire; see aiogram TelegramBadRequest).
@@ -296,7 +296,7 @@ async def cb_import_start(callback: CallbackQuery, state: FSMContext):
         "📥 <b>Import Wallet</b>\n\n"
         "Send your private key now, as its own message — either the "
         "base58 string most wallet apps export, or a [1,2,3,...] key array.\n\n"
-        "⚠️ Only paste it here in this chat with AlphaPulse. I'll delete "
+        "⚠️ Only paste it here in this chat with WhaleAlpha. I'll delete "
         "your message immediately after reading it.\n\n"
         "Send /cancel to back out."
     )
@@ -352,15 +352,15 @@ async def _show_automation_panel(target, user_id: int, edit: bool):
 
     text = (
         "🤖 <b>Real Trade Automation</b>\n\n"
-        "When ON, AlphaPulse scans fresh signals against your filters "
+        "When ON, WhaleAlpha scans fresh signals against your filters "
         "below and buys automatically — no per-trade confirmation. Both "
         "Automation and DCA share the same daily spend cap and kill "
         "switch, since both spend unattended.\n\n"
         f"<b>Status:</b> {'🟢 ON' if status['auto_trading_enabled'] else '⚪ OFF'}\n"
         f"<b>Kill switch:</b> {'🛑 ENGAGED' if status['kill_switch'] else '✅ off'}\n"
-        f"<b>Daily cap:</b> {status['daily_cap_sol']:.2f} SOL\n"
-        f"<b>Spent today:</b> {status['spent_today_sol']:.4f} SOL "
-        f"({status['remaining_today_sol']:.4f} SOL remaining)"
+        f"<b>Daily cap:</b> {status['daily_cap_eth']:.2f} ETH\n"
+        f"<b>Spent today:</b> {status['spent_today_eth']:.4f} ETH "
+        f"({status['remaining_today_eth']:.4f} ETH remaining)"
     )
     kb = real_wallet_automation_kb(status["auto_trading_enabled"], status["kill_switch"], status["daily_cap_sol"])
     if edit:
@@ -409,7 +409,7 @@ async def cb_auto_set_cap(callback: CallbackQuery):
         await callback.answer("No active wallet.", show_alert=True)
         return
     await _show_automation_panel(callback.message, callback.from_user.id, edit=True)
-    await callback.answer(f"Daily cap set to {cap} SOL")
+    await callback.answer(f"Daily cap set to {cap} ETH")
 
 
 _SIGNAL_SOURCE_LABELS = {
@@ -434,7 +434,7 @@ async def _show_auto_filters_panel(target, user_id: int, edit: bool):
         f"🎯 Take Profit %: <b>{filt.take_profit_pct if filt.take_profit_pct is not None else '—'}</b>\n"
         f"🛑 Stop Loss %: <b>{filt.stop_loss_pct if filt.stop_loss_pct is not None else '—'}</b>\n"
         f"🔢 Daily auto-buy limit (1–20): <b>{filt.daily_auto_buy_limit if filt.daily_auto_buy_limit is not None else '—'}</b>\n"
-        f"💰 SOL per trade: <b>{filt.sol_per_trade if filt.sol_per_trade is not None else '—'}</b>\n"
+        f"💰 ETH per trade: <b>{filt.sol_per_trade if filt.sol_per_trade is not None else '—'}</b>\n"
         f"📊 Min conviction score: <b>{filt.min_score if filt.min_score is not None else '—'}</b>\n"
         f"🏦 Market cap range: <b>{filt.min_market_cap if filt.min_market_cap is not None else '—'} to {filt.max_market_cap if filt.max_market_cap is not None else '—'}</b>\n"
         f"💧 Min liquidity (USD): <b>{filt.min_liquidity_usd if filt.min_liquidity_usd is not None else '—'}</b>\n"
@@ -576,7 +576,7 @@ async def cb_history(callback: CallbackQuery):
         pnl_sign = "+" if (t.realized_pnl_sol or 0) >= 0 else ""
         lines.append(
             f"• <b>{html.escape(t.symbol or '???')}</b> — "
-            f"{pnl_sign}{t.realized_pnl_sol:.4f} SOL "
+            f"{pnl_sign}{t.realized_pnl_sol:.4f} ETH "
             f"({t.status})"
         )
 
@@ -619,7 +619,7 @@ async def cb_export_confirm(callback: CallbackQuery):
 async def cb_disconnect_confirm(callback: CallbackQuery):
     await callback.message.edit_text(
         "🔌 <b>Disconnect Wallet?</b>\n\n"
-        "This permanently deletes AlphaPulse's copy of your encrypted key. "
+        "This permanently deletes WhaleAlpha's copy of your encrypted key. "
         "If you haven't exported/backed up your key elsewhere first, "
         "you could lose access to these funds. This can't be undone.",
         reply_markup=real_wallet_disconnect_confirm_kb(),
@@ -695,7 +695,7 @@ async def cb_set_priority(callback: CallbackQuery):
 def _confirmation_note(confirmation: str) -> str:
     if confirmation == "timeout":
         return (
-            "\n\n⏳ <i>Broadcast succeeded but AlphaPulse couldn't confirm "
+            "\n\n⏳ <i>Broadcast succeeded but WhaleAlpha couldn't confirm "
             "on-chain landing in time — check the tx on Solscan; it may "
             "still land or may have expired.</i>"
         )
@@ -703,7 +703,7 @@ def _confirmation_note(confirmation: str) -> str:
 
 
 async def _post_trade_sync_line(user_id: int) -> str:
-    """A fresh SOL balance line appended right onto the trade
+    """A fresh ETH balance line appended right onto the trade
     confirmation, so balances/holdings visibly update the instant a
     trade lands instead of requiring a separate manual Refresh tap."""
     wallet = await get_real_wallet(user_id)
@@ -712,10 +712,10 @@ async def _post_trade_sync_line(user_id: int) -> str:
     balance = await _fetch_balance_safe(wallet.public_key)
     if balance is None:
         return ""
-    return f"\n\n🔄 <b>Wallet balance:</b> {balance:.4f} SOL"
+    return f"\n\n🔄 <b>Wallet balance:</b> {balance:.4f} ETH"
 
 
-async def _execute_and_report_buy(target_message, user_id: int, contract: str, sol_amount: float, edit: bool):
+async def _execute_and_report_buy(target_message, user_id: int, contract: str, eth_amount: float, edit: bool):
     wallet = await get_real_wallet(user_id)
     if not wallet:
         text = "⚠️ You need a Real Wallet first. Use /realwallet to set one up."
@@ -739,7 +739,7 @@ async def _execute_and_report_buy(target_message, user_id: int, contract: str, s
         return
 
     settings = await get_wallet_settings(user_id)
-    status_text = f"⏳ Submitting buy: {sol_amount} SOL → {html.escape(info['symbol'])}..."
+    status_text = f"⏳ Submitting buy: {eth_amount} ETH → {html.escape(info['symbol'])}..."
     status_msg = (
         await target_message.edit_text(status_text) if edit
         else await target_message.answer(status_text)
@@ -751,7 +751,7 @@ async def _execute_and_report_buy(target_message, user_id: int, contract: str, s
         name=info["name"],
         symbol=info["symbol"],
         current_price=price,
-        sol_amount=sol_amount,
+        eth_amount=eth_amount,
         slippage_bps=settings["slippage_bps"],
         priority_fee_tier=settings["priority_fee_tier"],
     )
@@ -765,7 +765,7 @@ async def _execute_and_report_buy(target_message, user_id: int, contract: str, s
     sync_line = await _post_trade_sync_line(user_id)
     await status_msg.edit_text(
         f"{confirmed_line} <b>Bought {html.escape(trade.symbol)}</b>\n\n"
-        f"Spent: {trade.sol_spent:.4f} SOL\n"
+        f"Spent: {trade.sol_spent:.4f} ETH\n"
         f"Received: {trade.token_quantity:,.2f} {html.escape(trade.symbol)}\n"
         f"Tx: <code>{result['signature']}</code>"
         f"{_confirmation_note(result['confirmation'])}"
@@ -789,7 +789,7 @@ async def _show_buy_presets(target_message, user_id: int, contract: str):
 
     info = await get_token_card_info(contract)
     symbol = html.escape(info["symbol"]) if info and info.get("symbol") else "this token"
-    preset_line = " / ".join(f"{a} SOL" for a in BUY_PRESETS_SOL)
+    preset_line = " / ".join(f"{a} ETH" for a in BUY_PRESETS_ETH)
     await target_message.answer(
         f"⚡ <b>Buy {symbol}</b>\n\nPick an amount ({preset_line}) or enter a custom one:",
         reply_markup=real_wallet_buy_presets_kb(contract),
@@ -856,7 +856,7 @@ async def cb_rwbuy_custom(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RealWalletStates.waiting_custom_buy_amount)
     await state.update_data(contract=contract)
     await callback.message.edit_text(
-        "✏️ <b>Custom Buy Amount</b>\n\nSend the amount of SOL to spend (e.g. <code>0.75</code>).\n\nSend /cancel to back out."
+        "✏️ <b>Custom Buy Amount</b>\n\nSend the amount of ETH to spend (e.g. <code>0.75</code>).\n\nSend /cancel to back out."
     )
     await callback.answer()
 
@@ -870,11 +870,11 @@ async def on_custom_buy_amount_message(message: Message, state: FSMContext):
         return
 
     try:
-        sol_amount = float(raw)
-        if sol_amount <= 0:
+        eth_amount = float(raw)
+        if eth_amount <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Enter a positive number of SOL, e.g. <code>0.75</code>, or /cancel.")
+        await message.answer("❌ Enter a positive number of ETH, e.g. <code>0.75</code>, or /cancel.")
         return
 
     data = await state.get_data()
@@ -885,7 +885,7 @@ async def on_custom_buy_amount_message(message: Message, state: FSMContext):
         await message.answer("❌ Lost track of which token this was for — please tap Buy again.")
         return
 
-    await _execute_and_report_buy(message, message.from_user.id, contract, sol_amount, edit=False)
+    await _execute_and_report_buy(message, message.from_user.id, contract, eth_amount, edit=False)
 
 
 # ---------------------------------------------------------------------------
@@ -897,19 +897,19 @@ async def cmd_real_buy(message: Message):
     parts = message.text.split()
     if len(parts) < 3:
         await message.answer(
-            "⚠️ <b>Usage:</b> <code>/rbuy &lt;contract&gt; &lt;sol_amount&gt;</code>\n\n"
+            "⚠️ <b>Usage:</b> <code>/rbuy &lt;contract&gt; &lt;eth_amount&gt;</code>\n\n"
             "Executes a REAL swap using your Real Wallet. Set one up first with /realwallet."
         )
         return
 
     contract, amount_str = parts[1].strip(), parts[2].strip()
     try:
-        sol_amount = float(amount_str)
+        eth_amount = float(amount_str)
     except ValueError:
-        await message.answer("❌ SOL amount must be a number.")
+        await message.answer("❌ ETH amount must be a number.")
         return
 
-    await _execute_and_report_buy(message, message.from_user.id, contract, sol_amount, edit=False)
+    await _execute_and_report_buy(message, message.from_user.id, contract, eth_amount, edit=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1008,7 +1008,7 @@ async def _execute_and_report_sell(target, trade_id: int, fraction: float, is_ca
         )
         await reply_target.answer(
             f"{confirmed_line} Sold {fraction * 100:.0f}% of {html.escape(trade.symbol)} — "
-            f"received {result['sol_received']:.4f} SOL\n"
+            f"received {result['sol_received']:.4f} ETH\n"
             f"Tx: <code>{result['signature']}</code>"
             f"{_confirmation_note(result['confirmation'])}"
             f"{positions_hint}"
@@ -1040,8 +1040,8 @@ def _format_position_text(pos: dict) -> str:
         f"📌 <b>{html.escape(t.symbol or '???')}</b>\n"
         f"Entry: ${pos['entry_price']:.8f}   Current: ${pos['current_price']:.8f}{stale_note}\n"
         f"Remaining: {pos['remaining_quantity']:,.2f} {html.escape(t.symbol or '')}\n"
-        f"Value: {pos['current_value_sol']:.4f} SOL\n"
-        f"Unrealized PnL: {pnl_sign}{pnl:.4f} SOL ({pnl_sign}{pos['roi_pct']:.1f}% ROI)"
+        f"Value: {pos['current_value_sol']:.4f} ETH\n"
+        f"Unrealized PnL: {pnl_sign}{pnl:.4f} ETH ({pnl_sign}{pos['roi_pct']:.1f}% ROI)"
     )
 
 
@@ -1062,7 +1062,7 @@ async def cb_positions(callback: CallbackQuery):
     pnl_sign = "+" if total_pnl >= 0 else ""
     header = (
         f"📊 <b>Open Positions ({len(positions)})</b>\n"
-        f"Total value: {total_value:.4f} SOL   Unrealized PnL: {pnl_sign}{total_pnl:.4f} SOL\n"
+        f"Total value: {total_value:.4f} ETH   Unrealized PnL: {pnl_sign}{total_pnl:.4f} ETH\n"
     )
     await callback.message.answer(header, reply_markup=real_wallet_positions_list_kb())
 
@@ -1327,7 +1327,7 @@ async def on_limit_price_message(message: Message, state: FSMContext):
 
     await state.update_data(limit_price=price)
     await state.set_state(RealWalletStates.waiting_limit_amount)
-    await message.answer("✏️ How much SOL should this order spend when it fires? (e.g. <code>0.1</code>)\n\nSend /cancel to back out.")
+    await message.answer("✏️ How much ETH should this order spend when it fires? (e.g. <code>0.1</code>)\n\nSend /cancel to back out.")
 
 
 @router.message(RealWalletStates.waiting_limit_amount)
@@ -1338,11 +1338,11 @@ async def on_limit_amount_message(message: Message, state: FSMContext):
         await message.answer("Cancelled.")
         return
     try:
-        sol_amount = float(raw)
-        if sol_amount <= 0:
+        eth_amount = float(raw)
+        if eth_amount <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Enter a positive number of SOL, or /cancel.")
+        await message.answer("❌ Enter a positive number of ETH, or /cancel.")
         return
 
     data = await state.get_data()
@@ -1360,7 +1360,7 @@ async def on_limit_amount_message(message: Message, state: FSMContext):
             symbol=data.get("limit_symbol"),
             direction=data["limit_direction"],
             trigger_price=data["limit_price"],
-            sol_amount=sol_amount,
+            eth_amount=eth_amount,
         )
     except real_limit_order_engine.LimitOrderValidationError as e:
         await message.answer(f"❌ {html.escape(str(e))}")
@@ -1369,7 +1369,7 @@ async def on_limit_amount_message(message: Message, state: FSMContext):
     arrow = "≤" if order.direction == "buy_below" else "≥"
     orders = await real_limit_order_engine.get_open_orders(message.from_user.id)
     await message.answer(
-        f"✅ <b>Limit order created</b>\n\n{order.symbol or order.contract[:6]} — buy {sol_amount} SOL "
+        f"✅ <b>Limit order created</b>\n\n{order.symbol or order.contract[:6]} — buy {eth_amount} ETH "
         f"when price {arrow} ${order.trigger_price:.8f}",
         reply_markup=real_wallet_limit_list_kb(orders),
     )
@@ -1388,7 +1388,7 @@ async def cb_limit_view(callback: CallbackQuery):
     text = (
         f"🎯 <b>{order.symbol or order.contract[:6]}</b>\n"
         f"<code>{order.contract}</code>\n\n"
-        f"Buy {order.sol_amount} SOL when price {arrow} ${order.trigger_price:.8f}\n"
+        f"Buy {order.eth_amount} ETH when price {arrow} ${order.trigger_price:.8f}\n"
         f"Status: {order.status}"
     )
     await callback.message.edit_text(text, reply_markup=real_wallet_limit_detail_kb(order.id))
@@ -1411,7 +1411,7 @@ async def cb_limit_cancel(callback: CallbackQuery):
 
 
 # ---------------------------------------------------------------------------
-# Portfolio — unified wallet value across SOL + every SPL token held
+# Portfolio — unified wallet value across ETH + every SPL token held
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "rw:portfolio")
@@ -1427,13 +1427,13 @@ async def cb_portfolio(callback: CallbackQuery):
 
 
 # ---------------------------------------------------------------------------
-# Withdraw — SOL or any SPL token held, to an external address
+# Withdraw — ETH or any SPL token held, to an external address
 # ---------------------------------------------------------------------------
 
 WITHDRAW_INTRO = (
     "🏧 <b>Withdraw</b>\n\n"
-    "Choose what you want to withdraw. This sends funds OUT of AlphaPulse "
-    "to an address you control — Solana transactions are irreversible "
+    "Choose what you want to withdraw. This sends funds OUT of WhaleAlpha "
+    "to an address you control — Robinhood Chain transactions are irreversible "
     "once confirmed, so double-check the address before confirming.\n"
 )
 
@@ -1457,7 +1457,7 @@ async def cb_withdraw_start(callback: CallbackQuery, state: FSMContext):
         return
     if not tokens:
         await callback.message.edit_text(
-            "🏧 Nothing to withdraw — this wallet has no SOL or token balance right now.",
+            "🏧 Nothing to withdraw — this wallet has no ETH or token balance right now.",
             reply_markup=real_wallet_back_kb(),
         )
         return
@@ -1481,7 +1481,7 @@ async def cb_withdraw_pick_asset(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"🏧 <b>Withdraw {html.escape(asset['symbol'])}</b>\n\n"
         f"Available: <b>{asset['amount']:,.6f} {html.escape(asset['symbol'])}</b>\n\n"
-        "Send the destination Solana address now, as its own message.\n\n"
+        "Send the destination Robinhood Chain address now, as its own message.\n\n"
         "Send /cancel to back out."
     )
     await callback.answer()
@@ -1496,7 +1496,7 @@ async def on_withdraw_address_message(message: Message, state: FSMContext):
         return
 
     if not wallet_withdraw.validate_withdraw_address(raw):
-        await message.answer("❌ That doesn't look like a valid Solana address. Try again, or /cancel.")
+        await message.answer("❌ That doesn't look like a valid Robinhood Chain address. Try again, or /cancel.")
         return
 
     data = await state.get_data()
@@ -1515,11 +1515,11 @@ async def on_withdraw_address_message(message: Message, state: FSMContext):
 
 async def _resolve_withdraw_amount(user_id: int, asset: dict, fraction: float) -> float:
     """Applies a % preset against the live withdrawable balance — for
-    SOL specifically at 100% this accounts for the rent/fee reserve
-    (see services.wallet_withdraw.SOL_WITHDRAW_RESERVE) rather than just
+    ETH specifically at 100% this accounts for the rent/fee reserve
+    (see Robinhood Chain ETH withdrawal reserve) rather than just
     multiplying the raw balance, so "Max" can't accidentally try to
     drain the account below rent-exempt."""
-    if asset["mint"] == WRAPPED_SOL_MINT and fraction >= 1.0:
+    if asset["mint"] == NATIVE_ETH_ADDRESS and fraction >= 1.0:
         return await wallet_withdraw.get_max_sol_withdrawable(user_id)
     return asset["amount"] * fraction
 
@@ -1534,7 +1534,7 @@ async def cb_withdraw_pct(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Lost track of this withdrawal — tap Withdraw again.", show_alert=True)
         return
 
-    # _resolve_withdraw_amount's "Max SOL" path makes a live get_sol_balance
+    # _resolve_withdraw_amount's "Max ETH" path makes a live get_native_balance
     # RPC call, which can be slow under upstream rate limits — answer first
     # so the spinner clears immediately instead of waiting on it. A callback
     # can only be answered once, so every failure branch below is now
@@ -1639,7 +1639,7 @@ async def cb_withdraw_confirm(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer("Submitting withdrawal...")
 
-    if asset["mint"] == WRAPPED_SOL_MINT:
+    if asset["mint"] == NATIVE_ETH_ADDRESS:
         result = await wallet_withdraw.execute_sol_withdrawal(callback.from_user.id, address, amount)
     else:
         try:
@@ -1687,7 +1687,7 @@ def _dca_schedule_text(schedule) -> str:
         f"🧬 <b>DCA — {html.escape(schedule.symbol or schedule.contract[:8])}</b>\n\n"
         f"Status: <b>{schedule.status}</b>\n"
         f"Progress: <b>{schedule.orders_filled}/{schedule.total_orders}</b> orders\n"
-        f"Amount per order: <b>{schedule.amount_per_order_sol} SOL</b>\n"
+        f"Amount per order: <b>{schedule.amount_per_order_eth} ETH</b>\n"
         f"Interval: <b>{schedule.interval_seconds}s</b>"
         f"{guard_text}"
         f"{error_text}"
@@ -1704,7 +1704,7 @@ async def cb_dca_list(callback: CallbackQuery):
     schedules = await real_dca_engine.list_schedules(callback.from_user.id)
     text = (
         "🧬 <b>Real Wallet DCA Schedules</b>\n\n"
-        "Buy a fixed SOL amount of a token on a repeating interval, "
+        "Buy a fixed ETH amount of a token on a repeating interval, "
         "fully on your own terms — amount, interval, total orders, and "
         "optional price floor/ceiling.\n\n"
         + (f"You have {len(schedules)} active/paused schedule(s)." if schedules else "No schedules yet.")
@@ -1803,7 +1803,7 @@ async def on_dca_contract_message(message: Message, state: FSMContext):
     await state.update_data(dca_contract=raw, dca_name=info.get("name"), dca_symbol=info.get("symbol"))
     await state.set_state(RealWalletStates.waiting_dca_amount)
     await message.answer(
-        f"✏️ <b>Amount per order</b>\n\nHow much SOL should each order spend on {html.escape(info.get('symbol') or 'this token')}? (e.g. <code>0.1</code>)\n\nSend /cancel to back out."
+        f"✏️ <b>Amount per order</b>\n\nHow much ETH should each order spend on {html.escape(info.get('symbol') or 'this token')}? (e.g. <code>0.1</code>)\n\nSend /cancel to back out."
     )
 
 
@@ -1819,7 +1819,7 @@ async def on_dca_amount_message(message: Message, state: FSMContext):
         if amount <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Enter a positive number of SOL, e.g. <code>0.1</code>, or /cancel.")
+        await message.answer("❌ Enter a positive number of ETH, e.g. <code>0.1</code>, or /cancel.")
         return
 
     await state.update_data(dca_amount=amount)
@@ -1955,7 +1955,7 @@ async def _finalize_dca_schedule(target, user_id: int, state: FSMContext, is_cal
             contract=data["dca_contract"],
             name=data.get("dca_name"),
             symbol=data.get("dca_symbol"),
-            amount_per_order_sol=data["dca_amount"],
+            amount_per_order_eth=data["dca_amount"],
             interval_seconds=data["dca_interval_seconds"],
             total_orders=data["dca_total_orders"],
             price_floor=data.get("dca_price_floor"),

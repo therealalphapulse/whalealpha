@@ -90,11 +90,11 @@ async def _update_trailing_high(position_id: int, current_price: float, highest_
 async def execute_exit(bot, position: AutoTradePosition, reason: str) -> None:
     """§21/§23/§24 -- sell-side state machine for one position."""
     user_id = position.user_id
-    await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_RESOLVING)
+    await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_REETHVING)
 
     balance = await position_manager.resolve_sellable_balance(user_id, position)
     if not balance["ok"]:
-        await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_RESOLVING, last_error=balance.get("reason"))
+        await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_REETHVING, last_error=balance.get("reason"))
         logger.warning("[AutoTrade] sellable balance unresolved, will retry, pos=%s: %s", position.id, balance.get("reason"))
         return
 
@@ -191,7 +191,7 @@ async def execute_exit(bot, position: AutoTradePosition, reason: str) -> None:
         "sl": "Stop-Loss", "trailing": "Trailing Stop", "manual": "Manual",
     }.get(reason, reason)
     logger.info(
-        "[AutoTrade][trade=%s] SELL_CONFIRMED user=%s contract=%s reason=%s proceeds=%.4f SOL pnl=%.4f SOL",
+        "[AutoTrade][trade=%s] SELL_CONFIRMED user=%s contract=%s reason=%s proceeds=%.4f ETH pnl=%.4f ETH",
         position.id, user_id, position.contract, reason, sol_received, realized_pnl,
     )
     if bot is not None:
@@ -200,8 +200,8 @@ async def execute_exit(bot, position: AutoTradePosition, reason: str) -> None:
                 user_id,
                 f"🏁 <b>Auto-Trade Closed ({reason_label})</b>\n"
                 f"Token: {position.symbol}\n"
-                f"Proceeds: {sol_received:.4f} SOL\n"
-                f"PnL: {'+' if realized_pnl >= 0 else ''}{realized_pnl:.4f} SOL",
+                f"Proceeds: {sol_received:.4f} ETH\n"
+                f"PnL: {'+' if realized_pnl >= 0 else ''}{realized_pnl:.4f} ETH",
                 parse_mode="HTML",
             )
         except Exception as e:

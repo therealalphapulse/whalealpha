@@ -19,10 +19,10 @@ import logging
 from datetime import datetime, timezone
 
 from models.auto_trade_policy import AutoTradePolicy
-from domain.trading.real.jupiter_swap import get_sol_balance, SwapError
-from domain.trading.real.solana_wallet import get_real_wallet
+from domain.trading.real.robinhood_swap import get_native_balance, SwapError
+from domain.trading.real.robinhood_wallet import get_real_wallet
 
-from .constants import RejectionReason, BUY_NETWORK_RESERVE_LAMPORTS
+from .constants import RejectionReason, BUY_NETWORK_RESERVE_WEI
 from .signal_adapter import AutoTradeSignal
 from . import policy_service
 from . import position_manager
@@ -75,7 +75,7 @@ async def evaluate_user_policy(user_id: int, policy: AutoTradePolicy, signal: Au
     if open_count >= int(policy.max_open_positions or 0):
         return GateResult(False, RejectionReason.MAX_OPEN_POSITIONS_REACHED, f"{open_count}/{policy.max_open_positions}")
 
-    # Buy Amount fix: policy.buy_amount_sol is a SOL amount now (see
+    # Buy Amount fix: policy.buy_amount_sol is a ETH amount now (see
     # models/auto_trade_policy.py), entered directly by the user.
     buy_amount_sol = float(policy.buy_amount_sol or 0.0)
     if buy_amount_sol <= 0:
@@ -102,7 +102,7 @@ async def evaluate_execution_risk(user_id: int, sol_amount: float) -> GateResult
         return GateResult(False, RejectionReason.NO_WALLET)
 
     try:
-        balance_lamports = int((await get_sol_balance(wallet.public_key)) * 1_000_000_000)
+        balance_wei = int((await get_native_balance(wallet.public_key)) * 1_000_000_000_000_000_000)
     except SwapError as e:
         logger.warning("[AutoTrade] balance preflight failed user=%s: %s", user_id, e)
         return GateResult(False, RejectionReason.EXECUTION_UNAVAILABLE, "wallet balance check failed")
@@ -110,8 +110,8 @@ async def evaluate_execution_risk(user_id: int, sol_amount: float) -> GateResult
         logger.error("[AutoTrade] unexpected balance preflight error user=%s: %s", user_id, e)
         return GateResult(False, RejectionReason.EXECUTION_UNAVAILABLE, "unexpected balance error")
 
-    required_lamports = int(sol_amount * 1_000_000_000) + BUY_NETWORK_RESERVE_LAMPORTS
-    if balance_lamports < required_lamports:
+    required_wei = int(sol_amount * 1_000_000_000_000_000_000) + BUY_NETWORK_RESERVE_WEI
+    if balance_wei < required_wei:
         return GateResult(False, RejectionReason.INSUFFICIENT_BALANCE)
 
     return GateResult(True)

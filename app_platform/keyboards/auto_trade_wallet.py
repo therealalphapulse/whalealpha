@@ -16,7 +16,7 @@ def auto_trade_wallet_menu_kb(policy) -> InlineKeyboardMarkup:
     trailing_label = "\U0001F4C9 Trailing Stop: ON" if policy.trailing_stop_enabled else "\U0001F4C9 Trailing Stop: OFF"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_label, callback_data="atw:toggle")],
-        [InlineKeyboardButton(text="\U0001F4B5 Buy Amount", callback_data="atw:edit:buy_amount_sol"),
+        [InlineKeyboardButton(text="\U0001F4B5 Buy Amount", callback_data="atw:edit:buy_amount_eth"),
          InlineKeyboardButton(text="\U0001F522 Daily Limit", callback_data="atw:edit:daily_trade_limit")],
         [InlineKeyboardButton(text="\U0001F3AF Take-Profit %", callback_data="atw:edit:take_profit_pct"),
          InlineKeyboardButton(text="\U0001F6E1\uFE0F Stop-Loss %", callback_data="atw:edit:stop_loss_pct")],

@@ -24,7 +24,7 @@ from sqlalchemy import select, update
 from infra.db.session import async_session
 from models.real_limit_order import RealLimitOrder
 from providers.marketdata.dexscreener import get_token_card_info
-from domain.trading.real.solana_wallet import get_wallet_settings, register_auto_spend, release_auto_spend
+from domain.trading.real.robinhood_wallet import get_wallet_settings, register_auto_spend, release_auto_spend
 from domain.trading.real import real_trade_engine
 
 logger = logging.getLogger("AlphaPulse.RealLimitOrderEngine")
@@ -55,7 +55,7 @@ async def create_order(
     if trigger_price <= 0:
         raise LimitOrderValidationError("Trigger price must be greater than 0.")
     if sol_amount <= 0:
-        raise LimitOrderValidationError("Amount must be greater than 0 SOL.")
+        raise LimitOrderValidationError("Amount must be greater than 0 ETH.")
 
     async with async_session() as session:
         count_result = await session.execute(
@@ -183,7 +183,7 @@ async def _fill_order(bot, order: RealLimitOrder, current_price: float) -> None:
             bot, order.user_id,
             f"🎯 <b>Limit order filled — {trade.symbol or ''}</b>\n"
             f"Triggered at ${current_price:.8f} (target ${order.trigger_price:.8f})\n"
-            f"Spent: {trade.sol_spent:.4f} SOL\n"
+            f"Spent: {trade.sol_spent:.4f} ETH\n"
             f"Tx: <code>{result['signature']}</code>\n\n"
             f"Manage this position from /realwallet.",
         )

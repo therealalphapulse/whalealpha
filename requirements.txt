@@ -30,3 +30,6 @@ sentry-sdk==2.13.0
 # AWS KMS backend for infra/kms/kms_provider.py (§8). Only required when
 # KMS_PROVIDER=aws_kms; not needed for the default env-var provider.
 boto3==1.34.162
+
+# EVM wallet signing for Robinhood Chain
+eth-account==0.13.7

@@ -741,3 +741,8 @@ ROBINHOOD_DISCOVERY_ENABLED = _env_bool("ROBINHOOD_DISCOVERY_ENABLED", True)  # 
 # environment to re-enable unattended real-wallet auto-buys
 # (workers/signal_trading_worker.py). No automation code was removed.
 REAL_AUTOMATION_ENABLED = _env_bool("REAL_AUTOMATION_ENABLED", False)
+
+# Robinhood Chain trading (EVM, chain 4663)
+ROBINHOOD_EVM_CHAIN_ID = 4663
+ROBINHOOD_RPC_URL = os.getenv("ROBINHOOD_RPC_URL", "https://rpc.mainnet.chain.robinhood.com")
+ROBINHOOD_UNISWAP_API_KEY = os.getenv("UNISWAP_API_KEY")

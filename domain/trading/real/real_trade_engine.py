@@ -13,16 +13,16 @@ from sqlalchemy import select, update
 
 from infra.db.session import async_session
 from models.real_trade import RealTrade
-from domain.trading.real.solana_wallet import get_real_wallet, PRIORITY_FEE_TIERS
+from domain.trading.real.robinhood_wallet import get_real_wallet, PRIORITY_FEE_TIERS
 from infra.kms.wallet_crypto import decrypt_secret
-from domain.trading.real import jupiter_swap
-from domain.trading.real.jupiter_swap import WRAPPED_SOL_MINT, SwapError
+from domain.trading.real import robinhood_swap as robinhood_swap
+from domain.trading.real.robinhood_swap import NATIVE_ETH_ADDRESS, SwapError
 from providers.marketdata.dexscreener import get_token_card_info
 
 logger = logging.getLogger("AlphaPulse.RealTradeEngine")
 
 SELL_ALREADY_IN_PROGRESS = "A sell is already in progress for this position. Please wait for it to finish."
-BUY_NETWORK_RESERVE_LAMPORTS = 10_000_000
+BUY_NETWORK_RESERVE_WEI = 10_000_000
 DB_FINALIZE_RETRIES = 3
 
 # Sells claim an existing "open" RealTrade row atomically (status -> "selling"),
@@ -42,7 +42,7 @@ def _buy_lock(user_id: int) -> asyncio.Lock:
 
 
 def _output_decimals(quote: dict) -> int:
-    """Best-effort decimals fallback from a Jupiter quote."""
+    """Best-effort decimals fallback from a Uniswap quote."""
     for key in ("outputDecimals", "outDecimals", "output_decimals"):
         value = quote.get(key) if isinstance(quote, dict) else None
         if value is not None:
@@ -153,17 +153,17 @@ async def execute_real_buy(
     if not wallet:
         return {"ok": False, "reason": "No active Real Wallet. Use /realwallet to set one up."}
     if sol_amount <= 0:
-        return {"ok": False, "reason": "Amount must be greater than 0 SOL."}
+        return {"ok": False, "reason": "Amount must be greater than 0 ETH."}
 
     lock = _buy_lock(user_id)
     if lock.locked():
         return {"ok": False, "reason": "A buy is already in progress for this wallet. Wait for it to finish before starting another."}
 
     async with lock:
-        lamports = int(sol_amount * 1_000_000_000)
-        priority_fee_lamports = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
+        wei = int(sol_amount * 1_000_000_000_000_000_000)
+        priority_fee_wei = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
         try:
-            balance_lamports = int((await jupiter_swap.get_sol_balance(wallet.public_key)) * 1_000_000_000)
+            balance_wei = int((await robinhood_swap.get_native_balance(wallet.public_key)) * 1_000_000_000_000_000_000)
         except SwapError as e:
             logger.warning("Real buy balance preflight failed for user %s: %s", user_id, e)
             return {"ok": False, "reason": "Unable to check wallet balance."}
@@ -171,18 +171,18 @@ async def execute_real_buy(
             logger.error("Unexpected RealWallet balance preflight error for user %s: %s", user_id, e)
             return {"ok": False, "reason": "Unable to check wallet balance."}
 
-        required_lamports = lamports + BUY_NETWORK_RESERVE_LAMPORTS
-        if isinstance(priority_fee_lamports, int):
-            required_lamports += priority_fee_lamports
-        if balance_lamports < required_lamports:
+        required_wei = wei + BUY_NETWORK_RESERVE_WEI
+        if isinstance(priority_fee_wei, int):
+            required_wei += priority_fee_wei
+        if balance_wei < required_wei:
             return {"ok": False, "reason": "Insufficient funds."}
 
         try:
-            quote = await jupiter_swap.get_quote(input_mint=WRAPPED_SOL_MINT, output_mint=contract, amount_lamports=lamports, slippage_bps=slippage_bps)
-            tx_b64 = await jupiter_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_lamports=priority_fee_lamports)
+            quote = await robinhood_swap.get_quote(input_mint=NATIVE_ETH_ADDRESS, output_mint=contract, amount_wei=wei, slippage_bps=slippage_bps, swapper=wallet.public_key)
+            tx_b64 = await robinhood_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_wei=priority_fee_wei)
             secret_bytes = decrypt_secret(wallet.encrypted_secret, wallet.encryption_nonce)
             try:
-                send_result = await jupiter_swap.sign_send_and_confirm(tx_b64, secret_bytes)
+                send_result = await robinhood_swap.sign_send_and_confirm(tx_b64, secret_bytes)
             finally:
                 del secret_bytes
         except SwapError as e:
@@ -197,7 +197,7 @@ async def execute_real_buy(
 
         signature = send_result["signature"]
         try:
-            decimals = await jupiter_swap.get_mint_decimals(contract)
+            decimals = await robinhood_swap.get_mint_decimals(contract)
         except SwapError:
             decimals = _output_decimals(quote)
 
@@ -210,7 +210,7 @@ async def execute_real_buy(
         token_quantity = quote_token_quantity
         quantity_source = "quote_estimate"
         try:
-            fill = await jupiter_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
+            fill = await robinhood_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
             if fill["token_delta_raw"] > 0:
                 token_quantity = fill["token_delta_raw"] / (10 ** decimals)
                 quantity_source = "onchain_confirmed"
@@ -446,7 +446,7 @@ async def execute_real_sell(
         return {"ok": False, "reason": "Nothing left to sell on this position."}
 
     try:
-        chain_balance = await jupiter_swap.get_token_balance(wallet.public_key, contract)
+        chain_balance = await robinhood_swap.get_token_balance(wallet.public_key, contract)
     except SwapError as e:
         logger.error("Real sell on-chain balance preflight failed user=%s trade=%s mint=%s: %s", user_id, trade_id, contract, e)
         await _release_claim()
@@ -491,19 +491,20 @@ async def execute_real_sell(
         )
 
     try:
-        quote = await jupiter_swap.get_quote(
+        quote = await robinhood_swap.get_quote(
             input_mint=contract,
-            output_mint=WRAPPED_SOL_MINT,
-            amount_lamports=sell_raw_amount,
+            output_mint=NATIVE_ETH_ADDRESS,
+            amount_wei=sell_raw_amount,
             slippage_bps=slippage_bps,
+            swapper=wallet.public_key,
         )
-        priority_fee_lamports = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
-        tx_b64 = await jupiter_swap.build_swap_transaction(
-            quote, wallet.public_key, priority_fee_lamports=priority_fee_lamports
+        priority_fee_wei = PRIORITY_FEE_TIERS.get(priority_fee_tier, "auto")
+        tx_b64 = await robinhood_swap.build_swap_transaction(
+            quote, wallet.public_key, priority_fee_wei=priority_fee_wei
         )
         secret_bytes = decrypt_secret(wallet.encrypted_secret, wallet.encryption_nonce)
         try:
-            send_result = await jupiter_swap.sign_send_and_confirm(tx_b64, secret_bytes)
+            send_result = await robinhood_swap.sign_send_and_confirm(tx_b64, secret_bytes)
         finally:
             del secret_bytes
     except SwapError as e:
@@ -530,22 +531,22 @@ async def execute_real_sell(
 
     # As with the buy leg: the quote's outAmount is a pre-trade estimate.
     # Realized PnL must be computed off what the wallet actually received,
-    # read from the confirmed transaction's native-SOL balance delta (the
-    # swap unwraps WSOL back to native SOL, so this is the real proceeds,
+    # read from the confirmed transaction's native-ETH balance delta (the
+    # swap unwraps WETH back to native ETH, so this is the real proceeds,
     # already net of the network/priority fee).
-    quote_sol_received = float(quote.get("outAmount", 0)) / 1_000_000_000
+    quote_sol_received = float(quote.get("outAmount", 0)) / 1_000_000_000_000_000_000
     sol_received = quote_sol_received
     sol_source = "quote_estimate"
     try:
-        fill = await jupiter_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
-        if fill["sol_delta_lamports"] > 0:
-            sol_received = fill["sol_delta_lamports"] / 1_000_000_000
+        fill = await robinhood_swap.get_confirmed_transaction_deltas(signature, wallet.public_key, contract)
+        if fill["sol_delta_wei"] > 0:
+            sol_received = fill["sol_delta_wei"] / 1_000_000_000_000_000_000
             sol_source = "onchain_confirmed"
         else:
             logger.warning(
                 "[RealWallet] SELL_FILL_UNVERIFIED user=%s trade=%s mint=%s signature=%s "
-                "sol_delta_lamports=%s falling back to quote estimate=%s",
-                user_id, trade_id, contract, signature, fill["sol_delta_lamports"], quote_sol_received,
+                "sol_delta_wei=%s falling back to quote estimate=%s",
+                user_id, trade_id, contract, signature, fill["sol_delta_wei"], quote_sol_received,
             )
     except SwapError as e:
         logger.warning(
