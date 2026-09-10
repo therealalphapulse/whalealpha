@@ -1519,6 +1519,24 @@ def _build_pump_card_text(
 
     score = pump.get("score", 0)
     tier = pump.get("tier") or pump.get("verdict", "N/A")
+    # A card only ever gets built for a candidate that has already
+    # cleared ITS engine's own gate -- hard_reject_reasons() plus either
+    # qualification.py's dynamic_cutoff on the classic Solana loop, or
+    # Engine A/B's own lane-specific discovery/confidence score (see
+    # domain.signals.wallet_consensus_engine /
+    # domain.signals.robinhood_discovery) -- so a card is, by
+    # construction, never actually "rejected". The shared conviction
+    # scorer's lowest TIER_LABELS bucket is still literally named
+    # "REJECT" though (domain.signals.scoring.TIER_LABELS), because
+    # scoring.py is also used standalone for candidates that never make
+    # it this far. Engine A/B bypass the classic dynamic_cutoff gate, so
+    # it's entirely possible for an alert-worthy token (by that engine's
+    # own bar) to still score under 65 on the shared scorer and land in
+    # that bucket -- showing the literal word "REJECT" on a message that
+    # was, in fact, just delivered. Never changes whether an alert is
+    # sent -- only this display label on one that already is.
+    if tier == "❌ REJECT":
+        tier = "⚪ SUB-FLOOR (tracked only)"
     reasons = pump.get("reasons") or []
     reasons_line = " · ".join(reasons) if reasons else "Cleared all quality gates"
     breakdown = pump.get("breakdown") or {}
