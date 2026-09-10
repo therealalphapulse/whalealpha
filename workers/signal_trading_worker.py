@@ -32,6 +32,7 @@ from domain.signals.pump_radar import pump_radar_loop
 from domain.signals.signal_tracker import signal_lifecycle_loop, scheduled_broadcast_loop
 from domain.trading.paper.paper_monitor import paper_monitor_loop
 from domain.trading.real.solana_wallet import migrate_real_wallet_schema
+from domain.trading.auto_trade.worker import auto_trade_scan_loop, auto_trade_exit_loop
 from domain.trading.real.real_dca_engine import real_dca_scheduler_loop
 from domain.trading.real.real_automation_engine import real_automation_loop
 from domain.trading.real.real_exit_engine import real_exit_engine_loop
@@ -125,6 +126,10 @@ async def main() -> None:
         run_as_leader("loop:real_exit_engine", lambda: real_exit_engine_loop(bot, interval_seconds=20),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:real_limit_orders", lambda: real_limit_order_engine_loop(bot, interval_seconds=20),
+                       lease_seconds=90, renew_interval_seconds=30),
+        run_as_leader("loop:auto_trade_scan", lambda: auto_trade_scan_loop(bot, interval_seconds=20),
+                       lease_seconds=90, renew_interval_seconds=30),
+        run_as_leader("loop:auto_trade_exit", lambda: auto_trade_exit_loop(bot, interval_seconds=20),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:payment_expiry_sweep", lambda: payment_expiry_sweep_loop(interval_seconds=900),
                        lease_seconds=90, renew_interval_seconds=30),

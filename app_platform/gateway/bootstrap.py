@@ -45,6 +45,7 @@ from domain.signals.signal_tracker import migrate_signal_schema
 from domain.intelligence.kol_tracker import migrate_kol_wallet_schema, sync_kol_wallets_from_provider
 from domain.trading.paper.paper_engine import migrate_paper_trade_schema
 from domain.trading.real.solana_wallet import migrate_real_wallet_schema
+from domain.trading.auto_trade.policy_service import migrate_auto_trade_schema
 from domain.signals.pump_radar import subscribe_all_users_to_pump_alerts
 
 logger = logging.getLogger("AlphaPulse.Bootstrap")
@@ -66,6 +67,7 @@ async def run_startup_tasks() -> None:
         ("KOL schema migration", migrate_kol_wallet_schema()),
         ("Paper trade schema migration", migrate_paper_trade_schema()),
         ("Real wallet schema migration", migrate_real_wallet_schema()),
+        ("Auto-Trade policy schema migration", migrate_auto_trade_schema()),
         ("Bulk pump alert auto-subscribe", subscribe_all_users_to_pump_alerts()),
         ("Initial KOL provider sync", sync_kol_wallets_from_provider(bot=None)),
     ]:

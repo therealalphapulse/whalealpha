@@ -68,13 +68,15 @@ def _register_routers(dp: Dispatcher) -> None:
     from app_platform.commands.real_wallet import router as real_wallet_router
     from app_platform.commands.real_wallet_pnl import router as real_wallet_pnl_router
     from app_platform.commands.real_wallet_auto_settings import router as real_wallet_auto_settings_router
+    from app_platform.commands.auto_trade_wallet import router as auto_trade_wallet_router
     from app_platform.commands.premium import router as premium_router
     from app_platform.commands.admin_panel import router as admin_panel_router
     for router in (
         start_router, market_router, trending_router, token_router, security_router,
         score_router, watchlist_router, narrative_router, whales_router, portfolio_router,
         wallet_portfolio_router, kol_router, pump_router, signals_router, paper_trading_router,
-        real_wallet_pnl_router, real_wallet_router, real_wallet_auto_settings_router, premium_router,
+        real_wallet_pnl_router, real_wallet_router, real_wallet_auto_settings_router,
+        auto_trade_wallet_router, premium_router,
         admin_panel_router, auto_scan_router,
     ):
         dp.include_router(router)
@@ -87,6 +89,7 @@ BOT_COMMANDS = [
     BotCommand(command="top", description="Top 5 performing signals"),
     BotCommand(command="paper", description="Paper trading dashboard"),
     BotCommand(command="realwallet", description="Real Wallet — trade with real funds"),
+    BotCommand(command="wallet", description="Auto-Trade wallet, positions & TP/SL status"),
     BotCommand(command="portfolio", description="Your manual portfolio"),
     BotCommand(command="wallet_portfolio", description="On-chain wallet lookup"),
     BotCommand(command="token", description="Token lookup: /token <contract>"),
