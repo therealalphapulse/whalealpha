@@ -358,9 +358,9 @@ async def _show_automation_panel(target, user_id: int, edit: bool):
         "switch, since both spend unattended.\n\n"
         f"<b>Status:</b> {'🟢 ON' if status['auto_trading_enabled'] else '⚪ OFF'}\n"
         f"<b>Kill switch:</b> {'🛑 ENGAGED' if status['kill_switch'] else '✅ off'}\n"
-        f"<b>Daily cap:</b> {status['daily_cap_eth']:.2f} ETH\n"
-        f"<b>Spent today:</b> {status['spent_today_eth']:.4f} ETH "
-        f"({status['remaining_today_eth']:.4f} ETH remaining)"
+        f"<b>Daily cap:</b> {status['daily_cap_sol']:.2f} ETH\n"
+        f"<b>Spent today:</b> {status['spent_today_sol']:.4f} ETH "
+        f"({status['remaining_today_sol']:.4f} ETH remaining)"
     )
     kb = real_wallet_automation_kb(status["auto_trading_enabled"], status["kill_switch"], status["daily_cap_sol"])
     if edit:
@@ -751,7 +751,7 @@ async def _execute_and_report_buy(target_message, user_id: int, contract: str, e
         name=info["name"],
         symbol=info["symbol"],
         current_price=price,
-        eth_amount=eth_amount,
+        sol_amount=eth_amount,
         slippage_bps=settings["slippage_bps"],
         priority_fee_tier=settings["priority_fee_tier"],
     )
@@ -1360,7 +1360,7 @@ async def on_limit_amount_message(message: Message, state: FSMContext):
             symbol=data.get("limit_symbol"),
             direction=data["limit_direction"],
             trigger_price=data["limit_price"],
-            eth_amount=eth_amount,
+            sol_amount=eth_amount,
         )
     except real_limit_order_engine.LimitOrderValidationError as e:
         await message.answer(f"❌ {html.escape(str(e))}")
@@ -1687,7 +1687,7 @@ def _dca_schedule_text(schedule) -> str:
         f"🧬 <b>DCA — {html.escape(schedule.symbol or schedule.contract[:8])}</b>\n\n"
         f"Status: <b>{schedule.status}</b>\n"
         f"Progress: <b>{schedule.orders_filled}/{schedule.total_orders}</b> orders\n"
-        f"Amount per order: <b>{schedule.amount_per_order_eth} ETH</b>\n"
+        f"Amount per order: <b>{schedule.amount_per_order_sol} ETH</b>\n"
         f"Interval: <b>{schedule.interval_seconds}s</b>"
         f"{guard_text}"
         f"{error_text}"
@@ -1955,7 +1955,7 @@ async def _finalize_dca_schedule(target, user_id: int, state: FSMContext, is_cal
             contract=data["dca_contract"],
             name=data.get("dca_name"),
             symbol=data.get("dca_symbol"),
-            amount_per_order_eth=data["dca_amount"],
+            amount_per_order_sol=data["dca_amount"],
             interval_seconds=data["dca_interval_seconds"],
             total_orders=data["dca_total_orders"],
             price_floor=data.get("dca_price_floor"),

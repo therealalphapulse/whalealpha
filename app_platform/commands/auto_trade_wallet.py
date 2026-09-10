@@ -48,7 +48,7 @@ class AutoTradeWalletStates(StatesGroup):
 
 # Labels shown in the "send a value" prompt for each editable field.
 _EDIT_FIELD_LABELS = {
-    "buy_amount_eth": "buy amount in ETH (e.g. 0.1)",
+    "buy_amount_sol": "buy amount in ETH (e.g. 0.1)",
     "take_profit_pct": "take-profit percent (e.g. 50)",
     "stop_loss_pct": "stop-loss percent (e.g. 30)",
     "trailing_stop_pct": "trailing-stop percent (e.g. 15)",
@@ -312,7 +312,7 @@ async def on_field_value_message(message: Message, state: FSMContext) -> None:
                 raise ValueError
         else:
             value = float(raw)
-            if field == "buy_amount_eth" and value <= 0:
+            if field == "buy_amount_sol" and value <= 0:
                 raise ValueError
             if field in ("take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "trailing_activation_pct", "trailing_retracement_pct") and value <= 0:
                 raise ValueError
