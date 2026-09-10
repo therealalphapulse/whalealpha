@@ -91,6 +91,7 @@ from providers.marketdata.dexscreener import (
 from domain.signals.candidate_validation import build_validated_candidate
 from domain.signals.pump_radar import send_pump_card, get_pump_subscribers
 from domain.signals.channel_config import load_channel_ids
+from domain.signals.signal_tracker import create_signal_from_candidate, update_signal_message_ids
 
 logger = logging.getLogger("WhaleAlpha.RobinhoodDiscovery")
 
@@ -607,6 +608,18 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                 "📚 Standard educational on-chain and fundamental analysis only — not financial advice. DYOR."
             )
 
+            # Captured BEFORE `existing` is possibly reassigned just
+            # below -- this is the one moment (the very first time this
+            # contract is ever alerted by this engine) a SignalToken row
+            # + message ids should be created, mirroring how
+            # domain.signals.pump_radar.pump_radar_loop does it for the
+            # classic Pump.fun path. Every later re-alert on cooldown
+            # keeps updating the RobinhoodDiscoverySignal row above as
+            # before, but never touches SignalToken again -- the
+            # lifecycle loop takes over price/milestone tracking for it
+            # from here.
+            is_first_alert = existing is None
+
             if existing is None:
                 existing = RobinhoodDiscoverySignal(token_contract=contract)
                 session.add(existing)
@@ -628,19 +641,38 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
             existing.cooldown_expires_at = _now() + timedelta(hours=ROBINHOOD_COOLDOWN_HOURS)
 
             title = FRESH_TITLE if bucket == "fresh" else REVIVAL_TITLE
+            msg_ids = {}
             if bot is not None and recipients:
                 for chat_id in recipients:
                     try:
-                        await send_pump_card(
+                        sent = await send_pump_card(
                             bot, chat_id, card,
                             title=title,
                             extra_block=why_selected,
                         )
+                        if is_first_alert and sent and hasattr(sent, "message_id"):
+                            msg_ids[str(chat_id)] = sent.message_id
                     except Exception as e:
                         logger.warning(f"Robinhood discovery: send failed for {contract} -> {chat_id}: {e}")
                 stats["signals_sent"] += 1
             else:
                 stats["signals_skipped_no_recipients"] += 1
+
+            if is_first_alert:
+                # Best-effort: a failure here must never break the
+                # RobinhoodDiscoverySignal row/re-alert flow above, which
+                # has already been committed to `existing` in this same
+                # session regardless of what happens next.
+                try:
+                    created = await create_signal_from_candidate(
+                        {"contract": contract, "data": data, "pump": {"score": score, "breakdown": breakdown}},
+                        enforce_pumpfun_policy=False,
+                        chain=ROBINHOOD_CHAIN_ID,
+                    )
+                    if created and msg_ids:
+                        await update_signal_message_ids(contract, msg_ids)
+                except Exception as e:
+                    logger.error(f"Robinhood discovery: SignalToken creation failed for {contract}: {e}")
 
         await session.commit()
 

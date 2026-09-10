@@ -67,6 +67,11 @@ def format_x(value) -> str:
 async def migrate_signal_schema():
     statements = [
         "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS twitter_url VARCHAR",
+        # Discovery-engine origin -- see models/signal_token.py. Defaults
+        # every existing row to "solana" (the only chain the classic
+        # Pump.fun-only Signal Engine ever created rows for), so nothing
+        # already in the table needs a backfill.
+        "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS chain VARCHAR DEFAULT 'solana'",
         "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS telegram_url VARCHAR",
         "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS message_ids_json TEXT DEFAULT '{}'",
         "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS telegram_message_id BIGINT",
@@ -448,7 +453,31 @@ async def get_previous_signal_for_contract(contract: str) -> SignalToken | None:
         return res.scalar_one_or_none()
 
 
-async def create_signal_from_candidate(candidate: dict) -> bool:
+async def create_signal_from_candidate(
+    candidate: dict,
+    *,
+    enforce_pumpfun_policy: bool = True,
+    chain: str = "solana",
+) -> bool:
+    """
+    `enforce_pumpfun_policy` / `chain` are optional and backward
+    compatible -- every existing caller (domain.signals.pump_radar's
+    classic Solana loop) doesn't pass them and behaves exactly as
+    before. They exist so Discovery Engine A (Wallet Consensus) and
+    Discovery Engine B (Robinhood Chain) -- domain.signals.
+    wallet_consensus_engine / robinhood_discovery -- can also create a
+    real SignalToken row for a token they've alerted on, WITHOUT
+    satisfying the Pump.fun-suffix check below (neither engine's
+    tokens are Pump.fun-origin mints), so those tokens join the same
+    signal_lifecycle_loop() Quote Alert milestone tracking (25%/50%/
+    75%/2X/3X.../reply-quoting) and domain.intelligence.
+    king_token_profile pool that classic Pump.fun signals already get.
+    Each engine's own WalletConsensusSignal/RobinhoodDiscoverySignal
+    row (re-alert cooldown, wallet/discovery-specific metadata) is
+    untouched by this -- this only ever adds a SECOND, minimal
+    SignalToken row alongside it, the first time that contract is ever
+    alerted by that engine.
+    """
     contract = candidate.get("contract", "")
     data = candidate.get("data") or {}
     pump = candidate.get("pump") or {}
@@ -460,8 +489,10 @@ async def create_signal_from_candidate(candidate: dict) -> bool:
     # non-Pump.fun contract can never enter the Signal Engine even if a
     # future caller forgets to filter upstream. A Pump.fun mint address
     # ends with the literal suffix "pump".
-    if not contract or not contract.lower().endswith("pump"):
+    if enforce_pumpfun_policy and (not contract or not contract.lower().endswith("pump")):
         logger.info(f"Signal rejected — not a verified Pump.fun origin: {contract[:8] if contract else 'N/A'}...")
+        return False
+    if not contract:
         return False
 
     async with async_session() as session:
@@ -479,6 +510,7 @@ async def create_signal_from_candidate(candidate: dict) -> bool:
 
         signal = SignalToken(
             contract=contract,
+            chain=chain,
             name=data.get("name"),
             symbol=data.get("symbol"),
             twitter_url=data.get("twitter_url"),
@@ -623,7 +655,7 @@ async def signal_lifecycle_loop(bot, interval_seconds=90):
 
             for s in signals:
                 try:
-                    data = await get_token_card_info(s.contract)
+                    data = await get_token_card_info(s.contract, getattr(s, "chain", None) or "solana")
                     if not data:
                         continue
 
