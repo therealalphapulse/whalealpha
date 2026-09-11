@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from eth_account import Account
 from sqlalchemy import select, text, and_, not_
+from sqlalchemy.exc import IntegrityError
 from infra.db.session import async_session, engine
 from models.real_wallet import RealWallet
 from infra.kms.wallet_crypto import encrypt_secret, decrypt_secret
@@ -74,13 +75,30 @@ async def create_wallet(user_id: int) -> RealWallet:
     account = Account.create()
     secret_bytes = bytes(account.key)
     encrypted_secret, nonce = encrypt_secret(secret_bytes)
-    async with async_session() as session:
-        wallet = RealWallet(user_id=user_id, public_key=account.address, encrypted_secret=encrypted_secret, encryption_nonce=nonce, source="created", chain_id=ROBINHOOD_EVM_CHAIN_ID, network="robinhood")
-        session.add(wallet)
-        await session.commit()
-        await session.refresh(wallet)
-        logger.info("Created Robinhood Chain wallet user=%s address=%s", user_id, account.address)
-        return wallet
+
+    # _clear_stale_wallet_row() above should have removed any leftover
+    # real_wallets row for this user_id (the column is UNIQUE), but if a
+    # concurrent create/import request slipped in between that cleanup and
+    # this insert, the commit below hits the user_id UNIQUE constraint and
+    # previously surfaced to the user as a generic "something went wrong"
+    # error with the real IntegrityError only visible in the logs. Retry
+    # the cleanup + insert once before giving the user an accurate message.
+    for attempt in range(2):
+        try:
+            async with async_session() as session:
+                wallet = RealWallet(user_id=user_id, public_key=account.address, encrypted_secret=encrypted_secret, encryption_nonce=nonce, source="created", chain_id=ROBINHOOD_EVM_CHAIN_ID, network="robinhood")
+                session.add(wallet)
+                await session.commit()
+                await session.refresh(wallet)
+                logger.info("Created Robinhood Chain wallet user=%s address=%s", user_id, account.address)
+                return wallet
+        except IntegrityError as exc:
+            if attempt == 0:
+                logger.warning("create_wallet: user_id UNIQUE constraint hit for user=%s, clearing stale row and retrying: %s", user_id, exc)
+                await _clear_stale_wallet_row(user_id)
+                continue
+            logger.error("create_wallet: user_id UNIQUE constraint still present after retry for user=%s: %s", user_id, exc)
+            raise WalletImportError("You already have a wallet on file. Disconnect it first, then try again.") from exc
 
 def _parse_private_key_input(raw: str) -> bytes:
     value = raw.strip()
@@ -104,13 +122,25 @@ async def import_wallet(user_id: int, raw_private_key: str) -> RealWallet:
     except Exception as exc:
         raise WalletImportError("That key is not a valid EVM private key.") from exc
     encrypted_secret, nonce = encrypt_secret(secret_bytes)
-    async with async_session() as session:
-        wallet = RealWallet(user_id=user_id, public_key=account.address, encrypted_secret=encrypted_secret, encryption_nonce=nonce, source="imported", chain_id=ROBINHOOD_EVM_CHAIN_ID, network="robinhood")
-        session.add(wallet)
-        await session.commit()
-        await session.refresh(wallet)
-        logger.info("Imported Robinhood Chain wallet user=%s address=%s", user_id, account.address)
-        return wallet
+
+    # See create_wallet() above: retry once on the user_id UNIQUE
+    # constraint instead of letting it surface as a generic error.
+    for attempt in range(2):
+        try:
+            async with async_session() as session:
+                wallet = RealWallet(user_id=user_id, public_key=account.address, encrypted_secret=encrypted_secret, encryption_nonce=nonce, source="imported", chain_id=ROBINHOOD_EVM_CHAIN_ID, network="robinhood")
+                session.add(wallet)
+                await session.commit()
+                await session.refresh(wallet)
+                logger.info("Imported Robinhood Chain wallet user=%s address=%s", user_id, account.address)
+                return wallet
+        except IntegrityError as exc:
+            if attempt == 0:
+                logger.warning("import_wallet: user_id UNIQUE constraint hit for user=%s, clearing stale row and retrying: %s", user_id, exc)
+                await _clear_stale_wallet_row(user_id)
+                continue
+            logger.error("import_wallet: user_id UNIQUE constraint still present after retry for user=%s: %s", user_id, exc)
+            raise WalletImportError("You already have a wallet on file. Disconnect it first, then try again.") from exc
 
 async def export_wallet_secret(user_id: int) -> str:
     wallet = await get_real_wallet(user_id)
