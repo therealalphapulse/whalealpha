@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from eth_account import Account
-from sqlalchemy import select, text
+from sqlalchemy import select, text, and_, not_
 from infra.db.session import async_session, engine
 from models.real_wallet import RealWallet
 from infra.kms.wallet_crypto import encrypt_secret, decrypt_secret
@@ -32,10 +32,45 @@ async def get_real_wallet(user_id: int) -> RealWallet | None:
         result = await session.execute(select(RealWallet).where(RealWallet.user_id == user_id, RealWallet.is_active == True, RealWallet.chain_id == ROBINHOOD_EVM_CHAIN_ID))
         return result.scalar_one_or_none()
 
+async def _clear_stale_wallet_row(user_id: int) -> None:
+    """real_wallets.user_id is UNIQUE (models/real_wallet.py) -- one row
+    per user, period, regardless of chain_id/is_active. migrate_real_wallet_schema()
+    deactivates (is_active=False) any pre-Robinhood-migration row for the
+    wrong chain, but never deletes it, so a user who had a wallet before
+    this chain migration still has that dead row sitting in the table.
+    create_wallet()/import_wallet() always INSERT a new row rather than
+    reusing one, so for that user every future create/import hits the
+    user_id UNIQUE constraint at the DB layer -- surfacing to the person
+    as a generic 'something went wrong importing that key' error, with
+    the real IntegrityError only visible in the logs.
+
+    Deletes any row for this user_id that is NOT the current active
+    Robinhood Chain wallet. Never touches an active Robinhood Chain
+    wallet -- that case is already caught earlier by create_wallet()'s /
+    import_wallet()'s own "you already have an active wallet" check, so
+    by the time this runs there is nothing left to preserve.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(RealWallet).where(
+                RealWallet.user_id == user_id,
+                not_(and_(RealWallet.is_active == True, RealWallet.chain_id == ROBINHOOD_EVM_CHAIN_ID)),
+            )
+        )
+        stale_rows = result.scalars().all()
+        if not stale_rows:
+            return
+        for row in stale_rows:
+            await session.delete(row)
+        await session.commit()
+        logger.info("Cleared %d stale real_wallets row(s) for user=%s before create/import", len(stale_rows), user_id)
+
+
 async def create_wallet(user_id: int) -> RealWallet:
     existing = await get_real_wallet(user_id)
     if existing:
         raise WalletImportError("You already have an active Robinhood Chain wallet. Disconnect it first if you want to create a new one.")
+    await _clear_stale_wallet_row(user_id)
     account = Account.create()
     secret_bytes = bytes(account.key)
     encrypted_secret, nonce = encrypt_secret(secret_bytes)
@@ -63,6 +98,7 @@ async def import_wallet(user_id: int, raw_private_key: str) -> RealWallet:
     if existing:
         raise WalletImportError("You already have an active Robinhood Chain wallet. Disconnect it first if you want to import a different one.")
     secret_bytes = _parse_private_key_input(raw_private_key)
+    await _clear_stale_wallet_row(user_id)
     try:
         account = Account.from_key(secret_bytes)
     except Exception as exc:
