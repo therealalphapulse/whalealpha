@@ -42,8 +42,10 @@ async def eth_usd_price()->float|None:
 async def get_token_balance(address:str, token:str)->dict:
     data="0x"+ERC20_BALANCE_OF+address[2:].lower().rjust(64,"0")
     raw=await rpc_call("eth_call",[{"to":token,"data":data},"latest"])
+    raw_amount=int(raw,16)
     decimals=await get_mint_decimals(token)
-    return {"raw_amount":int(raw,16),"decimals":decimals,"token_accounts":[]}
+    ui_amount=(raw_amount/(10**decimals)) if decimals else float(raw_amount)
+    return {"raw_amount":raw_amount,"decimals":decimals,"ui_amount":ui_amount,"token_address":token,"token_accounts":[]}
 
 async def get_mint_decimals(token:str)->int:
     raw=await rpc_call("eth_call",[{"to":token,"data":"0x"+ERC20_DECIMALS},"latest"])
@@ -80,7 +82,13 @@ def _tx_from_api(tx:dict,from_address:str)->dict:
         if tx.get("maxPriorityFeePerGas"): out["maxPriorityFeePerGas"]=int(tx["maxPriorityFeePerGas"])
     return out
 
-async def _sign_send(private_key:bytes, tx:dict)->tuple[str,dict]:
+async def _sign_send(private_key:bytes, tx:dict)->tuple[str,dict|None,str]:
+    """Broadcasts and waits for confirmation. Returns (tx_hash, receipt_or_none, status)
+    where status is one of "confirmed" (receipt status==1), "failed" (receipt status==0,
+    i.e. an on-chain revert -- a definite, known outcome, safe to treat as a clean
+    failure rather than something requiring reconciliation), or "unknown" (broadcast
+    succeeded but no receipt was observed within the confirmation window -- outcome
+    is NOT known and callers must not blindly retry)."""
     acct=Account.from_key(private_key)
     tx=dict(tx); tx["from"]=acct.address; tx["chainId"]=ROBINHOOD_EVM_CHAIN_ID
     tx["nonce"]=int(await rpc_call("eth_getTransactionCount",[acct.address,"pending"]))
@@ -94,19 +102,29 @@ async def _sign_send(private_key:bytes, tx:dict)->tuple[str,dict]:
     deadline=time.monotonic()+60
     receipt=None
     while time.monotonic()<deadline:
-        receipt=await rpc_call("eth_getTransactionReceipt",[h])
+        try:
+            receipt=await rpc_call("eth_getTransactionReceipt",[h])
+        except SwapError as exc:
+            logger.warning("Receipt poll error for %s: %s", h, exc)
+            receipt=None
         if receipt: break
         await asyncio.sleep(1)
-    if not receipt: raise SwapError(f"Transaction {h} was broadcast but confirmation was not observed within 60s.")
-    if int(receipt.get("status","0x0"),16)!=1: raise SwapError(f"Transaction reverted on Robinhood Chain: {h}")
-    return h,receipt
+    if not receipt:
+        logger.warning("Transaction %s broadcast but confirmation not observed within 60s; status unknown.", h)
+        return h, None, "unknown"
+    if int(receipt.get("status","0x0"),16)!=1:
+        return h, receipt, "failed"
+    return h, receipt, "confirmed"
 
 async def _approval_if_needed(private_key:bytes,wallet_address:str,token:str,amount_raw:int,token_out:str)->None:
     if token.lower()==NATIVE_ETH_ADDRESS.lower(): return
     data=await _api("POST","/check_approval",{"walletAddress":wallet_address,"token":token,"amount":str(amount_raw),"chainId":ROBINHOOD_EVM_CHAIN_ID,"tokenOut":token_out,"tokenOutChainId":ROBINHOOD_EVM_CHAIN_ID})
     approval=data.get("approval")
     if approval:
-        tx=_tx_from_api(approval,wallet_address); await _sign_send(private_key,tx)
+        tx=_tx_from_api(approval,wallet_address)
+        _,_,approval_status=await _sign_send(private_key,tx)
+        if approval_status!="confirmed":
+            raise SwapError(f"Token approval transaction did not confirm (status={approval_status}); stopping before the swap to avoid signing against an unapproved allowance.")
     cancel=data.get("cancel")
     if cancel: raise SwapError("Uniswap requires an approval reset before the swap; the wallet flow stopped before spending funds.")
 
@@ -134,8 +152,8 @@ async def sign_send_and_confirm(tx_payload:str,secret_bytes:bytes)->dict:
     try: tx_data=json.loads(tx_payload)
     except Exception as exc: raise SwapError("Invalid EVM transaction payload.") from exc
     tx=_tx_from_api(tx_data,Account.from_key(secret_bytes).address)
-    signature,receipt=await _sign_send(secret_bytes,tx)
-    return {"status":"confirmed","signature":signature,"receipt":receipt,"err":None}
+    signature,receipt,status=await _sign_send(secret_bytes,tx)
+    return {"status":status,"signature":signature,"receipt":receipt,"err":None if status=="confirmed" else status}
 
 async def _execute_swap(user_id:int,contract:str,amount_raw:int,input_token:str,output_token:str,slippage_bps:int)->dict:
     from domain.trading.real.robinhood_wallet import get_real_wallet
@@ -150,8 +168,12 @@ async def _execute_swap(user_id:int,contract:str,amount_raw:int,input_token:str,
         if quote.get("routing")!="CLASSIC": raise SwapError(f"Unsupported live routing returned by Uniswap: {quote.get('routing')}. AMM-only execution is enabled for deterministic server-side signing.")
         swap=await _api("POST","/swap",{"quote":quote["quote"],"deadline":int(time.time()+60),"safetyMode":"SAFE","simulateTransaction":True})
         tx=_tx_from_api(swap.get("swap",{}),wallet.public_key)
-        signature,receipt=await _sign_send(secret,tx)
-        return {"ok":True,"signature":signature,"confirmation":"confirmed","quote":quote,"receipt":receipt,"amount_raw":amount_raw}
+        signature,receipt,status=await _sign_send(secret,tx)
+        if status=="failed":
+            return {"ok":False,"uncertain":False,"signature":signature,"reason":f"Transaction reverted on-chain (tx: {signature})."}
+        if status=="unknown":
+            return {"ok":False,"uncertain":True,"signature":signature,"reason":f"Transaction broadcast but confirmation not observed (tx: {signature})."}
+        return {"ok":True,"signature":signature,"confirmation":status,"quote":quote,"receipt":receipt,"amount_raw":amount_raw}
     finally:
         del secret
 
@@ -164,9 +186,6 @@ async def execute_sell(user_id:int,contract:str,token_amount:float,slippage_bps:
     decimals=await get_mint_decimals(contract)
     return await _execute_swap(user_id,contract,int(token_amount*10**decimals),contract,NATIVE_ETH_ADDRESS,slippage_bps)
 
-# Compatibility helpers used by the existing trade engines.
-async def build_swap_transaction(quote:dict,user_public_key:str,priority_fee_lamports:int|str="auto")->str: raise SwapError("Legacy Solana transaction builder is not available on Robinhood Chain; use execute_buy/execute_sell.")
-async def sign_send_and_confirm(*args,**kwargs): raise SwapError("Legacy Solana signing path disabled. Robinhood Chain uses EVM signing.")
 async def get_confirmed_transaction_deltas(signature:str,wallet_address:str,contract:str)->dict:
     receipt=await rpc_call("eth_getTransactionReceipt",[signature])
     if not receipt: raise SwapError("Transaction receipt not available yet.")

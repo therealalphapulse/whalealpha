@@ -55,7 +55,8 @@ async def execute_buy_swap(
 
     try:
         quote = await robinhood_swap.get_quote(
-            input_mint=NATIVE_ETH_ADDRESS, output_mint=contract, amount_wei=wei, slippage_bps=slippage_bps
+            input_mint=NATIVE_ETH_ADDRESS, output_mint=contract, amount_wei=wei, slippage_bps=slippage_bps,
+            swapper=wallet.public_key,
         )
         tx_b64 = await robinhood_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_wei=priority_fee_wei)
     except SwapError as e:
@@ -144,7 +145,8 @@ async def execute_sell_swap(
 
     try:
         quote = await robinhood_swap.get_quote(
-            input_mint=contract, output_mint=NATIVE_ETH_ADDRESS, amount_wei=raw_amount, slippage_bps=slippage_bps
+            input_mint=contract, output_mint=NATIVE_ETH_ADDRESS, amount_wei=raw_amount, slippage_bps=slippage_bps,
+            swapper=wallet.public_key,
         )
         tx_b64 = await robinhood_swap.build_swap_transaction(quote, wallet.public_key, priority_fee_wei=priority_fee_wei)
     except SwapError as e:

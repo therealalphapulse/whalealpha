@@ -190,7 +190,7 @@ async def resolve_sellable_balance(user_id: int, position: AutoTradePosition) ->
     """§22 -- reconcile the DB's remaining_quantity against the actual
     on-chain token balance before selling. Never assumes zero on a
     transient RPC failure; the caller is responsible for treating a
-    failed lookup as SELL_BALANCE_REETHVING (retry), not as "no
+    failed lookup as SELL_BALANCE_RESOLVING (retry), not as "no
     balance"."""
     wallet = await get_real_wallet(user_id)
     if not wallet:

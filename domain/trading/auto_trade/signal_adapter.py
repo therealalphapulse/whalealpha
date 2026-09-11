@@ -73,7 +73,7 @@ def normalize_signal(signal: SignalToken) -> AutoTradeSignal:
         contract=signal.contract,
         symbol=signal.symbol or "???",
         name=signal.name or "",
-        chain="solana",
+        chain="robinhood",
         score=score,
         tier=score_to_tier(score),
         price=price,
