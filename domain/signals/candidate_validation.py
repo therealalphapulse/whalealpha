@@ -42,6 +42,7 @@ import logging
 from config.settings import ROBINHOOD_CHAIN_GOPLUS_ID, ROBINHOOD_REQUIRE_SECURITY_CHECK
 from domain.intelligence.holders import get_holder_analysis
 from domain.intelligence.king_token_profile import get_cached_king_profile
+from domain.intelligence.sellability_check import verify_sellability
 from domain.signals.scoring import hard_reject_reasons, score_candidate
 from providers.marketdata.dexscreener import get_token_card_info
 from providers.marketdata.goplus import check_token_security, check_token_security_for_chain
@@ -89,6 +90,18 @@ async def build_validated_candidate(
         if reasons:
             return None, reasons
 
+        # Production Risk Layer: live buy->sell Jupiter simulation. This is
+        # a hard gate, same authority as hard_reject_reasons() above --
+        # a token that cannot be verifiably sold back to SOL right now
+        # must never reach the alert worker or be shown as tradable,
+        # no matter how it scores otherwise. See
+        # domain/intelligence/sellability_check.py for what this checks
+        # and why it is fail-closed by default.
+        sellability = await verify_sellability(contract, chain="solana")
+        if sellability["reject"]:
+            logger.info(f"Rejected {contract[:8]}: sellability={sellability['reasons']}")
+            return None, sellability["reasons"] or ["sellability_unverified"]
+
         pump = score_candidate(data, sec, holder_analysis, holders, contract, king_profile=king_profile)
 
         candidate = {
@@ -104,7 +117,8 @@ async def build_validated_candidate(
             "funding_clusters": None,
             "deployer_history": None,
             "price_check": None,
-            "verified_warnings": [],
+            "verified_warnings": list(sellability.get("warnings", [])),
+            "sellability": sellability,
             "confidence": {
                 "confidence_score": 100 if sec else 50,
                 "confirmed_count": 1 if sec else 0,
@@ -131,6 +145,17 @@ async def build_validated_candidate(
     if reasons:
         return None, reasons
 
+    # Production Risk Layer: same hard gate as the Solana path above.
+    # Jupiter only routes Solana, so for this chain verify_sellability()
+    # returns a non-blocking neutral result today -- calling it here
+    # unconditionally means this path picks up sellability simulation
+    # automatically if/when it's ever extended to a chain Jupiter (or a
+    # future equivalent) can route.
+    sellability = await verify_sellability(contract, chain=chain)
+    if sellability["reject"]:
+        logger.info(f"Rejected {contract[:8]}: sellability={sellability['reasons']}")
+        return None, sellability["reasons"] or ["sellability_unverified"]
+
     pump = score_candidate(data, sec, None, None, contract, king_profile=king_profile)
 
     candidate = {
@@ -146,7 +171,8 @@ async def build_validated_candidate(
         "funding_clusters": None,
         "deployer_history": None,
         "price_check": None,
-        "verified_warnings": [],
+        "verified_warnings": list(sellability.get("warnings", [])),
+        "sellability": sellability,
         "confidence": {
             "confidence_score": 100 if sec else 40,
             "confirmed_count": 1 if sec else 0,
