@@ -30,8 +30,23 @@ import logging
 import aiohttp
 
 from domain.trading.real.jupiter_swap import SOLANA_RPC_URL
-from domain.trading.real.wallet_withdraw import get_associated_token_address
 from solders.pubkey import Pubkey
+
+TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+
+
+def get_associated_token_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
+    """SPL associated-token-account derivation for the payer address on an
+    incoming payment. Inlined here (previously imported from the retired
+    Solana real-wallet trading module) so premium-payment verification no
+    longer depends on the trading wallet code at all -- this is a pure,
+    stateless PDA derivation, unrelated to any wallet's private key."""
+    ata, _bump = Pubkey.find_program_address(
+        [bytes(owner), bytes(TOKEN_PROGRAM_ID), bytes(mint)],
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+   ")
+    return ata
 
 logger = logging.getLogger("AlphaPulse.PaymentVerify")
 

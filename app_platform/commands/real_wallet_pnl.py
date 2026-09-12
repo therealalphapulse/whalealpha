@@ -6,7 +6,7 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 
 from domain.trading.real import real_trade_engine
-from domain.trading.real.solana_wallet import get_real_wallet
+from domain.trading.real.robinhood_wallet import get_real_wallet
 from app_platform.keyboards.real_wallet import real_wallet_menu_kb
 from app_platform.domain.trading.real_pnl_image import generate_real_pnl_card
 from providers.marketdata.dexscreener import get_token_card_info
@@ -126,7 +126,7 @@ async def cb_real_wallet_history(callback: CallbackQuery):
         wallet = await get_real_wallet(callback.from_user.id)
         await callback.answer()
         await callback.message.edit_text(
-            "📜 <b>Recent Real Trades</b>\n\nEach trade below has its own PnL card.",
+            "📄 <b>Recent Real Trades</b>\n\nEach trade below has its own PnL card.",
             reply_markup=real_wallet_menu_kb(wallet.auto_trading_enabled if wallet else False),
         )
 
