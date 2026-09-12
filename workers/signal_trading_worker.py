@@ -92,26 +92,16 @@ except Exception as exc:
     logger.warning("[PumpRadar] Expanded discovery adapter install failed: %s", exc)
 
 
-async def main() -> None:
-    configure_logging()
-    configure_error_tracking()
-    configure_metrics(port=9091)
+def build_signal_alert_jobs(bot) -> list:
+    """Every latency-tolerant signal/alert loop -- no real-money trading.
 
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN is missing.")
-
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-
-    from app_platform.keyboards.token_actions import token_actions_keyboard
-    set_keyboard_factory(token_actions_keyboard)
-
-    try:
-        await migrate_real_wallet_schema()
-    except Exception as e:
-        logger.error(f"RealWallet schema migration failed at worker startup: {e}")
-
-    logger.info("Signal/Trading worker starting...")
-
+    Split out (Bible §11 follow-up) so this group can run in a process
+    that does NOT hold the trading loops, letting a dedicated Trading
+    worker be deployed separately from Signal Alert. Pulled out as its
+    own function rather than inlined so both workers/trading_worker.py
+    and workers/gateway_signal_worker.py can import it without
+    duplicating the job list (or the run_as_leader wiring) here.
+    """
     jobs = [
         run_as_leader("loop:alert_engine", lambda: alert_loop(bot),
                        lease_seconds=90, renew_interval_seconds=30),
@@ -120,16 +110,6 @@ async def main() -> None:
         run_as_leader("loop:scheduled_broadcasts", lambda: scheduled_broadcast_loop(bot, interval_seconds=120),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:paper_monitor", lambda: paper_monitor_loop(bot, interval_seconds=30),
-                       lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:real_dca", lambda: real_dca_scheduler_loop(bot, interval_seconds=30),
-                       lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:real_exit_engine", lambda: real_exit_engine_loop(bot, interval_seconds=20),
-                       lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:real_limit_orders", lambda: real_limit_order_engine_loop(bot, interval_seconds=20),
-                       lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:auto_trade_scan", lambda: auto_trade_scan_loop(bot, interval_seconds=20),
-                       lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:auto_trade_exit", lambda: auto_trade_exit_loop(bot, interval_seconds=20),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:payment_expiry_sweep", lambda: payment_expiry_sweep_loop(interval_seconds=900),
                        lease_seconds=90, renew_interval_seconds=30),
@@ -145,8 +125,7 @@ async def main() -> None:
     #
     # Robinhood Discovery (Engine B) is now the primary/default engine:
     # PUMP_RADAR_ENABLED and WALLET_CONSENSUS_ENABLED both default to
-    # False (Solana token/wallet discovery off) and REAL_AUTOMATION_ENABLED
-    # defaults to False (real-money auto-buy off). All switches live in
+    # False (Solana token/wallet discovery off). All switches live in
     # config/settings.py -- no code was deleted, so any of them can be
     # flipped back on by setting the corresponding env var.
     if PUMP_RADAR_ENABLED:
@@ -173,6 +152,35 @@ async def main() -> None:
                 lease_seconds=90, renew_interval_seconds=30,
             )
         )
+
+    logger.info(
+        "Signal/Alert engine status -- PumpRadar(Solana token discovery)=%s | "
+        "WalletConsensus(A, Solana wallets)=%s | RobinhoodDiscovery(B, primary)=%s",
+        PUMP_RADAR_ENABLED, WALLET_CONSENSUS_ENABLED, ROBINHOOD_DISCOVERY_ENABLED,
+    )
+
+    return jobs
+
+
+def build_trading_jobs(bot) -> list:
+    """Every real-money trading loop -- no signal scanning/alerting.
+
+    Companion to build_signal_alert_jobs(); see that function's
+    docstring for why this split exists.
+    """
+    jobs = [
+        run_as_leader("loop:real_dca", lambda: real_dca_scheduler_loop(bot, interval_seconds=30),
+                       lease_seconds=90, renew_interval_seconds=30),
+        run_as_leader("loop:real_exit_engine", lambda: real_exit_engine_loop(bot, interval_seconds=20),
+                       lease_seconds=90, renew_interval_seconds=30),
+        run_as_leader("loop:real_limit_orders", lambda: real_limit_order_engine_loop(bot, interval_seconds=20),
+                       lease_seconds=90, renew_interval_seconds=30),
+        run_as_leader("loop:auto_trade_scan", lambda: auto_trade_scan_loop(bot, interval_seconds=20),
+                       lease_seconds=90, renew_interval_seconds=30),
+        run_as_leader("loop:auto_trade_exit", lambda: auto_trade_exit_loop(bot, interval_seconds=20),
+                       lease_seconds=90, renew_interval_seconds=30),
+    ]
+
     if REAL_AUTOMATION_ENABLED:
         jobs.append(
             run_as_leader(
@@ -182,11 +190,40 @@ async def main() -> None:
             )
         )
 
-    logger.info(
-        "Engine status -- PumpRadar(Solana token discovery)=%s | WalletConsensus(A, Solana wallets)=%s | "
-        "RobinhoodDiscovery(B, primary)=%s | RealAutomation(auto-buy)=%s",
-        PUMP_RADAR_ENABLED, WALLET_CONSENSUS_ENABLED, ROBINHOOD_DISCOVERY_ENABLED, REAL_AUTOMATION_ENABLED,
-    )
+    logger.info("Trading engine status -- RealAutomation(auto-buy)=%s", REAL_AUTOMATION_ENABLED)
+
+    return jobs
+
+
+async def main() -> None:
+    """Runs every Signal/Alert AND Trading loop in one process.
+
+    Kept exactly as before (both job groups together) for main.py's
+    single-process fallback and workers/combined_worker.py, neither of
+    which changes behavior as part of this split -- only the newly
+    added workers/gateway_signal_worker.py and workers/trading_worker.py
+    call build_signal_alert_jobs()/build_trading_jobs() individually.
+    """
+    configure_logging()
+    configure_error_tracking()
+    configure_metrics(port=9091)
+
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN is missing.")
+
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+    from app_platform.keyboards.token_actions import token_actions_keyboard
+    set_keyboard_factory(token_actions_keyboard)
+
+    try:
+        await migrate_real_wallet_schema()
+    except Exception as e:
+        logger.error(f"RealWallet schema migration failed at worker startup: {e}")
+
+    logger.info("Signal/Trading worker starting...")
+
+    jobs = build_signal_alert_jobs(bot) + build_trading_jobs(bot)
 
     await asyncio.gather(*jobs)
 
