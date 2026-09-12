@@ -45,7 +45,7 @@ def get_associated_token_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
     ata, _bump = Pubkey.find_program_address(
         [bytes(owner), bytes(TOKEN_PROGRAM_ID), bytes(mint)],
         ASSOCIATED_TOKEN_PROGRAM_ID,
-   ")
+    )
     return ata
 
 logger = logging.getLogger("AlphaPulse.PaymentVerify")
