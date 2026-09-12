@@ -31,7 +31,7 @@ from domain.signals.alert_engine import alert_loop
 from domain.signals.pump_radar import pump_radar_loop
 from domain.signals.signal_tracker import signal_lifecycle_loop, scheduled_broadcast_loop
 from domain.trading.paper.paper_monitor import paper_monitor_loop
-from domain.trading.real.solana_wallet import migrate_real_wallet_schema
+from domain.trading.real.robinhood_wallet import migrate_real_wallet_schema
 from domain.trading.auto_trade.worker import auto_trade_scan_loop, auto_trade_exit_loop
 from domain.trading.real.real_dca_engine import real_dca_scheduler_loop
 from domain.trading.real.real_automation_engine import real_automation_loop
