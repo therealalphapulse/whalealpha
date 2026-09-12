@@ -6,9 +6,9 @@ from infra.kms.wallet_crypto import decrypt_secret
 from domain.trading.real.robinhood_swap import rpc_call, get_native_balance, _sign_send
 from domain.trading.real.robinhood_wallet import get_real_wallet
 SOL_WITHDRAW_RESERVE=0.0005
-SOLANA_ADDRESS_RE=re.compile(r"^0x[a-fA-F0-9]{40}$")
+EVM_ADDRESS_RE=re.compile(r"^0x[a-fA-F0-9]{40}$")
 
-def validate_withdraw_address(address:str)->bool:return bool(SOLANA_ADDRESS_RE.fullmatch(address.strip()))
+def validate_withdraw_address(address:str)->bool:return bool(EVM_ADDRESS_RE.fullmatch(address.strip()))
 async def get_max_sol_withdrawable(user_id:int)->float:
     w=await get_real_wallet(user_id)
     if not w:return 0.0
