@@ -79,6 +79,32 @@ HELIUS_API = "https://api.helius.xyz/v0"
 RUGCHECK_API = "https://api.rugcheck.xyz/v1"
 RUGCHECK_API_KEY = _env_key("RUGCHECK_API_KEY")
 
+# ------------------------------------------------------------------------
+# Sellability / Honeypot Simulation Gate (Production Risk Layer,
+# 2026-09-12). Every other security check in this file is a declared-
+# attribute or heuristic check (GoPlus/RugCheck flags, holder
+# concentration, LP lock, funding graph, deployer history). This gate
+# is different: it actually simulates a BUY->SELL round trip through
+# Jupiter's public quote endpoint before any signal is allowed to reach
+# the alert worker or a user. See domain/intelligence/sellability_check.py.
+SELLABILITY_CHECK_ENABLED = _env_bool("SELLABILITY_CHECK_ENABLED", True)
+# Probe size in SOL used for the simulated buy leg.
+SELLABILITY_PROBE_SOL_AMOUNT = _env_float("SELLABILITY_PROBE_SOL_AMOUNT", 0.05)
+SELLABILITY_SLIPPAGE_BPS = _env_int("SELLABILITY_SLIPPAGE_BPS", 500)
+# Round-trip loss (buy SOL in -> sell SOL out) at/above this percentage
+# is treated as a hidden sell tax / trap-liquidity honeypot signal.
+SELLABILITY_MAX_ROUND_TRIP_LOSS_PCT = _env_float("SELLABILITY_MAX_ROUND_TRIP_LOSS_PCT", 40.0)
+# Per-leg Jupiter priceImpactPct at/above this percentage is treated as
+# insufficient real liquidity to safely exit the position.
+SELLABILITY_MAX_PRICE_IMPACT_PCT = _env_float("SELLABILITY_MAX_PRICE_IMPACT_PCT", 50.0)
+SELLABILITY_CACHE_TTL_SECONDS = _env_float("SELLABILITY_CACHE_TTL_SECONDS", 300.0)
+# Fail-closed: if the live simulation itself cannot complete (Jupiter
+# unreachable/rate-limited), treat sellability as UNVERIFIED and reject
+# rather than silently letting the candidate through. Same convention
+# already used for GoPlus security-data unavailability.
+SELLABILITY_FAIL_CLOSED = _env_bool("SELLABILITY_FAIL_CLOSED", True)
+# ------------------------------------------------------------------------
+
 # KOL Provider Sync (optional — bot works fine without these)
 KOL_PROVIDER_URL = os.getenv("KOL_PROVIDER_URL")
 KOL_PROVIDER_API_KEY = os.getenv("KOL_PROVIDER_API_KEY")

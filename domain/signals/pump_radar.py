@@ -21,6 +21,7 @@ from domain.intelligence.whale_tracker import get_matching_tracked_whales
 from domain.intelligence.funding_graph import get_funding_clusters, MIN_CLUSTER_SIZE as FUNDING_MIN_CLUSTER_SIZE
 from domain.intelligence.deployer_history import get_deployer_launch_history
 from domain.intelligence.lp_lock_checker import get_real_lp_lock_pct, assess_unverified_lock_risk
+from domain.intelligence.sellability_check import verify_sellability
 from domain.trading.real.jupiter_price import check_price_agreement
 from domain.signals.signal_tracker import (
     create_signal_from_candidate,
@@ -1083,6 +1084,26 @@ async def analyze_candidate(contract: str, stats: "PipelineStats | None" = None)
         logger.info(f"Rejected {contract[:8]}: hard gate={reject_reasons}")
         return None
 
+    # Production Risk Layer: live buy->sell Jupiter simulation. Every
+    # gate above this line is a declared-attribute or heuristic check;
+    # this one actually simulates the trade. A token that cannot be
+    # verifiably bought AND sold back to SOL right now must never reach
+    # the alert worker or be shown to users as a tradable signal,
+    # regardless of score/volume/hype. Fails closed (queued for
+    # re-validation) if the simulation itself cannot complete, same
+    # convention as the GoPlus-unavailable case above.
+    sellability = await verify_sellability(contract, chain="solana")
+    if sellability["reject"]:
+        if not sellability["checked"]:
+            logger.warning(
+                f"Rejected {contract[:8]}: sellability unverifiable "
+                "(Jupiter simulation unavailable) — queued for re-validation"
+            )
+            schedule_revalidation(contract, "sellability_unverified")
+        else:
+            logger.info(f"Rejected {contract[:8]}: sellability={sellability['reasons']}")
+        return None
+
     min_holders_required = MIN_HOLDERS
     is_new_with_profile = (
         _age_hours(data.get("pair_created")) <= NEW_TOKEN_AGE_HOURS_THRESHOLD
@@ -1365,7 +1386,8 @@ async def analyze_candidate(contract: str, stats: "PipelineStats | None" = None)
         "funding_clusters": funding_clusters,
         "deployer_history": deployer_history,
         "price_check": price_check,
-        "verified_warnings": verified["warnings"],
+        "verified_warnings": verified["warnings"] + sellability.get("warnings", []),
+        "sellability": sellability,
         "confidence": confidence,
     }
 
