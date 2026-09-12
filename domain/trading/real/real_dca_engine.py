@@ -12,7 +12,7 @@ guard rails — configured entirely by the user, no fixed presets.
 Every fill reuses services.real_trade_engine.execute_real_buy (source=
 "dca") so it lands in the same RealTrade/position/portfolio views as a
 manual buy — no duplicated swap logic. Spend is metered through
-services.solana_wallet.register_auto_spend/release_auto_spend, sharing
+domain.trading.real.robinhood_wallet.register_auto_spend/release_auto_spend, sharing
 the same daily cap + kill switch as Real Trade Automation
 (services/real_automation_engine.py), since both spend unattended.
 
@@ -274,7 +274,7 @@ async def _process_one_schedule(schedule_id: int, bot=None) -> None:
         return
 
     # Daily cap / kill switch / automation-off gate — shared with
-    # real_automation_engine.py via services.solana_wallet.
+    # real_automation_engine.py via domain.trading.real.robinhood_wallet.
     spend_check = await register_auto_spend(schedule.user_id, schedule.amount_per_order_sol)
     if not spend_check["ok"]:
         await _handle_failure(schedule_id, order_index, spend_check["reason"], bot)

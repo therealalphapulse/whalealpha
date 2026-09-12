@@ -11,7 +11,7 @@ user cancelling at the same moment an order is about to fire can't
 race the fill.
 
 Spend is metered through the same daily cap + kill switch as Real
-Trade Automation / DCA (services.solana_wallet.register_auto_spend),
+Trade Automation / DCA (domain.trading.real.robinhood_wallet.register_auto_spend),
 since this also spends unattended.
 """
 
