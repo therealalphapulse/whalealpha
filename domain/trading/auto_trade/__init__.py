@@ -16,8 +16,8 @@ Isolation contract (see AUTO_TRADE_ARCHITECTURE.docx, esp. §2, §37,
     existing, untouched AutoBuy/AutoTrade implementation.
   * This package DOES reuse shared, non-business-logic infra: the
     user's RealWallet (models/real_wallet.py) for keys/balance,
-    domain/trading/real/jupiter_swap.py + jupiter_price.py for
-    on-chain execution primitives, infra/kms/wallet_crypto.py for
+    domain/trading/real/robinhood_swap.py for on-chain execution
+    primitives (Robinhood Chain EVM), infra/kms/wallet_crypto.py for
     signing, infra/db/session.py, and infra/locks.py -- the same low-level
     building blocks the rest of the app already uses, per the spec's
     "reuse existing infrastructure, do not duplicate it" directive.
@@ -36,7 +36,7 @@ repo's flat domain/trading/<engine>/ convention):
   policy_service.py    - AutoTradePolicy CRUD, policy snapshot, daily counters
   risk_gate.py          - user-level + pre-trade execution risk checks
   claims.py              - idempotency claim helpers
-  execution.py          - buy/sell swap primitives (built on jupiter_swap.py)
+  execution.py          - buy/sell swap primitives (built on robinhood_swap.py)
   orchestrator.py       - the Trade Orchestrator: signal -> policy -> risk -> buy -> position
   position_manager.py   - open-position queries, live price/PnL view, sellable-balance resolution
   exit_engine.py         - TP / SL / trailing-stop evaluation + sell trigger

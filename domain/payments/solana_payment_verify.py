@@ -29,8 +29,7 @@ X of asset Y to address Z", it doesn't know about your database.
 import logging
 import aiohttp
 
-from domain.trading.real.jupiter_swap import SOLANA_RPC_URL
-from domain.trading.real.wallet_withdraw import get_associated_token_address
+from domain.payments.solana_rpc_utils import SOLANA_RPC_URL, get_associated_token_address
 from solders.pubkey import Pubkey
 
 logger = logging.getLogger("AlphaPulse.PaymentVerify")

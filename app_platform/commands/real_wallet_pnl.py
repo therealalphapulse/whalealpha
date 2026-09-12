@@ -6,7 +6,7 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 
 from domain.trading.real import real_trade_engine
-from domain.trading.real.solana_wallet import get_real_wallet
+from domain.trading.real.robinhood_wallet import get_real_wallet
 from app_platform.keyboards.real_wallet import real_wallet_menu_kb
 from app_platform.domain.trading.real_pnl_image import generate_real_pnl_card
 from providers.marketdata.dexscreener import get_token_card_info
@@ -126,7 +126,7 @@ async def cb_real_wallet_history(callback: CallbackQuery):
         wallet = await get_real_wallet(callback.from_user.id)
         await callback.answer()
         await callback.message.edit_text(
-            "📜 <b>Recent Real Trades</b>\n\nEach trade below has its own PnL card.",
+            "\U0001f4dc <b>Recent Real Trades</b>\n\nEach trade below has its own PnL card.",
             reply_markup=real_wallet_menu_kb(wallet.auto_trading_enabled if wallet else False),
         )
 
@@ -134,12 +134,12 @@ async def cb_real_wallet_history(callback: CallbackQuery):
             realized = _to_float(trade.realized_pnl_sol)
             pnl_sign = "+" if realized >= 0 else ""
             text = (
-                f"• <b>{html.escape(trade.symbol or '???')}</b> — "
+                f"\u2022 <b>{html.escape(trade.symbol or '???')}</b> \u2014 "
                 f"{pnl_sign}{realized:.4f} SOL "
                 f"({html.escape(trade.status or 'unknown')})"
             )
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📊 Generate PnL Card", callback_data=f"rw:pnlcard:{trade.id}")],
+                [InlineKeyboardButton(text="\U0001f4ca Generate PnL Card", callback_data=f"rw:pnlcard:{trade.id}")],
             ])
             await callback.message.answer(text, reply_markup=kb)
     except Exception as exc:
@@ -172,14 +172,14 @@ async def cb_real_wallet_pnl_card(callback: CallbackQuery):
     try:
         data, error = await _build_card_data(trade)
         if error:
-            await callback.message.answer(f"⚠️ {html.escape(error)}")
+            await callback.message.answer(f"\u26a0\ufe0f {html.escape(error)}")
             return
         png_bytes = await generate_real_pnl_card(data)
         if not png_bytes:
-            await callback.message.answer("⚠️ Could not generate the PnL card right now. Please try again.")
+            await callback.message.answer("\u26a0\ufe0f Could not generate the PnL card right now. Please try again.")
             return
         filename = f"{data['symbol'] or 'real_trade'}_pnl.png"
         await callback.message.answer_photo(BufferedInputFile(png_bytes, filename=filename))
     except Exception as exc:
         logger.exception("Real PnL card generation failed user=%s trade=%s: %s", callback.from_user.id, trade_id, exc)
-        await callback.message.answer("⚠️ Could not generate the PnL card right now. Please try again.")
+        await callback.message.answer("\u26a0\ufe0f Could not generate the PnL card right now. Please try again.")
