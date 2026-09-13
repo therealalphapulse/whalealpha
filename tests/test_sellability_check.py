@@ -45,7 +45,7 @@ async def run() -> bool:
     sc._jupiter_get_quote = q_normal
     r = await sc.verify_sellability("TOKEN_A", chain="solana")
     check("[SOL] normal sellable token -> not reject", r["reject"] is False and r["checked"] is True)
-    check("[SOL] round-trip loss ~3%%", abs(r["details"]["round_trip_loss_pct"] - 3.0) < 0.5)
+    check("[SOL] round-trip loss ~3%", abs(r["details"]["round_trip_loss_pct"] - 3.0) < 0.5)
 
     async def q_no_sell(inp, outp, amount, slippage_bps=150):
         return {"outAmount": "1000000"} if outp == "TOKEN_B" else {"outAmount": "0"}
@@ -65,8 +65,8 @@ async def run() -> bool:
         return {"outAmount": "1000000"} if outp == "TOKEN_D" else {"outAmount": "25000000"}
     sc._jupiter_get_quote = q_tax
     r = await sc.verify_sellability("TOKEN_D", chain="solana")
-    check("[SOL] 50%% hidden-tax token -> reject", r["reject"] is True)
-    check("[SOL] 50%% hidden-tax token -> reason mentions sell tax",
+    check("[SOL] 50% hidden-tax token -> reject", r["reject"] is True)
+    check("[SOL] 50% hidden-tax token -> reason mentions sell tax",
           any("tax" in x.lower() for x in r["reasons"]))
 
     async def q_error(inp, outp, amount, slippage_bps=150):
@@ -114,7 +114,7 @@ async def run() -> bool:
     sc._robinhood_get_quote = q_evm_normal
     r = await sc.verify_sellability("0xTOKENA", chain="robinhood")
     check("[EVM] normal sellable token -> not reject", r["reject"] is False and r["checked"] is True)
-    check("[EVM] round-trip loss ~3%%", abs(r["details"]["round_trip_loss_pct"] - 3.0) < 0.5)
+    check("[EVM] round-trip loss ~3%", abs(r["details"]["round_trip_loss_pct"] - 3.0) < 0.5)
     check("[EVM] quote uses the configured unfunded probe address, never a real wallet",
           seen_swapper["addr"] == sc.ROBINHOOD_SELLABILITY_PROBE_ADDRESS)
 
@@ -136,8 +136,8 @@ async def run() -> bool:
         return {"outAmount": "500000000000000000"} if outp == "0xTOKEND" else {"outAmount": str(sell_wei_50pct)}
     sc._robinhood_get_quote = q_evm_tax
     r = await sc.verify_sellability("0xTOKEND", chain="robinhood")
-    check("[EVM] 50%% hidden-tax token -> reject", r["reject"] is True)
-    check("[EVM] 50%% hidden-tax token -> reason mentions sell tax",
+    check("[EVM] 50% hidden-tax token -> reject", r["reject"] is True)
+    check("[EVM] 50% hidden-tax token -> reason mentions sell tax",
           any("tax" in x.lower() for x in r["reasons"]))
 
     async def q_evm_error(inp, outp, amount, slippage_bps=150, swapper=None):
