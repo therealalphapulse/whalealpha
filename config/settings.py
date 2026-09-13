@@ -173,6 +173,17 @@ SELLABILITY_CACHE_TTL_SECONDS = _env_float("SELLABILITY_CACHE_TTL_SECONDS", 300.
 # rather than silently letting the candidate through. Same convention
 # already used for GoPlus security-data unavailability.
 SELLABILITY_FAIL_CLOSED = _env_bool("SELLABILITY_FAIL_CLOSED", True)
+# Robinhood Chain (EVM) leg of the same gate, via Uniswap's Trading API
+# quote endpoint (domain/trading/real/robinhood_swap.get_quote) -- same
+# BUY->SELL round-trip simulation, no wallet funding/signing/broadcast.
+# A fixed, unfunded probe address is used purely for quote routing
+# (Uniswap's /quote step does not require the swapper to hold a
+# balance or have granted any approval -- that is only needed for the
+# real /swap step, which this check never calls).
+SELLABILITY_PROBE_ETH_AMOUNT = _env_float("SELLABILITY_PROBE_ETH_AMOUNT", 0.01)
+ROBINHOOD_SELLABILITY_PROBE_ADDRESS = os.getenv(
+    "ROBINHOOD_SELLABILITY_PROBE_ADDRESS", "0x000000000000000000000000000000000000dEaD"
+)
 # ------------------------------------------------------------------------
 
 
