@@ -158,6 +158,51 @@ async def run() -> bool:
     check("[EVM] cache avoids a second Uniswap round-trip", evm_call_count["n"] == n1)
     check("[EVM] cached result is identical", r1 == r2)
 
+    # ---- Regression cases from production (2026-09-13): Uniswap's real
+    # error payloads, verbatim, caused a class of legitimate tokens to be
+    # needlessly fail-closed rejected with zero retry. ----
+
+    UPSTREAM_TIMEOUT = ("Uniswap API 404: {\'errorCode\': \'UpstreamTimeoutError\', "
+                        "\'detail\': \'A routing dependency timed out or failed; the request "
+                        "may succeed on retry.\', \'requestId\': \'abc\'}")
+    NO_ROUTE = ("Uniswap API 404: {\'errorCode\': \'NoRouteFoundError\', "
+                "\'detail\': \'No route with sufficient liquidity was found for this "
+                "pair.\', \'requestId\': \'def\'}")
+
+    attempts = {"n": 0}
+    async def q_flaky_then_ok(inp, outp, amount, slippage_bps=150, swapper=None):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise sc.RobinhoodSwapError(UPSTREAM_TIMEOUT)
+        return {"outAmount": "500000000000000000"} if outp == "0xFLAKY" else {"outAmount": str(sell_wei_97pct)}
+    sc._robinhood_get_quote = q_flaky_then_ok
+    r = await sc.verify_sellability("0xFLAKY", chain="robinhood")
+    check("[EVM] transient UpstreamTimeoutError resolves on retry -> not reject",
+          r["reject"] is False and r["checked"] is True)
+    check("[EVM] retry actually happened", attempts["n"] >= 2)
+
+    attempts2 = {"n": 0}
+    async def q_always_timeout(inp, outp, amount, slippage_bps=150, swapper=None):
+        attempts2["n"] += 1
+        raise sc.RobinhoodSwapError(UPSTREAM_TIMEOUT)
+    sc._robinhood_get_quote = q_always_timeout
+    r = await sc.verify_sellability("0xALWAYSTIMEOUT", chain="robinhood")
+    check("[EVM] persistent UpstreamTimeoutError -> still fail-closed after retries",
+          r["reject"] is True and r["checked"] is False)
+    check("[EVM] persistent UpstreamTimeoutError -> retried exactly SELLABILITY_EVM_MAX_RETRIES+1 times",
+          attempts2["n"] == sc.SELLABILITY_EVM_MAX_RETRIES + 1)
+
+    attempts3 = {"n": 0}
+    async def q_no_route(inp, outp, amount, slippage_bps=150, swapper=None):
+        attempts3["n"] += 1
+        raise sc.RobinhoodSwapError(NO_ROUTE)
+    sc._robinhood_get_quote = q_no_route
+    r = await sc.verify_sellability("0xNOROUTE", chain="robinhood")
+    check("[EVM] NoRouteFoundError -> decisive reject (checked=True, not unverified)",
+          r["reject"] is True and r["checked"] is True)
+    check("[EVM] NoRouteFoundError -> not retried (it is decisive, not transient)",
+          attempts3["n"] == 1)
+
     print(f"\n{PASS} passed, {FAIL} failed")
     return FAIL == 0
 
