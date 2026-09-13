@@ -67,6 +67,7 @@ already applies to GoPlus security-data unavailability.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -79,6 +80,8 @@ from config.settings import (
     SELLABILITY_MAX_PRICE_IMPACT_PCT,
     SELLABILITY_CACHE_TTL_SECONDS,
     SELLABILITY_FAIL_CLOSED,
+    SELLABILITY_EVM_MAX_RETRIES,
+    SELLABILITY_EVM_RETRY_BACKOFF_SECONDS,
     ROBINHOOD_CHAIN_ID,
     ROBINHOOD_SELLABILITY_PROBE_ADDRESS,
 )
@@ -127,6 +130,45 @@ def _price_impact_pct(quote: dict | None) -> float | None:
         return abs(float(raw)) * 100.0
     except (TypeError, ValueError):
         return None
+
+
+def _is_no_route_error(exc: Exception) -> bool:
+    """True for Uniswap's own decisive 'no route with sufficient liquidity'
+    error -- as distinct from a transient failure. Production evidence
+    (2026-09-13): this comes back as a raised SwapError, not a quote
+    response with outAmount=0, so it has to be caught and reclassified
+    here rather than falling through to the generic unverified/fail-
+    closed path, which would otherwise log it (and treat it) identically
+    to an actual Uniswap outage."""
+    return "NoRouteFoundError" in str(exc)
+
+
+def _is_transient_upstream_error(exc: Exception) -> bool:
+    """True for Uniswap's own explicitly-retryable error class.
+    Production evidence (2026-09-13): errorCode 'UpstreamTimeoutError',
+    whose own `detail` field says 'the request may succeed on retry' --
+    treating this identically to a hard failure (no retry) was rejecting
+    otherwise-legitimate, sellable tokens on nothing more than Uniswap's
+    own transient routing-dependency hiccups."""
+    return "UpstreamTimeoutError" in str(exc)
+
+
+async def _evm_quote_with_retry(*args, **kwargs) -> dict:
+    """Thin retry wrapper around `_robinhood_get_quote` -- retries only
+    `_is_transient_upstream_error` failures, up to SELLABILITY_EVM_MAX_
+    RETRIES times with linear backoff. Any other error (including a
+    decisive no-route error) is raised immediately, unretried."""
+    last_exc: Exception | None = None
+    for attempt in range(SELLABILITY_EVM_MAX_RETRIES + 1):
+        try:
+            return await _robinhood_get_quote(*args, **kwargs)
+        except RobinhoodSwapError as e:
+            last_exc = e
+            if _is_transient_upstream_error(e) and attempt < SELLABILITY_EVM_MAX_RETRIES:
+                await asyncio.sleep(SELLABILITY_EVM_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            raise
+    raise last_exc  # pragma: no cover -- loop always returns or raises above
 
 
 def _evaluate_round_trip(*, probe_units: int, out_amount: int, sell_units: int,
@@ -225,9 +267,20 @@ async def _verify_sellability_evm(contract: str, cache, cache_key: str) -> dict:
     probe_address = ROBINHOOD_SELLABILITY_PROBE_ADDRESS
     started = time.monotonic()
     try:
-        buy_quote = await _robinhood_get_quote(NATIVE_ETH_ADDRESS, contract, probe_wei,
-                                                slippage_bps=SELLABILITY_SLIPPAGE_BPS,
-                                                swapper=probe_address)
+        try:
+            buy_quote = await _evm_quote_with_retry(NATIVE_ETH_ADDRESS, contract, probe_wei,
+                                                     slippage_bps=SELLABILITY_SLIPPAGE_BPS,
+                                                     swapper=probe_address)
+        except RobinhoodSwapError as e:
+            if _is_no_route_error(e):
+                result = _neutral_result(
+                    checked=True, reject=True,
+                    reasons=["No buy route available (no real entry liquidity)"],
+                    details={"probe_eth": SELLABILITY_PROBE_ETH_AMOUNT},
+                )
+                await _safe_cache_set(cache, cache_key, result)
+                return result
+            raise
         out_amount = int((buy_quote or {}).get("outAmount") or 0)
 
         if out_amount <= 0:
@@ -239,9 +292,20 @@ async def _verify_sellability_evm(contract: str, cache, cache_key: str) -> dict:
             await _safe_cache_set(cache, cache_key, result)
             return result
 
-        sell_quote = await _robinhood_get_quote(contract, NATIVE_ETH_ADDRESS, out_amount,
-                                                 slippage_bps=SELLABILITY_SLIPPAGE_BPS,
-                                                 swapper=probe_address)
+        try:
+            sell_quote = await _evm_quote_with_retry(contract, NATIVE_ETH_ADDRESS, out_amount,
+                                                      slippage_bps=SELLABILITY_SLIPPAGE_BPS,
+                                                      swapper=probe_address)
+        except RobinhoodSwapError as e:
+            if _is_no_route_error(e):
+                result = _neutral_result(
+                    checked=True, reject=True,
+                    reasons=["No sell route available -- token cannot be sold back to ETH (honeypot)"],
+                    details={"probe_eth": SELLABILITY_PROBE_ETH_AMOUNT, "buy_out_amount": out_amount},
+                )
+                await _safe_cache_set(cache, cache_key, result)
+                return result
+            raise
         sell_wei = int((sell_quote or {}).get("outAmount") or 0)
 
         if sell_wei <= 0:
