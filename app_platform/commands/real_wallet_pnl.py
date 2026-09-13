@@ -135,7 +135,7 @@ async def cb_real_wallet_history(callback: CallbackQuery):
             pnl_sign = "+" if realized >= 0 else ""
             text = (
                 f"• <b>{html.escape(trade.symbol or '???')}</b> — "
-                f"{pnl_sign}{realized:.4f} SOL "
+                f"{pnl_sign}{realized:.4f} ETH "
                 f"({html.escape(trade.status or 'unknown')})"
             )
             kb = InlineKeyboardMarkup(inline_keyboard=[

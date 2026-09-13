@@ -294,8 +294,10 @@ async def cb_import_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RealWalletStates.waiting_import_key)
     await callback.message.edit_text(
         "📥 <b>Import Wallet</b>\n\n"
-        "Send your private key now, as its own message — either the "
-        "base58 string most wallet apps export, or a [1,2,3,...] key array.\n\n"
+        "Send your private key now, as its own message — the 64-character "
+        "hex private key (with or without the leading 0x) that MetaMask "
+        "and other EVM wallets export, e.g. from Account details \u2192 "
+        "Show private key.\n\n"
         "⚠️ Only paste it here in this chat with WhaleAlpha. I'll delete "
         "your message immediately after reading it.\n\n"
         "Send /cancel to back out."
