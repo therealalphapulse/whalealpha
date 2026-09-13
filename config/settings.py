@@ -184,6 +184,14 @@ SELLABILITY_PROBE_ETH_AMOUNT = _env_float("SELLABILITY_PROBE_ETH_AMOUNT", 0.01)
 ROBINHOOD_SELLABILITY_PROBE_ADDRESS = os.getenv(
     "ROBINHOOD_SELLABILITY_PROBE_ADDRESS", "0x000000000000000000000000000000000000dEaD"
 )
+# Bounded retry for Uniswap's own explicitly-transient error class
+# (errorCode "UpstreamTimeoutError" -- its own API response says "the
+# request may succeed on retry"). Any other error (e.g.
+# "NoRouteFoundError", which is decisive, not transient) is never
+# retried -- retrying a definitive "no route" response wastes time and
+# changes nothing.
+SELLABILITY_EVM_MAX_RETRIES = _env_int("SELLABILITY_EVM_MAX_RETRIES", 2)
+SELLABILITY_EVM_RETRY_BACKOFF_SECONDS = _env_float("SELLABILITY_EVM_RETRY_BACKOFF_SECONDS", 1.5)
 # ------------------------------------------------------------------------
 
 
