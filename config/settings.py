@@ -708,7 +708,7 @@ ROBINHOOD_REQUIRE_SECURITY_CHECK = _env_bool("ROBINHOOD_REQUIRE_SECURITY_CHECK",
 
 ROBINHOOD_DISCOVERY_INTERVAL_SECONDS = _env_int("ROBINHOOD_DISCOVERY_INTERVAL_SECONDS", 300)
 ROBINHOOD_MAX_CANDIDATES_PER_CYCLE = _env_int("ROBINHOOD_MAX_CANDIDATES_PER_CYCLE", 60)
-ROBINHOOD_MAX_ALERTS_PER_CYCLE = _env_int("ROBINHOOD_MAX_ALERTS_PER_CYCLE", 2)
+ROBINHOOD_MAX_ALERTS_PER_CYCLE = _env_int("ROBINHOOD_MAX_ALERTS_PER_CYCLE", 3)
 
 # "New token" bucket — freshly-created Robinhood Chain pairs.
 ROBINHOOD_NEW_MAX_AGE_HOURS = _env_float("ROBINHOOD_NEW_MAX_AGE_HOURS", 24.0)
@@ -719,22 +719,25 @@ ROBINHOOD_RENEWED_MIN_VOLUME_ACCELERATION = _env_float(
     "ROBINHOOD_RENEWED_MIN_VOLUME_ACCELERATION", 1.5
 )
 
-# Quality-over-volume tightening pass, 2026-09-13. Prior floors (10k
-# liquidity, 2.5k volume, 5 txns/1h, 50x MC:liquidity) were far looser
-# than standard on-chain risk-screening norms and were producing too
-# many low-quality/manipulable alerts alongside the good ones. Raised
-# to established floors: real liquidity (not a trivially-manipulable
-# micro pool), a meaningful organic-activity bar, and a single-digit
-# MC:liquidity ratio (above ~10x is the widely-used "thin float, easy
-# to dump" danger line across DeFi screening tools). MIN_SCORE_TO_ALERT
-# and the per-cycle top-N picks were raised/lowered in the same pass --
-# see those settings below -- so only genuinely above-average setups
-# get sent, and only the single best pick per lane per cycle, not the
-# top 2 regardless of how much weaker #2 is.
-ROBINHOOD_MIN_LIQUIDITY_USD = _env_float("ROBINHOOD_MIN_LIQUIDITY_USD", 25_000.0)
-ROBINHOOD_MIN_VOLUME_1H_USD = _env_float("ROBINHOOD_MIN_VOLUME_1H_USD", 10_000.0)
-ROBINHOOD_MIN_TXNS_1H = _env_int("ROBINHOOD_MIN_TXNS_1H", 30)
-ROBINHOOD_MAX_MC_LIQUIDITY_RATIO = _env_float("ROBINHOOD_MAX_MC_LIQUIDITY_RATIO", 10.0)
+# Reverted 2026-09-14 to the pre-2026-09-13 baseline. The 2026-09-13
+# tightening pass (10k->25k liquidity, 2.5k->10k volume, 5->30 txns/1h,
+# 50x->10x MC:liquidity, 60->72 score, top-2->top-1 per cycle) was based
+# on general DeFi screening conventions, not this bot's own history.
+# scripts/analyze_robinhood_signals.py was then run against all 510
+# Robinhood signals ever sent and found entry_score has ~zero
+# correlation with outcome (r=0.035; bad signals actually scored
+# slightly higher on average than good ones), so raising the score bar
+# mostly just cut volume without disproportionately cutting bad
+# signals. Reverted to re-open the candidate pool for further study
+# before adding filters actually grounded in what the data shows
+# predicts outcome (see that script's output -- entry market cap and
+# pre-signal drawdown depth showed more real signal than score did;
+# dev-holding/holder-concentration data is a confirmed gap, currently
+# unpopulated for every Robinhood signal on record).
+ROBINHOOD_MIN_LIQUIDITY_USD = _env_float("ROBINHOOD_MIN_LIQUIDITY_USD", 10_000.0)
+ROBINHOOD_MIN_VOLUME_1H_USD = _env_float("ROBINHOOD_MIN_VOLUME_1H_USD", 2_500.0)
+ROBINHOOD_MIN_TXNS_1H = _env_int("ROBINHOOD_MIN_TXNS_1H", 5)
+ROBINHOOD_MAX_MC_LIQUIDITY_RATIO = _env_float("ROBINHOOD_MAX_MC_LIQUIDITY_RATIO", 50.0)
 
 # ── Potential-score weights (FRESH lane) ────────────────────────────
 # v2 rewrite: the original formula counted the same underlying "price
@@ -758,7 +761,7 @@ ROBINHOOD_SCORE_WEIGHT_VOLUME_ACCELERATION = _env_float(
 ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE = _env_float("ROBINHOOD_SCORE_WEIGHT_BUY_SELL_PRESSURE", 0.15)
 ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION = _env_float("ROBINHOOD_SCORE_WEIGHT_TX_ACCELERATION", 0.10)
 ROBINHOOD_SCORE_WEIGHT_MOMENTUM_QUALITY = _env_float("ROBINHOOD_SCORE_WEIGHT_MOMENTUM_QUALITY", 0.20)
-ROBINHOOD_MIN_SCORE_TO_ALERT = _env_float("ROBINHOOD_MIN_SCORE_TO_ALERT", 72.0)
+ROBINHOOD_MIN_SCORE_TO_ALERT = _env_float("ROBINHOOD_MIN_SCORE_TO_ALERT", 60.0)
 
 # A FRESH candidate already up beyond these within the given window is
 # treated as more likely near a local top than "about to pump" --
@@ -768,7 +771,7 @@ ROBINHOOD_FRESH_MAX_PRICE_CHANGE_1H_PCT = _env_float("ROBINHOOD_FRESH_MAX_PRICE_
 ROBINHOOD_FRESH_MAX_PRICE_CHANGE_5M_PCT = _env_float("ROBINHOOD_FRESH_MAX_PRICE_CHANGE_5M_PCT", 35.0)
 # Only the top N FRESH candidates BY SCORE get alerted each cycle --
 # genuine "top picks", not just everything that clears a static bar.
-ROBINHOOD_FRESH_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_FRESH_TOP_N_PER_CYCLE", 1)
+ROBINHOOD_FRESH_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_FRESH_TOP_N_PER_CYCLE", 2)
 
 # ── REVIVAL lane ("dumped, now showing a genuine second wind") ─────
 # The old "renewed activity" bucket alerted on ANY older token with
@@ -784,7 +787,7 @@ ROBINHOOD_REVIVAL_MIN_SAMPLES = _env_int("ROBINHOOD_REVIVAL_MIN_SAMPLES", 3)
 ROBINHOOD_REVIVAL_MIN_DRAWDOWN_PCT = _env_float("ROBINHOOD_REVIVAL_MIN_DRAWDOWN_PCT", 40.0)
 ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT = _env_float("ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT", 15.0)
 ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT = _env_float("ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT", 85.0)
-ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE", 1)
+ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE", 2)
 
 ROBINHOOD_COOLDOWN_HOURS = _env_float("ROBINHOOD_COOLDOWN_HOURS", 24.0)
 # Comma-separated chat IDs / @usernames for ROBINHOOD_DISCOVERY alerts.
