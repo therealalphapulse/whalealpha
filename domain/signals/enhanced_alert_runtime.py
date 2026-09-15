@@ -44,7 +44,7 @@ from domain.signals.signal_tracker import (
     _to_float,
 )
 
-logger = logging.getLogger("AlphaPulse.EnhancedAlerts")
+logger = logging.getLogger("WhaleAlpha.EnhancedAlerts")
 
 # This is a delivery/throughput setting, NOT a token-selection filter.
 # Existing scoring, hard rejects, confidence gates, and quota remain intact.
@@ -100,7 +100,7 @@ async def fetch_reactivation_candidates(limit: int = REACTIVATION_QUALIFIED_LIMI
 
     Sources are GeckoTerminal's Solana top-pool and 1h-trending views. This
     is a discovery layer only. It does not replace or weaken any existing
-    AlphaPulse qualification gate.
+    WhaleAlpha qualification gate.
 
     A token enters the reactivation shortlist when it is at least 48 hours
     old and shows enough 1h activity to be meaningful, with either volume
@@ -178,7 +178,7 @@ async def fetch_reactivation_candidates(limit: int = REACTIVATION_QUALIFIED_LIMI
                 price_change = _to_float((attrs.get("price_change_percentage") or {}).get("h1"))
 
                 # Discovery score only. This is intentionally not an
-                # AlphaPulse qualification score and cannot create a signal.
+                # WhaleAlpha qualification score and cannot create a signal.
                 activity_score = min(acceleration, 4.0) * 20.0
                 activity_score += max(0.0, min((buy_ratio - 0.50) * 100.0, 25.0))
                 activity_score += max(0.0, min(price_change, 25.0))
@@ -205,7 +205,7 @@ async def fetch_reactivation_candidates(limit: int = REACTIVATION_QUALIFIED_LIMI
     # rejected immediately by the existing $1.5M market-cap ceiling. Enrich
     # the shortlist with the same market-data card used by the main pipeline,
     # apply the exact existing gate, and keep scanning until we have enough
-    # candidates that actually belong to the current AlphaPulse universe.
+    # candidates that actually belong to the current WhaleAlpha universe.
     eligible: list[str] = []
     rejected_by_universe = 0
 

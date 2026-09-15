@@ -38,7 +38,7 @@ from domain.trading.pnl_calendar_image import generate_calendar_image
 from app_platform.keyboards.portfolio import portfolio_hub_row
 
 router = Router()
-logger = logging.getLogger("AlphaPulse.PaperTrading")
+logger = logging.getLogger("WhaleAlpha.PaperTrading")
 
 
 class PaperAmountStates(StatesGroup):
@@ -301,7 +301,7 @@ async def build_paper_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup
         f"Max Positions: <b>{settings.max_open_positions}</b>\n"
         f"Daily Auto-Buy Limit: <b>{settings.daily_trade_limit}/day</b> (used today: {today_trade_count})\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "📊 AlphaPulse Paper Trading"
+        "📊 WhaleAlpha Paper Trading"
     )
 
     now = datetime.now(timezone.utc)
@@ -364,7 +364,7 @@ async def build_filters_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "Tap a field below to set or update it. Leaving everything unset "
         "means the bot picks for you from high-potential signals.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "📊 AlphaPulse Paper Trading"
+        "📊 WhaleAlpha Paper Trading"
     )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1133,7 +1133,7 @@ async def build_dca_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "📉 <b>Levels</b>\n"
         f"{_fmt_dca_levels(settings)}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "📊 AlphaPulse Paper Trading"
+        "📊 WhaleAlpha Paper Trading"
     )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1598,7 +1598,7 @@ async def build_calendar_view(user_id: int, year: int, month: int) -> tuple[str,
         f"🟢 Green Days: <b>{cal['green_days']}</b>   🔴 Red Days: <b>{cal['red_days']}</b>\n\n"
         "Tap a day to see its realized PnL.\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "📊 AlphaPulse Paper Trading"
+        "📊 WhaleAlpha Paper Trading"
     )
 
     return text, InlineKeyboardMarkup(inline_keyboard=rows)

@@ -5,14 +5,14 @@ Revises:
 Create Date: v4.0 foundation
 
 NEW in v4 (Bible §7). This revision is deliberately a no-op. It exists so
-Alembic has a starting point that matches AlphaPulse's *actual* live
+Alembic has a starting point that matches WhaleAlpha's *actual* live
 schema — which was created over time by `Base.metadata.create_all()` on
 every v3 boot plus the hand-written `migrate_*_schema()` functions
 (`signal_tracker.py`, `kol_tracker.py`, `paper_engine.py`,
 `solana_wallet.py`) — rather than re-describing that schema from scratch
 and risking it drifting from what's actually deployed.
 
-How to adopt this on an existing (already-running) AlphaPulse database:
+How to adopt this on an existing (already-running) WhaleAlpha database:
 
     alembic -c infra/db/alembic.ini stamp 0001_baseline
 

@@ -26,7 +26,7 @@ from config.settings import (
     QUICKNODE_API_KEY,
 )
 
-logger = logging.getLogger("AlphaPulse.JupiterSwap")
+logger = logging.getLogger("WhaleAlpha.JupiterSwap")
 
 REAL_WALLET_EXCLUDED_PROVIDERS = ["alchemy", "drpc"]
 

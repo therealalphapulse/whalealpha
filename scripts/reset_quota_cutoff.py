@@ -27,7 +27,7 @@ from sqlalchemy import delete
 from infra.db.session import async_session
 from models.system_flag import SystemFlag
 
-logger = logging.getLogger("AlphaPulse.ResetQuotaCutoff")
+logger = logging.getLogger("WhaleAlpha.ResetQuotaCutoff")
 
 KEYS_TO_CLEAR = [
     "conviction_score_cutoff",

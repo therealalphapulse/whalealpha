@@ -1,5 +1,5 @@
 """
-Role-Based Access Control for AlphaPulse administration.
+Role-Based Access Control for WhaleAlpha administration.
 
 Roles (least to most privileged for anything mutating):
   analyst          - read-only analytics/reports.
@@ -25,7 +25,7 @@ from config.settings import OWNER_ID, ADMIN_IDS
 from models.admin_role import AdminRole
 from models.admin_activity_log import AdminActivityLog
 
-logger = logging.getLogger("AlphaPulse.RBAC")
+logger = logging.getLogger("WhaleAlpha.RBAC")
 
 ROLES = ["owner", "super_admin", "premium_manager", "support", "analyst"]
 

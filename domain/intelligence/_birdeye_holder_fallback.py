@@ -1,4 +1,4 @@
-"""Birdeye holder-data fallback for AlphaPulse signal analysis (Phase 3.2).
+"""Birdeye holder-data fallback for WhaleAlpha signal analysis (Phase 3.2).
 
 Mirrors domain.intelligence._solana_tracker_holder_fallback's shape and
 install pattern exactly, and is installed AFTER it in the provider chain:
@@ -48,7 +48,7 @@ from typing import Any
 
 import aiohttp
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 ENDPOINT = "https://public-api.birdeye.so/defi/v3/token/holder"
 
@@ -279,7 +279,7 @@ def install() -> None:
     """
     from domain.intelligence import holders
 
-    if getattr(holders._fetch_token_accounts, "_alphapulse_birdeye_fallback", False):
+    if getattr(holders._fetch_token_accounts, "_whalealpha_birdeye_fallback", False):
         return
 
     original_fetch = holders._fetch_token_accounts
@@ -321,6 +321,6 @@ def install() -> None:
 
         return result
 
-    _fetch_with_birdeye._alphapulse_birdeye_fallback = True
+    _fetch_with_birdeye._whalealpha_birdeye_fallback = True
     holders._fetch_token_accounts = _fetch_with_birdeye
     logger.info("[HolderProvider] Birdeye indexed holder fallback installed")

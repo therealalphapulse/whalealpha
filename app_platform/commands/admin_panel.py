@@ -29,7 +29,7 @@ from domain.payments import premium_plans
 from domain.payments import payment_methods
 from domain.admin.admin_rbac import ROLES, ROLE_LABELS
 
-logger = logging.getLogger("AlphaPulse.AdminPanel")
+logger = logging.getLogger("WhaleAlpha.AdminPanel")
 router = Router()
 
 
@@ -69,7 +69,7 @@ def _admin_row_kb(user_id: int) -> InlineKeyboardMarkup:
 async def cmd_admin_panel(message: Message):
     if not await admin_rbac.is_admin(message.from_user.id):
         return  # silent — don't reveal admin surface to non-admins
-    await message.answer("🛠️ <b>AlphaPulse Admin Panel</b>", reply_markup=_panel_kb())
+    await message.answer("🛠️ <b>WhaleAlpha Admin Panel</b>", reply_markup=_panel_kb())
 
 
 @router.callback_query(F.data == "adm:menu")
@@ -78,7 +78,7 @@ async def cb_admin_menu(callback: CallbackQuery, state: FSMContext):
     if not await admin_rbac.is_admin(callback.from_user.id):
         await callback.answer("Not authorized.", show_alert=True)
         return
-    await callback.message.edit_text("🛠️ <b>AlphaPulse Admin Panel</b>", reply_markup=_panel_kb())
+    await callback.message.edit_text("🛠️ <b>WhaleAlpha Admin Panel</b>", reply_markup=_panel_kb())
     await callback.answer()
 
 

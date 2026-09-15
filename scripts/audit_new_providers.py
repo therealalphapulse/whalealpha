@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Read-only smoke test for the new provider integrations (AlphaPulse Provider
+Read-only smoke test for the new provider integrations (WhaleAlpha Provider
 Integration Task, 2026-08-19): Ankr (RPC), Moralis (holder fallback), Shyft
 (holder fallback).
 

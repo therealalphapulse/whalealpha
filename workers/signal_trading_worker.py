@@ -49,7 +49,7 @@ from config.settings import (
 from domain.signals.wallet_consensus_engine import wallet_consensus_loop
 from domain.signals.robinhood_discovery import robinhood_discovery_loop
 
-logger = logging.getLogger("AlphaPulse.Worker.SignalTrading")
+logger = logging.getLogger("WhaleAlpha.Worker.SignalTrading")
 
 # Holder evidence is installed before any worker loop starts. These are
 # explicit installs rather than relying on import-hook timing in

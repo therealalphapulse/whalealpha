@@ -1,7 +1,7 @@
 """
 providers/marketdata/rugcheck.py
 
-NEW (AlphaPulse Provider Integration Task, 2026-08-19). RugCheck (served via
+NEW (WhaleAlpha Provider Integration Task, 2026-08-19). RugCheck (served via
 the already-configured FluxRPC-issued key, RUGCHECK_API_KEY) is an
 *additive* fallback for GoPlus token-security data only -- see
 check_token_security() in providers/marketdata/goplus.py, which is the
@@ -33,7 +33,7 @@ import logging
 from config.settings import RUGCHECK_API, RUGCHECK_API_KEY
 from providers.marketdata._resilience import get_json
 
-logger = logging.getLogger("AlphaPulse.RugCheck")
+logger = logging.getLogger("WhaleAlpha.RugCheck")
 
 
 def _mint_authority_status(token: dict) -> str:

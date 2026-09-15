@@ -1,6 +1,6 @@
-"""Indexed holder fallback for AlphaPulse signal analysis — Moralis.
+"""Indexed holder fallback for WhaleAlpha signal analysis — Moralis.
 
-NEW (AlphaPulse Provider Integration Task, 2026-08-19). Moralis is used only
+NEW (WhaleAlpha Provider Integration Task, 2026-08-19). Moralis is used only
 when the primary Helius holder snapshot AND every indexed fallback ahead of
 it in the chain (Solana Tracker, Birdeye — see workers/holder_runtime_bootstrap.py)
 have returned an unavailable or empty result. It is installed as an
@@ -28,7 +28,7 @@ from typing import Any
 
 import aiohttp
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 ENDPOINT = "https://solana-gateway.moralis.io/token/mainnet/{mint}/top-holders"
 DEFAULT_LIMIT = 100
@@ -165,7 +165,7 @@ def install() -> None:
     the authoritative install order)."""
     from domain.intelligence import holders
 
-    if getattr(holders._fetch_token_accounts, "_alphapulse_moralis_fallback", False):
+    if getattr(holders._fetch_token_accounts, "_whalealpha_moralis_fallback", False):
         return
 
     original_fetch = holders._fetch_token_accounts
@@ -218,6 +218,6 @@ def install() -> None:
         # concentration data. Preserve the original result semantics.
         return result
 
-    _fetch_with_moralis._alphapulse_moralis_fallback = True
+    _fetch_with_moralis._whalealpha_moralis_fallback = True
     holders._fetch_token_accounts = _fetch_with_moralis
     logger.info("[HolderDiag] Moralis indexed holder fallback installed")

@@ -28,7 +28,7 @@ from models.real_wallet import RealWallet
 from . import claims, execution, policy_service, risk_gate
 from .signal_adapter import AutoTradeSignal, get_recent_qualifying_signals
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Orchestrator")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Orchestrator")
 
 
 async def _get_auto_trade_enabled_wallets() -> list[RealWallet]:

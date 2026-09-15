@@ -1,4 +1,4 @@
-# AlphaPulse v3 → v4 Migration: Change Summary
+# WhaleAlpha v3 → v4 Migration: Change Summary
 
 This document is the required deliverable summarizing what changed, what
 was added, what was removed, and — critically — what has **not** been
@@ -10,7 +10,7 @@ needing to cross-reference every commit.
 
 This migration was performed in a sandboxed environment with **no
 network access**, **no Docker daemon**, **no live Postgres**, **no live
-Redis**, and only one of AlphaPulse's own dependencies installed
+Redis**, and only one of WhaleAlpha's own dependencies installed
 (`cryptography`). Every claim below is scoped honestly by what could
 actually be verified here:
 

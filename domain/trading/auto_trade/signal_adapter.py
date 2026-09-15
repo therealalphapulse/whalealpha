@@ -1,6 +1,6 @@
 """domain/trading/auto_trade/signal_adapter.py
 
-§3 of the spec: normalizes an already-qualified AlphaPulse signal
+§3 of the spec: normalizes an already-qualified WhaleAlpha signal
 (models/signal_token.py::SignalToken) into a stable internal
 AutoTradeSignal representation for the rest of this engine to consume.
 
@@ -46,7 +46,7 @@ class AutoTradeSignal:
 
 
 def score_to_tier(score: float | None) -> str:
-    """AlphaPulse's SignalToken has no discrete `tier` column (see
+    """WhaleAlpha's SignalToken has no discrete `tier` column (see
     models/signal_token.py) -- score is the underlying conviction
     signal. This bucketing is this engine's own, purely for the
     allowed_signal_tiers policy filter (§4/§6); it does not change or
@@ -63,7 +63,7 @@ def score_to_tier(score: float | None) -> str:
 
 
 def normalize_signal(signal: SignalToken) -> AutoTradeSignal:
-    """AlphaPulse Signal -> AutoTradeSignal (§3)."""
+    """WhaleAlpha Signal -> AutoTradeSignal (§3)."""
     score = signal.entry_score
     price = signal.current_price or signal.entry_price
     market_cap = signal.current_market_cap or signal.entry_market_cap

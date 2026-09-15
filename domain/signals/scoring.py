@@ -28,7 +28,7 @@ from domain.intelligence.risk_engine import (
     estimate_liquidity_lock_score,
 )
 
-logger = logging.getLogger("AlphaPulse.ConvictionScorer")
+logger = logging.getLogger("WhaleAlpha.ConvictionScorer")
 
 # ---------------------------------------------------------------------
 # Cutoffs (Blueprint 1.3 "Cutoffs")

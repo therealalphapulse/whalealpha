@@ -3,7 +3,7 @@ Encryption for Real Wallet private keys.
 
 THREAT MODEL / WHY THIS EXISTS
 -------------------------------
-AlphaPulse's Real Wallet needs to sign transactions on the user's behalf
+WhaleAlpha's Real Wallet needs to sign transactions on the user's behalf
 for automation (auto-buy, DCA) to work at all — a purely non-custodial
 "we never touch your key" design can't do that, since automation has no
 human present to approve/sign each trade. So the private key has to live
@@ -41,7 +41,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from infra.kms.provider import MasterKeyProvider, get_key_provider
 
-logger = logging.getLogger("AlphaPulse.WalletCrypto")
+logger = logging.getLogger("WhaleAlpha.WalletCrypto")
 
 # v4: MasterKeyProvider / EnvMasterKeyProvider / get_key_provider moved to
 # infra/kms/provider.py + infra/kms/env_provider.py + infra/kms/kms_provider.py

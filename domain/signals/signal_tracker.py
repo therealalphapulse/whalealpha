@@ -14,7 +14,7 @@ from models.signal_event import SignalEvent, Milestone
 from models.system_flag import SystemFlag
 from providers.marketdata.dexscreener import get_token_card_info
 
-logger = logging.getLogger("AlphaPulse.SignalTracker")
+logger = logging.getLogger("WhaleAlpha.SignalTracker")
 
 # --- Quote Alert / 24h trading-cycle gate ---
 # Quote (milestone) alerts should only fire for a signal that is still
@@ -252,7 +252,7 @@ async def build_last_n_signals_report(n: int, ascending: bool = True) -> str | N
         emoji = "🟢" if pct >= 0 else "🔴"
         sign = "+" if pct >= 0 else ""
         text_msg += f"{emoji} ${_esc(symbol)}: {sign}{pct:.0f}%\n"
-    text_msg += "\n⚡ Powered by AlphaPulse"
+    text_msg += "\n⚡ Powered by WhaleAlpha"
     return text_msg
 
 
@@ -299,18 +299,18 @@ async def build_24h_trending_report(limit: int = 10) -> str | None:
     if not signals:
         return None
 
-    text_msg = "📅 <b>AlphaPulse 24-Hour Trending</b>\n<i>Best signals today</i>\n\n"
+    text_msg = "📅 <b>WhaleAlpha 24-Hour Trending</b>\n<i>Best signals today</i>\n\n"
     for i, s in enumerate(signals):
         mult = s.ath_multiple or 1.0
         medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}️⃣"
         text_msg += f"{medal} ${html.escape(s.symbol or 'Unknown')} • {mult:.1f}X\n"
-    text_msg += "\n⚡ Powered by AlphaPulse"
+    text_msg += "\n⚡ Powered by WhaleAlpha"
     return text_msg
 
 
 async def build_alltime_trending_broadcast(limit: int = 10) -> str | None:
     """
-    Item 3: permanent leaderboard of the best AlphaPulse signals ever
+    Item 3: permanent leaderboard of the best WhaleAlpha signals ever
     recorded, for the twice-daily scheduled broadcast. (Separate from
     get_cached_alltime_trending, which backs the on-demand /alltime
     command and has its own short cache — kept independent so this
@@ -328,12 +328,12 @@ async def build_alltime_trending_broadcast(limit: int = 10) -> str | None:
     if not signals:
         return None
 
-    text_msg = "🏆 <b>Top AlphaPulse Trending</b>\n<i>Best signals ever recorded</i>\n\n"
+    text_msg = "🏆 <b>Top WhaleAlpha Trending</b>\n<i>Best signals ever recorded</i>\n\n"
     for i, s in enumerate(signals):
         mult = s.ath_multiple or 1.0
         medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i + 1}️⃣"
         text_msg += f"{medal} ${html.escape(s.symbol or 'Unknown')} • {mult:.1f}X\n"
-    text_msg += "\n⚡ Powered by AlphaPulse"
+    text_msg += "\n⚡ Powered by WhaleAlpha"
     return text_msg
 
 
@@ -390,7 +390,7 @@ async def build_daily_eod_report(target_date=None) -> str | None:
     text_msg = f"\U0001F319 <b>End-of-Day Report \u2014 {day.isoformat()}</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
 
     if total == 0:
-        text_msg += "No alerts were sent today.\n\n\u26A1 Powered by AlphaPulse"
+        text_msg += "No alerts were sent today.\n\n\u26A1 Powered by WhaleAlpha"
         return text_msg
 
     performing = 0
@@ -407,7 +407,7 @@ async def build_daily_eod_report(target_date=None) -> str | None:
         f"\U0001F4EC Total Alerts Sent: {total}\n"
         f"\U0001F7E2 Performing: {performing}\n"
         f"\U0001F534 Non-Performing: {non_performing}\n\n"
-        "\u26A1 Powered by AlphaPulse"
+        "\u26A1 Powered by WhaleAlpha"
     )
     return text_msg
 
@@ -512,10 +512,10 @@ async def mark_signal_alert_delivered(contract: str) -> None:
 async def get_previous_signal_for_contract(contract: str) -> SignalToken | None:
     """
     Read-only lookup: was `contract` already detected/alerted by
-    AlphaPulse's own scanning pipeline?
+    WhaleAlpha's own scanning pipeline?
 
     Used by app_platform/commands/auto_scan.py so a user pasting an
-    independent CA they found elsewhere gets told "AlphaPulse already
+    independent CA they found elsewhere gets told "WhaleAlpha already
     called this" and can be shown/quoted the original alert, instead of
     just a fresh DexScreener card as if it were never seen before. This
     does not participate in the signal lifecycle (no writes, no status
@@ -875,7 +875,7 @@ def _build_first_milestone_snapshot_text(signal, label, cur_mc, gain) -> str:
 
     lines = [
         f"🚀 <b>First Milestone Snapshot — ${_esc(signal.symbol)}</b>",
-        "<i>(Existing tracked Alpha Pulse signal — not a new call)</i>\n",
+        "<i>(Existing tracked WhaleAlpha signal — not a new call)</i>\n",
         f"📛 Name: <b>{_esc(signal.name or signal.symbol)}</b>",
         f"🏷️ Symbol: <b>${_esc(signal.symbol)}</b>",
         f"🔗 CA: <code>{_esc(signal.contract)}</code>\n",
@@ -903,7 +903,7 @@ def _build_first_milestone_snapshot_text(signal, label, cur_mc, gain) -> str:
 
     lines.append("")
     lines.append(f"🎯 Milestone Reached: <b>{label}</b>")
-    lines.append("\n⚡ Powered by AlphaPulse")
+    lines.append("\n⚡ Powered by WhaleAlpha")
     return "\n".join(lines)
 
 
@@ -1090,7 +1090,7 @@ async def build_top_signals_card(limit: int = 5) -> str:
 
     text_msg += (
         f"\n📊 Avg ROI: <b>+{avg_roi:.0f}%</b>\n\n"
-        "⚡ Powered by AlphaPulse"
+        "⚡ Powered by WhaleAlpha"
     )
 
     return text_msg
@@ -1117,7 +1117,7 @@ async def build_active_signals_report(limit: int = 10) -> str:
             f"   Current: <b>{format_x(s.current_multiple or 1)}</b>\n"
             f"   Best: <b>{format_x(s.ath_multiple or 1)}</b>\n\n"
         )
-    return text_msg + "━━━━━━━━━━━━━━━━━━━━━\n⚡ AlphaPulse"
+    return text_msg + "━━━━━━━━━━━━━━━━━━━━━\n⚡ WhaleAlpha"
 
 
 async def build_winners_report(limit: int = 15) -> str:
@@ -1205,5 +1205,5 @@ async def build_signal_status_report() -> str:
         f"Active Tracking: <b>{active}</b>\n"
         f"Milestones Sent: <b>{milestones}</b>\n\n"
         "Reply/Tag System: Active ✅\n"
-        "⚡ Powered by AlphaPulse"
+        "⚡ Powered by WhaleAlpha"
     )

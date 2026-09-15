@@ -20,7 +20,7 @@ import logging
 
 from . import orchestrator, exit_engine, reconciliation
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Worker")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Worker")
 
 
 async def auto_trade_scan_loop(bot, interval_seconds: int = 20) -> None:

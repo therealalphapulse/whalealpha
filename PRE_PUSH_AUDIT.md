@@ -1,4 +1,4 @@
-# AlphaPulse v4 — Pre-Push Audit
+# WhaleAlpha v4 — Pre-Push Audit
 
 Run against the restructured repository before pushing to GitHub. This is
 a real audit, not a re-assertion of the migration changelog — every check
