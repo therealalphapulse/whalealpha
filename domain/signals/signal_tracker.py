@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, text, update, delete, func as sa_func
 
@@ -344,6 +344,73 @@ async def build_alltime_trending_broadcast(limit: int = 10) -> str | None:
 ALLTIME_BROADCAST_HOURS_UTC = [9, 21]
 TRENDING_24H_BROADCAST_HOURS_UTC = [1, 4, 7, 10, 13, 17, 21]
 
+# End-of-Day Alert Report (isolated addition to the alert/reporting layer
+# only -- reads SignalToken rows already written elsewhere; does not
+# create, score, or modify any signal, wallet, trade, or Discovery data).
+EOD_REPORT_BROADCAST_HOURS_UTC = [0]
+
+
+async def build_daily_eod_report(target_date=None) -> str | None:
+    """
+    End-of-Day Alert Report: total number of alerts sent on `target_date`
+    (a UTC calendar date; defaults to the day that just ended, i.e.
+    "yesterday" relative to the moment this is called -- this is fired
+    at the 00:00 UTC slot below, so "yesterday" is the day whose alerts
+    just finished), split into performing vs non-performing using the
+    *exact same* classification build_last_n_signals_report() (the
+    Last 15 Alerts system) already uses: pct = (ath_multiple - 1) * 100,
+    performing when pct >= 0, non-performing otherwise.
+
+    Counts only signals whose Signal Alert was actually confirmed
+    delivered (alert_delivered=True) -- the same "was this alert
+    genuinely sent" definition mark_signal_alert_delivered() /
+    pump_radar.py already use elsewhere in this module -- scoped to the
+    given UTC calendar day via signaled_at.
+
+    Pure read + format. Does not touch wallet, trading, execution,
+    Discovery, or Scoring logic; it only reads SignalToken rows those
+    systems already wrote.
+    """
+    now = datetime.now(timezone.utc)
+    day = target_date or (now - timedelta(days=1)).date()
+    start_of_day = datetime(day.year, day.month, day.day)
+    end_of_day = start_of_day + timedelta(days=1)
+
+    async with async_session() as session:
+        res = await session.execute(
+            select(SignalToken).where(
+                SignalToken.alert_delivered.is_(True),
+                SignalToken.signaled_at >= start_of_day,
+                SignalToken.signaled_at < end_of_day,
+            )
+        )
+        todays_alerts = res.scalars().all()
+
+    total = len(todays_alerts)
+    text_msg = f"\U0001F319 <b>End-of-Day Report \u2014 {day.isoformat()}</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+
+    if total == 0:
+        text_msg += "No alerts were sent today.\n\n\u26A1 Powered by AlphaPulse"
+        return text_msg
+
+    performing = 0
+    non_performing = 0
+    for s in todays_alerts:
+        mult = s.ath_multiple or 1.0
+        pct = (mult - 1) * 100
+        if pct >= 0:
+            performing += 1
+        else:
+            non_performing += 1
+
+    text_msg += (
+        f"\U0001F4EC Total Alerts Sent: {total}\n"
+        f"\U0001F7E2 Performing: {performing}\n"
+        f"\U0001F534 Non-Performing: {non_performing}\n\n"
+        "\u26A1 Powered by AlphaPulse"
+    )
+    return text_msg
+
 
 async def scheduled_broadcast_loop(bot, interval_seconds: int = 120):
     """
@@ -372,6 +439,14 @@ async def scheduled_broadcast_loop(bot, interval_seconds: int = 120):
                 flag_key = f"broadcast_24h_{date_str}_{hour}"
                 if not await _get_flag_int(flag_key, 0):
                     report = await build_24h_trending_report()
+                    if report:
+                        await broadcast_to_all_subscribers(bot, report)
+                    await _set_flag_int(flag_key, 1)
+
+            if hour in EOD_REPORT_BROADCAST_HOURS_UTC:
+                flag_key = f"broadcast_eod_report_{date_str}_{hour}"
+                if not await _get_flag_int(flag_key, 0):
+                    report = await build_daily_eod_report()
                     if report:
                         await broadcast_to_all_subscribers(bot, report)
                     await _set_flag_int(flag_key, 1)
