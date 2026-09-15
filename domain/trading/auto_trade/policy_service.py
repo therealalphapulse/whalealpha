@@ -29,7 +29,7 @@ from .constants import (
     DEFAULT_COOLDOWN_SECONDS,
 )
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Policy")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Policy")
 
 
 def _today_str() -> str:

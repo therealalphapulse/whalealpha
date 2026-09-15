@@ -52,7 +52,7 @@ from domain.payments.premium_service import (
     start_premium_intelligence_engine,
 )
 
-logger = logging.getLogger("AlphaPulse.Worker.Intelligence")
+logger = logging.getLogger("WhaleAlpha.Worker.Intelligence")
 
 
 async def main() -> None:

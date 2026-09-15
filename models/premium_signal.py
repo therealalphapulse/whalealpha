@@ -6,7 +6,7 @@ class PremiumSignal(Base):
     """
     A Premium signal — only created when a token passes BOTH gates
     (services/premium_signal_engine.py):
-      1. AlphaPulse AI analysis (services/conviction_scorer.score_candidate)
+      1. WhaleAlpha AI analysis (services/conviction_scorer.score_candidate)
       2. Smart Wallet consensus (>= PREMIUM_CONSENSUS_MIN_WALLETS distinct
          active Premium wallets buying the same token within
          PREMIUM_CONSENSUS_WINDOW_MINUTES of each other)

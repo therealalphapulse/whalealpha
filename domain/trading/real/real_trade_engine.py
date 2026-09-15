@@ -19,7 +19,7 @@ from domain.trading.real import robinhood_swap as robinhood_swap
 from domain.trading.real.robinhood_swap import NATIVE_ETH_ADDRESS, SwapError
 from providers.marketdata.dexscreener import get_token_card_info
 
-logger = logging.getLogger("AlphaPulse.RealTradeEngine")
+logger = logging.getLogger("WhaleAlpha.RealTradeEngine")
 
 SELL_ALREADY_IN_PROGRESS = "A sell is already in progress for this position. Please wait for it to finish."
 BUY_NETWORK_RESERVE_WEI = 10_000_000

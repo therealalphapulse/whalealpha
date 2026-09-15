@@ -2,7 +2,7 @@ import logging
 
 import aiohttp
 
-logger = logging.getLogger("AlphaPulse.LpLockChecker")
+logger = logging.getLogger("WhaleAlpha.LpLockChecker")
 
 RAYDIUM_POOL_INFO_URL = "https://api-v3.raydium.io/pools/info/ids"
 

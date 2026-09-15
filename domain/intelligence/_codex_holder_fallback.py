@@ -1,4 +1,4 @@
-"""Codex indexed holder fallback for AlphaPulse.
+"""Codex indexed holder fallback for WhaleAlpha.
 
 Additive only: this adapter runs after the existing holder providers and
 normalizes Codex's GraphQL holder records into the existing {owner, amount}
@@ -14,7 +14,7 @@ from typing import Any
 
 import aiohttp
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 ENDPOINT = "https://graph.codex.io/graphql"
 SOLANA_NETWORK_ID = 1399811149
@@ -164,7 +164,7 @@ def install() -> None:
     """Append Codex to the existing indexed holder fallback chain."""
     from domain.intelligence import holders
 
-    if getattr(holders._fetch_token_accounts, "_alphapulse_codex_fallback", False):
+    if getattr(holders._fetch_token_accounts, "_whalealpha_codex_fallback", False):
         return
 
     original_fetch = holders._fetch_token_accounts
@@ -205,6 +205,6 @@ def install() -> None:
             raw_account_count=len(codex_accounts),
         )
 
-    _fetch_with_codex._alphapulse_codex_fallback = True
+    _fetch_with_codex._whalealpha_codex_fallback = True
     holders._fetch_token_accounts = _fetch_with_codex
     logger.info("[HolderProvider] Codex indexed holder fallback installed")

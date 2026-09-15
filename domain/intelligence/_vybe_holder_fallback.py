@@ -1,4 +1,4 @@
-"""Vybe indexed holder fallback for AlphaPulse.
+"""Vybe indexed holder fallback for WhaleAlpha.
 
 Additive only: this module wraps the existing holder pipeline and is tried
 only after all previously installed holder providers return no usable
@@ -14,7 +14,7 @@ from typing import Any
 
 import aiohttp
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 ENDPOINT = "https://api.vybenetwork.xyz/v4/tokens/{mint}/top-holders"
 # Update (2026-08-22): VYBE_API_KEY is not currently set in production
@@ -147,7 +147,7 @@ def install() -> None:
     """Append Vybe to the existing indexed holder fallback chain."""
     from domain.intelligence import holders
 
-    if getattr(holders._fetch_token_accounts, "_alphapulse_vybe_fallback", False):
+    if getattr(holders._fetch_token_accounts, "_whalealpha_vybe_fallback", False):
         return
 
     original_fetch = holders._fetch_token_accounts
@@ -188,6 +188,6 @@ def install() -> None:
             raw_account_count=len(vybe_accounts),
         )
 
-    _fetch_with_vybe._alphapulse_vybe_fallback = True
+    _fetch_with_vybe._whalealpha_vybe_fallback = True
     holders._fetch_token_accounts = _fetch_with_vybe
     logger.info("[HolderProvider] Vybe indexed holder fallback installed")

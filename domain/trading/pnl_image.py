@@ -7,7 +7,7 @@ from urllib.request import urlopen
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-logger = logging.getLogger("AlphaPulse.PnlImage")
+logger = logging.getLogger("WhaleAlpha.PnlImage")
 
 # Reference composition: tall 4:5 portrait, premium neon trade-result card.
 WIDTH, HEIGHT = 1000, 1250
@@ -186,7 +186,7 @@ def _draw_card(data: dict) -> Image.Image:
 
     # Brand/header: deliberately clean like the supplied reference.
     draw.text((PAD + 8, 48), "⚡", font=_font(48, True), fill=accent)
-    draw.text((PAD + 70, 54), "AlphaPulse", font=_font(36, True), fill=WHITE)
+    draw.text((PAD + 70, 54), "WhaleAlpha", font=_font(36, True), fill=WHITE)
     badge = "REAL TRADE RESULT"
     bw = draw.textbbox((0, 0), badge, font=_font(16, True))[2] + 34
     bx = (WIDTH - bw) / 2
@@ -300,7 +300,7 @@ def _render_to_bytes(data: dict) -> bytes:
 
 
 async def generate_pnl_card_image(data: dict) -> bytes | None:
-    """Generate the production AlphaPulse PnL card off the event loop.
+    """Generate the production WhaleAlpha PnL card off the event loop.
 
     The renderer is intentionally visual-only: it never changes trade data or
     PnL calculations. It accepts the existing card payload and only rearranges

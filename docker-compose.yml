@@ -18,15 +18,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: alphapulse
-      POSTGRES_USER: alphapulse
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alphapulse_dev_only}
+      POSTGRES_DB: whalealpha
+      POSTGRES_USER: whalealpha
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-whalealpha_dev_only}
     volumes:
       - db_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U alphapulse"]
+      test: ["CMD-SHELL", "pg_isready -U whalealpha"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -46,7 +46,7 @@ services:
     command: python -m app_platform.gateway.bootstrap
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      DATABASE_URL: postgresql://whalealpha:${POSTGRES_PASSWORD:-whalealpha_dev_only}@db:5432/whalealpha
       REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
@@ -57,7 +57,7 @@ services:
     command: python -m app_platform.gateway.webhook_entrypoint
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      DATABASE_URL: postgresql://whalealpha:${POSTGRES_PASSWORD:-whalealpha_dev_only}@db:5432/whalealpha
       REDIS_URL: redis://redis:6379/0
       LOG_FORMAT: json
     ports:
@@ -78,7 +78,7 @@ services:
     command: python -m workers.signal_trading_worker
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      DATABASE_URL: postgresql://whalealpha:${POSTGRES_PASSWORD:-whalealpha_dev_only}@db:5432/whalealpha
       REDIS_URL: redis://redis:6379/0
       LOG_FORMAT: json
     ports:
@@ -96,7 +96,7 @@ services:
     command: python -m workers.intelligence_worker
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      DATABASE_URL: postgresql://whalealpha:${POSTGRES_PASSWORD:-whalealpha_dev_only}@db:5432/whalealpha
       REDIS_URL: redis://redis:6379/0
       LOG_FORMAT: json
       # Same flag as v3 (Bible §11) — this worker idles its Premium-engine

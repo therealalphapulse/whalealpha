@@ -30,7 +30,7 @@ from infra.db.session import async_session
 from models.system_flag import SystemFlag
 from models.pump_alerted_token import PumpAlertedToken
 
-logger = logging.getLogger("AlphaPulse.QuotaGovernor")
+logger = logging.getLogger("WhaleAlpha.QuotaGovernor")
 
 DAILY_MIN = 100
 DAILY_MAX = 150

@@ -2,7 +2,7 @@ import logging
 
 import aiohttp
 
-logger = logging.getLogger("AlphaPulse.JupiterPrice")
+logger = logging.getLogger("WhaleAlpha.JupiterPrice")
 
 JUPITER_PRICE_API = "https://api.jup.ag/price/v2"
 

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from infra.db.session import async_session
 from models.payment_method import PaymentMethod
 
-logger = logging.getLogger("AlphaPulse.PaymentMethods")
+logger = logging.getLogger("WhaleAlpha.PaymentMethods")
 
 
 async def get_active_methods(method_type: str | None = None) -> list[PaymentMethod]:

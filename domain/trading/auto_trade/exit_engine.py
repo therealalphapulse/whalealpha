@@ -20,7 +20,7 @@ from models.auto_trade_execution import AutoTradeExecution
 
 from . import execution, position_manager
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.ExitEngine")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.ExitEngine")
 
 
 def _now() -> datetime:
