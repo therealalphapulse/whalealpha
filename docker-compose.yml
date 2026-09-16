@@ -1,8 +1,13 @@
 # NEW in v4 (Bible §3 — Physical Deployment Architecture). Implements the
 # multi-service topology described there: a Postgres + Redis backing pair,
-# the Bot Gateway (webhook mode, horizontally scalable), and the two
-# isolated worker pools — Signal/Trading and Intelligence — replacing v3's
-# single `worker: python main.py` process.
+# the Bot Gateway (webhook mode, horizontally scalable), and the three
+# isolated worker pools — Signal, Trading, and Intelligence — replacing
+# v3's single `worker: python main.py` process. Signal and Trading were
+# previously combined as `signal-trading-worker`; they are now fully
+# independent services (workers/signal_worker.py, workers/trading_worker.py)
+# that share the same Postgres database and Redis instance but coordinate
+# only through that shared state and their own disjoint Redis leader
+# leases (infra/locks.py) — see either module's docstring for the details.
 #
 # For local development, `python main.py` (the single-process fallback,
 # Bible §15) or `app_platform.gateway.polling_entrypoint` remain simpler
@@ -12,7 +17,7 @@
 #
 # Not run against a live Docker daemon in the environment this was
 # authored in (none available) — validate with `docker compose up` in
-# CI/staging before relying on it.
+# CI/staging/before relying on it.
 
 services:
   db:
@@ -73,9 +78,9 @@ services:
     deploy:
       replicas: 2   # horizontally scalable — the whole point of webhook mode (Bible §3/§9)
 
-  signal-trading-worker:
+  signal-worker:
     build: .
-    command: python -m workers.signal_trading_worker
+    command: python -m workers.signal_worker
     env_file: .env
     environment:
       DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
@@ -83,6 +88,24 @@ services:
       LOG_FORMAT: json
     ports:
       - "9091:9091"   # /metrics
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+
+  trading-worker:
+    build: .
+    command: python -m workers.trading_worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      REDIS_URL: redis://redis:6379/0
+      LOG_FORMAT: json
+    ports:
+      - "9093:9093"   # /metrics
     depends_on:
       db:
         condition: service_healthy
