@@ -1,14 +1,24 @@
 """Robinhood Chain wallet balances and Stock Token metadata."""
 from __future__ import annotations
-import asyncio, aiohttp
+import asyncio, time, aiohttp
 from domain.trading.real.robinhood_swap import get_native_balance,get_token_balance,get_mint_decimals
 from config.settings import ROBINHOOD_EVM_CHAIN_ID
 ASSETS_URL="https://api.robinhood.com/rhj/assets"
+# The asset catalog changes rarely; caching it removes a full HTTP round-trip
+# from every wallet check for as long as the cache is warm. Same shape and
+# content as an uncached call -- purely a latency optimization.
+_ASSETS_CACHE_TTL_SECONDS=300
+_assets_cache:dict[str,tuple[float,list[dict]]]={}
 async def _assets()->list[dict]:
+    cached=_assets_cache.get("assets")
+    if cached and (time.monotonic()-cached[0])<_ASSETS_CACHE_TTL_SECONDS:
+        return cached[1]
     async with aiohttp.ClientSession() as s:
         async with s.get(ASSETS_URL,timeout=10) as r:
             if r.status!=200: raise RuntimeError(f"Robinhood assets API HTTP {r.status}")
-            return (await r.json()).get("assets",[])
+            assets=(await r.json()).get("assets",[])
+    _assets_cache["assets"]=(time.monotonic(),assets)
+    return assets
 async def fetch_wallet_fungible_tokens(address:str)->list[dict]|None:
     try:
         native=await get_native_balance(address)
