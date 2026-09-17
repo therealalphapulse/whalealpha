@@ -39,17 +39,32 @@ async def eth_usd_price()->float|None:
     except Exception: pass
     return None
 
+# Decimals are immutable for a deployed ERC-20 contract, so caching them
+# in-process eliminates a repeat RPC round-trip on every subsequent wallet
+# check or swap involving the same token. This is purely a latency
+# optimization -- values returned are identical to an uncached call.
+_decimals_cache:dict[str,int]={}
+
 async def get_token_balance(address:str, token:str)->dict:
     data="0x"+ERC20_BALANCE_OF+address[2:].lower().rjust(64,"0")
-    raw=await rpc_call("eth_call",[{"to":token,"data":data},"latest"])
+    # Balance and decimals are independent reads; fetching them concurrently
+    # instead of sequentially roughly halves this call's wall-clock latency.
+    raw,decimals=await asyncio.gather(
+        rpc_call("eth_call",[{"to":token,"data":data},"latest"]),
+        get_mint_decimals(token),
+    )
     raw_amount=int(raw,16)
-    decimals=await get_mint_decimals(token)
     ui_amount=(raw_amount/(10**decimals)) if decimals else float(raw_amount)
     return {"raw_amount":raw_amount,"decimals":decimals,"ui_amount":ui_amount,"token_address":token,"token_accounts":[]}
 
 async def get_mint_decimals(token:str)->int:
+    key=token.lower()
+    cached=_decimals_cache.get(key)
+    if cached is not None: return cached
     raw=await rpc_call("eth_call",[{"to":token,"data":"0x"+ERC20_DECIMALS},"latest"])
-    return int(raw,16)
+    decimals=int(raw,16)
+    _decimals_cache[key]=decimals
+    return decimals
 
 async def get_token_symbol(token:str)->str:
     try:
