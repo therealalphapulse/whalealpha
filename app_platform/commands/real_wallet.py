@@ -27,6 +27,7 @@ from domain.trading.real.robinhood_wallet import (
     WalletImportError,
 )
 from domain.trading.real.robinhood_swap import get_native_balance, get_mint_decimals, NATIVE_ETH_ADDRESS
+from domain.trading.real.evm_multichain import get_multi_chain_snapshot
 from domain.trading.real import real_trade_engine
 from domain.trading.real import robinhood_withdraw as wallet_withdraw
 from domain.trading.real import real_dca_engine
@@ -119,23 +120,36 @@ INFO_TEXT = (
 )
 
 
+def _chain_lines(chains) -> str:
+    icons = {"ethereum": "\U0001f537", "robinhood": "\U0001f7e2"}
+    rows = []
+    for c in chains:
+        icon = icons.get(c.chain, "\u2022")
+        bal = f"{c.native_balance:.4f}" if c.native_balance is not None else "\u2014"
+        usd = format_usd(c.usd_value)
+        rows.append(f"{icon} <b>{c.label}:</b> {bal} ETH  ({usd})")
+    return "\n".join(rows)
+
+
 def _menu_text(
     public_key: str,
-    eth_balance: float | None,
-    portfolio_value_usd: float | None,
+    snapshot: dict,
     auto_enabled: bool,
+    wallet_number: int = 1,
 ) -> str:
-    bal_line = f"{eth_balance:.4f} ETH" if eth_balance is not None else "—"
-    value_line = format_usd(portfolio_value_usd) if portfolio_value_usd is not None else "—"
-    auto_line = "🟢 ON" if auto_enabled else "⚪ OFF (manual trading only)"
+    # wallet_number defaults to 1 -- RealWallet is one-per-user today (see
+    # models/real_wallet.py unique constraint on user_id); the parameter
+    # exists so the card format doesn't need to change if multi-wallet
+    # support is ever added.
+    auto_line = "\U0001f7e2 ON" if auto_enabled else "\u26aa OFF (manual trading only)"
     return (
-        "💼 <b>WhaleAlpha Robinhood Wallet</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👛 <b>Address</b> <i>(tap to copy)</i>:\n<code>{public_key}</code>\n\n"
-        f"💰 <b>ETH Balance:</b> {bal_line}\n"
-        f"📈 <b>Portfolio Value:</b> {value_line}\n"
-        f"🤖 <b>Automation:</b> {auto_line}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"\U0001f4bc <b>Wallet {wallet_number}</b> \u2b50\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"{_chain_lines(snapshot['chains'])}\n\n"
+        f"<b>Total:</b> {format_usd(snapshot['total_usd'])}\n\n"
+        f"<u>EVM</u>: <code>{public_key}</code>\n\n"
+        f"\U0001f916 <b>Automation:</b> {auto_line}\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         "Manage your wallet below."
     )
 
@@ -159,20 +173,21 @@ async def _fetch_portfolio_value_safe(public_key: str) -> float | None:
     return result["total_value_usd"] if result else None
 
 
-def _menu_text_loading(public_key: str, auto_enabled: bool) -> str:
-    # Placeholder shown the instant the menu opens, before the ETH
-    # balance + portfolio value RPC/API calls resolve. Keeps the handler
+def _menu_text_loading(public_key: str, auto_enabled: bool, wallet_number: int = 1) -> str:
+    # Placeholder shown the instant the menu opens, before the Ethereum +
+    # Robinhood Chain balance/price RPC calls resolve. Keeps the handler
     # from ever blocking Telegram on network I/O (see performance
     # requirements: respond immediately, then update in place).
-    auto_line = "🟢 ON" if auto_enabled else "⚪ OFF (manual trading only)"
+    auto_line = "\U0001f7e2 ON" if auto_enabled else "\u26aa OFF (manual trading only)"
     return (
-        "💼 <b>WhaleAlpha Robinhood Wallet</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👛 <b>Address</b> <i>(tap to copy)</i>:\n<code>{public_key}</code>\n\n"
-        "💰 <b>ETH Balance:</b> ⏳ Loading...\n"
-        "📈 <b>Portfolio Value:</b> ⏳ Loading...\n"
-        f"🤖 <b>Automation:</b> {auto_line}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"\U0001f4bc <b>Wallet {wallet_number}</b> \u2b50\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        "\U0001f537 <b>Ethereum:</b> \u23f3 Loading...\n"
+        "\U0001f7e2 <b>Robinhood:</b> \u23f3 Loading...\n\n"
+        "<b>Total:</b> \u23f3 Loading...\n\n"
+        f"<u>EVM</u>: <code>{public_key}</code>\n\n"
+        f"\U0001f916 <b>Automation:</b> {auto_line}\n\n"
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         "Manage your wallet below."
     )
 
@@ -192,10 +207,9 @@ async def _send_or_edit(target, text: str, kb, edit: bool):
 
 
 async def _show_menu(target, user_id: int, edit: bool):
-    # get_real_wallet() is a DB read only — safe to await inline. The
-    # ETH balance + portfolio value calls are the slow part (live
-    # RPC/Helius), so those must never delay the first response the
-    # user sees.
+    # get_real_wallet() is a DB read only \u2014 safe to await inline. The
+    # per-chain balance + price calls are the slow part (live RPC/API),
+    # so those must never delay the first response the user sees.
     wallet = await get_real_wallet(user_id)
     logger.info(f"[TEMP-DEBUG] _show_menu: user={user_id} wallet_found={bool(wallet)}")
     if not wallet:
@@ -205,21 +219,20 @@ async def _show_menu(target, user_id: int, edit: bool):
     kb = real_wallet_menu_kb(wallet.auto_trading_enabled)
     loading_text = _menu_text_loading(wallet.public_key, wallet.auto_trading_enabled)
 
-    # Phase 1: respond immediately with a loading placeholder — no RPC
+    # Phase 1: respond immediately with a loading placeholder \u2014 no RPC
     # calls made yet, so this is effectively instant.
     message_to_update = await _send_or_edit(target, loading_text, kb, edit)
     logger.info(f"[TEMP-DEBUG] _show_menu: loading placeholder sent for {wallet.public_key}")
 
-    # Phase 2: fetch the slow data concurrently in the background.
-    balance, portfolio_value = await asyncio.gather(
-        _fetch_balance_safe(wallet.public_key),
-        _fetch_portfolio_value_safe(wallet.public_key),
-    )
+    # Phase 2: fetch Ethereum + Robinhood Chain balances (and the shared
+    # ETH/USD price) concurrently -- one chain's RPC being slow or down
+    # never blocks or fails the other's result.
+    snapshot = await get_multi_chain_snapshot(wallet.public_key)
     logger.info(
-        f"[TEMP-DEBUG] _show_menu: fetch results for {wallet.public_key} -> "
-        f"balance={balance!r} portfolio_value={portfolio_value!r}"
+        f"[TEMP-DEBUG] _show_menu: multi-chain snapshot for {wallet.public_key} -> "
+        f"total_usd={snapshot['total_usd']!r}"
     )
-    final_text = _menu_text(wallet.public_key, balance, portfolio_value, wallet.auto_trading_enabled)
+    final_text = _menu_text(wallet.public_key, snapshot, wallet.auto_trading_enabled)
 
     # Phase 3: update the message in place once data is ready.
     try:
@@ -230,7 +243,7 @@ async def _show_menu(target, user_id: int, edit: bool):
             logger.error(f"real wallet menu update failed: {e}")
 
 
-@router.message(Command("realwallet", "rw"))
+@router.message(Command("realwallet", "rw", "wallet"))
 async def cmd_real_wallet(message: Message):
     await get_or_create_user(message.from_user.id, message.from_user.username)
     await _show_menu(message, message.from_user.id, edit=False)

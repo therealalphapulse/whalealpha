@@ -808,3 +808,15 @@ REAL_AUTOMATION_ENABLED = _env_bool("REAL_AUTOMATION_ENABLED", False)
 ROBINHOOD_EVM_CHAIN_ID = 4663
 ROBINHOOD_RPC_URL = os.getenv("ROBINHOOD_RPC_URL", "https://rpc.mainnet.chain.robinhood.com")
 ROBINHOOD_UNISWAP_API_KEY = os.getenv("UNISWAP_API_KEY")
+
+# Ethereum mainnet (EVM, chain 1) -- read-only balance lookups for the
+# multi-chain /wallet card. Robinhood Chain is itself EVM-compatible, so
+# the same address/keypair already stored on RealWallet works here too --
+# no model/schema change needed. Uses the existing Alchemy key if one is
+# configured (see ALCHEMY_API_KEY above); otherwise falls back to a public
+# RPC. Override directly with ETHEREUM_RPC_URL to point at another provider.
+ETHEREUM_CHAIN_ID = 1
+ETHEREUM_RPC_URL = os.getenv(
+    "ETHEREUM_RPC_URL",
+    f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY else "https://eth.llamarpc.com",
+)
