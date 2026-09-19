@@ -42,7 +42,7 @@ from eth_account import Account
 from sqlalchemy import select
 
 from infra.kms.wallet_crypto import decrypt_secret
-from infra.db.session import AsyncSessionLocal
+from infra.db.session import async_session
 from models.bridge_withdrawal import BridgeWithdrawal
 from domain.trading.real.robinhood_wallet import get_real_wallet
 from config.settings import (
@@ -249,7 +249,7 @@ async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float, netwo
         l2_block_timestamp = int(l2_block["timestamp"], 16)
         claimable_after = datetime.now(timezone.utc) + timedelta(days=BRIDGE_WITHDRAWAL_CHALLENGE_DAYS)
 
-        async with AsyncSessionLocal() as session:
+        async with async_session() as session:
             withdrawal = BridgeWithdrawal(
                 user_id=user_id,
                 amount_eth=amount_eth,
@@ -281,7 +281,7 @@ async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float, netwo
 
 
 async def get_pending_withdrawals(user_id: int) -> list[BridgeWithdrawal]:
-    async with AsyncSessionLocal() as session:
+    async with async_session() as session:
         result = await session.execute(
             select(BridgeWithdrawal).where(BridgeWithdrawal.user_id == user_id, BridgeWithdrawal.claimed.is_(False))
         )
@@ -324,7 +324,7 @@ async def claim_withdrawal(user_id: int, withdrawal_id: int) -> dict:
     if not wallet:
         return {"ok": False, "reason": "No active Robinhood Chain wallet."}
 
-    async with AsyncSessionLocal() as session:
+    async with async_session() as session:
         result = await session.execute(
             select(BridgeWithdrawal).where(BridgeWithdrawal.id == withdrawal_id, BridgeWithdrawal.user_id == user_id)
         )
@@ -367,7 +367,7 @@ async def claim_withdrawal(user_id: int, withdrawal_id: int) -> dict:
         tx = {"to": net.outbox, "data": calldata, "value": 0}
         tx_hash, receipt, status = await _sign_send(net.l1_rpc_url, net.l1_chain_id, secret, tx)
 
-        async with AsyncSessionLocal() as session:
+        async with async_session() as session:
             result = await session.execute(select(BridgeWithdrawal).where(BridgeWithdrawal.id == withdrawal_id))
             row = result.scalar_one()
             if status == "confirmed":
