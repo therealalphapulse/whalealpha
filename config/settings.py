@@ -820,3 +820,40 @@ ETHEREUM_RPC_URL = os.getenv(
     "ETHEREUM_RPC_URL",
     f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY else "https://eth.llamarpc.com",
 )
+
+# Robinhood Chain <-> Ethereum canonical bridge. Robinhood Chain is an
+# Arbitrum Orbit rollup, so its canonical bridge IS the standard Arbitrum
+# bridge -- these are Arbitrum's own audited L1 contracts (Delayed Inbox
+# for deposits, Outbox for finalizing withdrawals), not a custom bridge.
+# Addresses per docs.robinhood.com/chain/protocol-contracts (mainnet).
+ROBINHOOD_BRIDGE_DELAYED_INBOX = os.getenv(
+    "ROBINHOOD_BRIDGE_DELAYED_INBOX", "0x1A07cc4BD17E0118BdB54D70990D2158AbAD7a2D"
+)
+ROBINHOOD_BRIDGE_OUTBOX = os.getenv(
+    "ROBINHOOD_BRIDGE_OUTBOX", "0xf0ce991ea4A0d2400A4AB49b20ae333f6Dce3DE9"
+)
+ARBSYS_PRECOMPILE = "0x0000000000000000000000000000000000000064"
+NODE_INTERFACE_PRECOMPILE = "0x00000000000000000000000000000000000000C8"
+BRIDGE_WITHDRAWAL_CHALLENGE_DAYS = 7
+
+# --- Testnet equivalents, for dry-running the full bridge/withdrawal
+# cycle without risking real funds. Robinhood Chain Testnet settles to
+# ETHEREUM SEPOLIA, not Ethereum mainnet -- this is a different L1 chain
+# with its own RPC and its own Delayed Inbox/Outbox contract instances,
+# not just a chain-ID swap on the same contracts. Addresses verified
+# against docs.robinhood.com/chain/protocol-contracts (testnet column).
+SEPOLIA_CHAIN_ID = 11155111
+SEPOLIA_RPC_URL = os.getenv("SEPOLIA_RPC_URL", "https://ethereum-sepolia-rpc.publicnode.com")
+
+ROBINHOOD_TESTNET_EVM_CHAIN_ID = 46630
+ROBINHOOD_TESTNET_RPC_URL = os.getenv("ROBINHOOD_TESTNET_RPC_URL", "https://rpc.testnet.chain.robinhood.com")
+
+ROBINHOOD_TESTNET_BRIDGE_DELAYED_INBOX = os.getenv(
+    "ROBINHOOD_TESTNET_BRIDGE_DELAYED_INBOX", "0xF2939afA86F6f933A3CE17fCAB007907B6b0B7a4"
+)
+ROBINHOOD_TESTNET_BRIDGE_OUTBOX = os.getenv(
+    "ROBINHOOD_TESTNET_BRIDGE_OUTBOX", "0x8D180Caf588f3Da027BEf1F42a106Da93F90b166"
+)
+# Faucets for a full dry run: https://faucet.testnet.chain.robinhood.com
+# (testnet ETH on Robinhood Chain) and any public Sepolia faucet (needed
+# on the L1 side to pay gas for deposit/claim transactions).
