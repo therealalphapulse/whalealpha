@@ -24,7 +24,7 @@ import logging
 
 from providers.rpc.helius_request_manager import helius_manager, PRIORITY_LOW
 
-logger = logging.getLogger("AlphaPulse.SolanaTokenHoldings")
+logger = logging.getLogger("WhaleAlpha.SolanaTokenHoldings")
 
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
@@ -67,13 +67,13 @@ async def fetch_wallet_holdings(
 
     balance_payload = {
         "jsonrpc": "2.0",
-        "id": "alphapulse-wallet-balance",
+        "id": "whalealpha-wallet-balance",
         "method": "getBalance",
         "params": [wallet_address],
     }
     tokens_payload = {
         "jsonrpc": "2.0",
-        "id": "alphapulse-wallet-tokens",
+        "id": "whalealpha-wallet-tokens",
         "method": "getTokenAccountsByOwner",
         "params": [
             wallet_address,

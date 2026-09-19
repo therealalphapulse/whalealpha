@@ -18,7 +18,7 @@ from models.auto_trade_claim import AutoTradeClaim
 
 from .constants import CLAIM_RECONCILE_GRACE_SECONDS
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Claims")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Claims")
 
 
 async def _claim_insert_or_reopen(user_id: int, signal_id: int, contract: str) -> AutoTradeClaim | None:

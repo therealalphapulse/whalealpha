@@ -26,7 +26,7 @@ class EnvMasterKeyProvider(MasterKeyProvider):
             raise RuntimeError(
                 "WALLET_MASTER_KEY is missing. Generate one with:\n"
                 "  python -c \"import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())\"\n"
-                "and set it as an environment variable. AlphaPulse will not "
+                "and set it as an environment variable. WhaleAlpha will not "
                 "start Real Wallet features without it."
             )
         try:

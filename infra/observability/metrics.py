@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-logger = logging.getLogger("AlphaPulse.Metrics")
+logger = logging.getLogger("WhaleAlpha.Metrics")
 
 _metrics_available = False
 
@@ -30,19 +30,19 @@ try:
     _metrics_available = True
 
     PROVIDER_TOTAL_REQUESTS = Gauge(
-        "alphapulse_provider_requests_total", "Total requests per provider", ["provider"]
+        "whalealpha_provider_requests_total", "Total requests per provider", ["provider"]
     )
     PROVIDER_SUCCESS_RATE = Gauge(
-        "alphapulse_provider_success_rate_pct", "Success rate % per provider", ["provider"]
+        "whalealpha_provider_success_rate_pct", "Success rate % per provider", ["provider"]
     )
     PROVIDER_AVG_LATENCY_MS = Gauge(
-        "alphapulse_provider_avg_latency_ms", "Average latency (ms) per provider", ["provider"]
+        "whalealpha_provider_avg_latency_ms", "Average latency (ms) per provider", ["provider"]
     )
     PROVIDER_CIRCUIT_BROKEN = Gauge(
-        "alphapulse_provider_circuit_broken", "1 if circuit breaker is open for this provider", ["provider"]
+        "whalealpha_provider_circuit_broken", "1 if circuit breaker is open for this provider", ["provider"]
     )
     QUEUE_DEPTH = Gauge(
-        "alphapulse_rpc_queue_depth", "Queued (not yet dispatched) RPC jobs per priority", ["priority"]
+        "whalealpha_rpc_queue_depth", "Queued (not yet dispatched) RPC jobs per priority", ["priority"]
     )
 except ImportError:
     pass

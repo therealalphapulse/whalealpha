@@ -50,7 +50,7 @@ HELIUS_API_KEY = _env_key("HELIUS_API_KEY")
 ALCHEMY_API_KEY = _env_key("ALCHEMY_API_KEY")
 DRPC_API_KEY = _env_key("DRPC_API_KEY")
 QUICKNODE_API_KEY = _env_key("QUICKNODE_API_KEY")
-# Additional RPC/failover provider (AlphaPulse Provider Integration Task,
+# Additional RPC/failover provider (WhaleAlpha Provider Integration Task,
 # 2026-08-19). Purely additive: only takes effect if ANKR_API_KEY is set,
 # and only ever runs AFTER the existing Helius/QuickNode/Alchemy/dRPC chain
 # in RPC_PROVIDER_PRIORITY below (appended at the end, not inserted).
@@ -71,7 +71,7 @@ GECKOTERMINAL_API = "https://api.geckoterminal.com/api/v2"
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 GOPLUS_API = "https://api.gopluslabs.io/api/v1"
 HELIUS_API = "https://api.helius.xyz/v0"
-# RugCheck (AlphaPulse Provider Integration Task, 2026-08-19). Purely
+# RugCheck (WhaleAlpha Provider Integration Task, 2026-08-19). Purely
 # additive token-security fallback -- only takes effect if
 # RUGCHECK_API_KEY is set, and only ever runs after GoPlus's own two
 # endpoint attempts in check_token_security() both return no usable
@@ -100,7 +100,7 @@ except ValueError:
     PERFORMANCE_RECAP_DELAY_SECONDS = 300
 
 # Bot Settings
-BOT_NAME = "AlphaPulse"
+BOT_NAME = "WhaleAlpha"
 BOT_VERSION = "3.3.0"
 SUPPORTED_CHAIN = "solana"
 
@@ -293,7 +293,7 @@ QUICKNODE_SOLANA_RPC = _env_key("QUICKNODE_SOLANA_RPC") or _env_key("QUICKNODE_R
 # free/starter tiers rate-limit (HTTP 429) under sustained scan-cycle load,
 # and QuickNode's Solana RPC has proven the most reliable first fallback in
 # production, so it's placed immediately after Helius ahead of Alchemy/dRPC.
-# NOTE (AlphaPulse Provider Integration Task, 2026-08-19): "ankr" was
+# NOTE (WhaleAlpha Provider Integration Task, 2026-08-19): "ankr" was
 # appended at the END of the default failover order below. This is
 # additive only -- the existing Helius -> QuickNode -> Alchemy -> dRPC
 # order and behavior are unchanged; Ankr is only ever tried after all
@@ -519,7 +519,7 @@ SIGNAL_COOLDOWN_HOURS = max(24.0, min(48.0, _raw_cooldown_hours))
 # config, not because anything still reads them.
 #
 # These are candidate/discovery filters only — they decide whether
-# AlphaPulse spends resources evaluating a token, never how it scores.
+# WhaleAlpha spends resources evaluating a token, never how it scores.
 # Raw score, dynamic cutoff, and qualification are untouched by this
 # section (see domain/signals/qualification.py).
 
@@ -592,7 +592,7 @@ DISCOVERY_LIQUIDITY_FALLBACK_ENABLED = _env_bool("DISCOVERY_LIQUIDITY_FALLBACK_E
 # token. See domain/intelligence/holders.py _resolve_bundle_risk().
 BUNDLE_RISK_SOLANA_TRACKER_ENABLED = _env_bool("BUNDLE_RISK_SOLANA_TRACKER_ENABLED", True)
 
-# Provider-resilience circuit breaker for Solana Tracker (AlphaPulse Provider
+# Provider-resilience circuit breaker for Solana Tracker (WhaleAlpha Provider
 # Resilience task, 2026-08-28). Applies to every Solana Tracker call above:
 # get_pool_liquidity_usd(), get_bundle_risk_pct() (providers/marketdata/
 # solanatracker.py), and the paginated holder fallback (domain/intelligence/

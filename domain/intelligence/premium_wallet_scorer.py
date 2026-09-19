@@ -41,7 +41,7 @@ from config.settings import (
 from models.premium_wallet import PremiumWallet
 from models.premium_wallet_trade import PremiumWalletTrade
 
-logger = logging.getLogger("AlphaPulse.PremiumScorer")
+logger = logging.getLogger("WhaleAlpha.PremiumScorer")
 
 MIN_TRADES_FOR_FULL_CONFIDENCE = 8
 

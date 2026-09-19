@@ -7,7 +7,7 @@ Dev/single-instance entrypoint. Run with:
 This is what `main.py` (kept at the repo root as a thin wrapper for
 Railway/Procfile backward compatibility) actually calls. It reproduces
 v3's `dp.start_polling(bot)` behavior exactly — long-polling, single
-process — which remains a perfectly valid way to run AlphaPulse below
+process — which remains a perfectly valid way to run WhaleAlpha below
 roughly the 1,000-user tier (Bible §9). It does NOT run the background
 loops (alerts, signal scanning, trading engines) — those are started by
 `workers/signal_trading_worker.py` and `workers/intelligence_worker.py`
@@ -32,7 +32,7 @@ from infra.observability.error_tracking import configure_error_tracking
 from infra.db.session import close_db
 from app_platform.gateway.app import build_app, set_bot_commands
 
-logger = logging.getLogger("AlphaPulse.Gateway.Polling")
+logger = logging.getLogger("WhaleAlpha.Gateway.Polling")
 
 
 async def main() -> None:
@@ -44,7 +44,7 @@ async def main() -> None:
     await bot.delete_webhook(drop_pending_updates=True)
     await set_bot_commands(bot)
 
-    logger.info("AlphaPulse v4 Bot Gateway starting (polling mode, single instance)...")
+    logger.info("WhaleAlpha v4 Bot Gateway starting (polling mode, single instance)...")
 
     try:
         await dp.start_polling(bot)

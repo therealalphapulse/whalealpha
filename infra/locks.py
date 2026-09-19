@@ -25,7 +25,7 @@ import logging
 import time
 import uuid
 
-logger = logging.getLogger("AlphaPulse.Locks")
+logger = logging.getLogger("WhaleAlpha.Locks")
 
 _in_memory_locks: dict[str, tuple[float, str]] = {}  # key -> (expires_at, owner_token)
 _in_memory_guard = asyncio.Lock()
@@ -184,7 +184,7 @@ async def run_as_leader(
     retry_after_seconds: int = 30,
 ) -> None:
     """
-    Long-lived leader election for AlphaPulse background loops.
+    Long-lived leader election for WhaleAlpha background loops.
 
     Exactly one replica owns the named lease at a time. The existing loop
     function remains unchanged; only its ownership is coordinated here.

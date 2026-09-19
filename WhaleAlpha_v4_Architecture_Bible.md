@@ -1,14 +1,14 @@
-# AlphaPulse v4 — Official Software Architecture Bible
+# WhaleAlpha v4 — Official Software Architecture Bible
 
 **Status:** Long-term engineering constitution
 **Scope:** Evolutionary architecture, not a rewrite
-**Precondition:** Every decision below traces back to a specific, verified finding from the AlphaPulse engineering audit. Nothing here is speculative or generic.
+**Precondition:** Every decision below traces back to a specific, verified finding from the WhaleAlpha engineering audit. Nothing here is speculative or generic.
 
 ---
 
 ## 1. Executive Architecture Vision
 
-AlphaPulse v3 is not a prototype pretending to be a product — the audit confirmed real Jupiter-signed on-chain trading, a genuinely well-built multi-RPC failover layer, solid envelope encryption, and a real RBAC system. The problem is not that the engineering is bad. The problem is that **good single-process engineering was asked to do a multi-process job**: every piece of shared state — FSM sessions, the RPC rate limiter, the provider cache, the request dedup table — lives inside the memory of one Python interpreter. That interpreter cannot be replicated, so the system cannot scale, and it cannot be restarted without losing user context.
+WhaleAlpha v3 is not a prototype pretending to be a product — the audit confirmed real Jupiter-signed on-chain trading, a genuinely well-built multi-RPC failover layer, solid envelope encryption, and a real RBAC system. The problem is not that the engineering is bad. The problem is that **good single-process engineering was asked to do a multi-process job**: every piece of shared state — FSM sessions, the RPC rate limiter, the provider cache, the request dedup table — lives inside the memory of one Python interpreter. That interpreter cannot be replicated, so the system cannot scale, and it cannot be restarted without losing user context.
 
 v4's philosophy is **subtraction of bottlenecks, not replacement of engineering**. Three moves do almost all of the work:
 
@@ -111,7 +111,7 @@ CI/CD (GitHub Actions): test → build Docker image → push → deploy to any c
 The audit's dependency graph showed `services/pump_radar.py` with 25 internal imports and the highest fan-out in the codebase, two confirmed layering violations, and two 1,600+ line "god files" in `bot/commands/`. v4 does not rewrite these modules' logic — it redraws the boundaries around the logic that already exists.
 
 ```
-alphapulse/
+whalealpha/
 ├── platform/                 # was: bot/ (routing infra only)
 │   ├── gateway/               # aiogram app, webhook entrypoint, DI wiring
 │   ├── middleware/             # NEW: auth, RBAC, premium-gate, correlation-id
@@ -351,4 +351,4 @@ Each singleton job acquires a Redis lock before running; if a lock is held, the 
 
 ---
 
-**This document is the authoritative reference for AlphaPulse v4.** Any implementation work should cite the relevant section number here, and any deviation from it — preserving something marked "rewrite," or rewriting something marked "stays the same" — should be treated as an explicit, discussed exception, not a silent drift.
+**This document is the authoritative reference for WhaleAlpha v4.** Any implementation work should cite the relevant section number here, and any deviation from it — preserving something marked "rewrite," or rewriting something marked "stays the same" — should be treated as an explicit, discussed exception, not a silent drift.

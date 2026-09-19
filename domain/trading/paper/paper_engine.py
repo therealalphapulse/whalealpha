@@ -16,7 +16,7 @@ from models.paper_dca_settings import PaperDCASettings
 from models.paper_dca_fill import PaperDcaFill
 from models.system_flag import SystemFlag
 
-logger = logging.getLogger("AlphaPulse.PaperEngine")
+logger = logging.getLogger("WhaleAlpha.PaperEngine")
 
 
 async def reset_stale_default_balances_once():

@@ -80,7 +80,7 @@ from models.premium_wallet import PremiumWallet as _PremiumWallet  # noqa: F401
 from models.premium_wallet_trade import PremiumWalletTrade as _PremiumWalletTrade  # noqa: F401
 from models.premium_signal import PremiumSignal as _PremiumSignal  # noqa: F401
 
-logger = logging.getLogger("AlphaPulse.Premium")
+logger = logging.getLogger("WhaleAlpha.Premium")
 
 PREMIUM_REQUIRED_MESSAGE = (
     "🔒 This feature is Premium-only.\n\n"
@@ -97,7 +97,7 @@ PREMIUM_BENEFITS = [
     "🧬 DCA Auto-Buy strategy",
     "🧰 Unlimited saved Auto-Buy filter presets",
     "📊 Extended PnL history & analytics",
-    "🎯 Early access to new AlphaPulse features",
+    "🎯 Early access to new WhaleAlpha features",
 ]
 
 # ============================================================
@@ -122,7 +122,7 @@ PREMIUM_TRADING_SUITE = [
 PREMIUM_INTELLIGENCE_FEATURES = [
     "🧠 Elite AI Signals",
     "🤝 Smart Wallet Consensus",
-    "⭐ AlphaPulse AI Confidence",
+    "⭐ WhaleAlpha AI Confidence",
     "📸 Premium Token Snapshot",
     "👥 Advanced Holder Intelligence",
     "📦 Advanced Bundle Analysis",
@@ -137,17 +137,17 @@ PREMIUM_INTELLIGENCE_FEATURES = [
 PREMIUM_GATED_TRADING_FEATURES = {
     "automation": (
         "Advanced Auto Buy / Auto Sell",
-        "Let AlphaPulse buy and manage positions for you around the clock, "
+        "Let WhaleAlpha buy and manage positions for you around the clock, "
         "filtered exactly the way you want.",
     ),
     "exit_rules": (
         "Take Profit / Stop Loss / Partial TP",
-        "Set it once and AlphaPulse exits the position for you the moment "
+        "Set it once and WhaleAlpha exits the position for you the moment "
         "your target or stop is hit — no need to watch the chart.",
     ),
     "limit_orders": (
         "Limit Orders",
-        "Queue a buy at the price you want and AlphaPulse fires it "
+        "Queue a buy at the price you want and WhaleAlpha fires it "
         "automatically the instant the market gets there.",
     ),
     "dca_advanced": (
@@ -165,7 +165,7 @@ PREMIUM_GATED_TRADING_FEATURES = {
 # Analysis, and Notifications. Anything that renders Premium output should
 # call format_premium_header()/format_premium_badge() rather than hardcode
 # its own wording, so the identity can never drift between call sites.
-PREMIUM_IDENTITY = "★ AlphaPulse PREMIUM"
+PREMIUM_IDENTITY = "★ WhaleAlpha PREMIUM"
 
 
 def format_premium_header() -> str:
@@ -419,7 +419,7 @@ async def premium_expiry_sweep_loop(bot=None, interval_seconds: int = 3600):
                     try:
                         await bot.send_message(
                             uid,
-                            "💎 Your AlphaPulse Premium membership has expired.\n\n"
+                            "💎 Your WhaleAlpha Premium membership has expired.\n\n"
                             "Use /premium to renew and keep your Premium benefits active."
                         )
                     except Exception as e:

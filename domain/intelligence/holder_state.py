@@ -85,7 +85,7 @@ def install() -> None:
     from domain.signals import pump_radar
 
     original = pump_radar.get_holder_analysis
-    if getattr(original, "_alphapulse_holder_state_normalized", False):
+    if getattr(original, "_whalealpha_holder_state_normalized", False):
         return
 
     @wraps(original)
@@ -104,5 +104,5 @@ def install() -> None:
             )
         return normalized_result
 
-    normalized._alphapulse_holder_state_normalized = True
+    normalized._whalealpha_holder_state_normalized = True
     pump_radar.get_holder_analysis = normalized

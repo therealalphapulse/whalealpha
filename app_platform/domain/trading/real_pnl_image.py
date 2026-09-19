@@ -5,7 +5,7 @@ from urllib.request import urlopen
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-logger = logging.getLogger("AlphaPulse.RealPnlImage")
+logger = logging.getLogger("WhaleAlpha.RealPnlImage")
 
 WIDTH, HEIGHT = 1000, 1250  # 4:5 portrait
 PAD = 42
@@ -250,9 +250,9 @@ def _render(data):
     img.alpha_composite(glow)
     d = ImageDraw.Draw(img)
 
-    # AlphaPulse header — vector lightning avoids unsupported emoji glyphs.
+    # WhaleAlpha header — vector lightning avoids unsupported emoji glyphs.
     _lightning(d, PAD, 50, 0.9, accent)
-    d.text((PAD + 42, 51), "AlphaPulse", font=_font(32, True), fill=WHITE)
+    d.text((PAD + 42, 51), "WhaleAlpha", font=_font(32, True), fill=WHITE)
     d.rounded_rectangle([PAD + 40, 98, PAD + 194, 133], radius=17, fill=accent_dark + (255,), outline=accent + (180,), width=1)
     d.text((PAD + 56, 105), "TRADE RESULT", font=_font(14, True), fill=accent)
     d.line([(PAD, 158), (WIDTH - PAD, 158)], fill=DIVIDER, width=2)
@@ -349,7 +349,7 @@ def _render(data):
     # Neon heartbeat footer from the reference.
     footer_y = 1184
     _heartbeat(d, PAD + 6, footer_y, WIDTH - PAD * 2 - 12, accent)
-    _center(d, "AlphaPulse", 1195, _font(12, True), MUTED)
+    _center(d, "WhaleAlpha", 1195, _font(12, True), MUTED)
 
     return img.convert("RGB")
 

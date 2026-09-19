@@ -27,7 +27,7 @@ from .signal_adapter import AutoTradeSignal
 from . import policy_service
 from . import position_manager
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.RiskGate")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.RiskGate")
 
 
 class GateResult:
@@ -90,7 +90,7 @@ async def evaluate_user_policy(user_id: int, policy: AutoTradePolicy, signal: Au
 
 
 async def evaluate_execution_risk(user_id: int, sol_amount: float) -> GateResult:
-    """§7 -- pre-trade execution risk gate. Separate from AlphaPulse's
+    """§7 -- pre-trade execution risk gate. Separate from WhaleAlpha's
     token qualification: this only asks "is it currently executable",
     not "is this token good". Live wallet-balance check; token
     tradability/liquidity/route are re-verified naturally by the quote

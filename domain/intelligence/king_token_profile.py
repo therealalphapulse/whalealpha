@@ -38,7 +38,7 @@ from infra.db.session import async_session
 from models.signal_token import SignalToken
 from models.signal_event import SignalEvent, Milestone
 
-logger = logging.getLogger("AlphaPulse.KingTokenProfile")
+logger = logging.getLogger("WhaleAlpha.KingTokenProfile")
 
 # A signal needs at least this many genuine positive-milestone
 # SignalEvents (e.g. +25%, +50%, 2X already reaches this) to count as

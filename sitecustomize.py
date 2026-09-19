@@ -14,7 +14,7 @@ import builtins
 import logging
 import sys
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 _original_import = builtins.__import__
 _installing_holder = False
 _installing_real_wallet = False
@@ -70,7 +70,7 @@ def _install_wallet_value_display_if_ready() -> None:
         _installing_wallet_value_display = False
 
 
-def _alphapulse_import(name, globals=None, locals=None, fromlist=(), level=0):
+def _whalealpha_import(name, globals=None, locals=None, fromlist=(), level=0):
     module = _original_import(name, globals, locals, fromlist, level)
     try:
         _install_if_ready()
@@ -82,9 +82,9 @@ def _alphapulse_import(name, globals=None, locals=None, fromlist=(), level=0):
     return module
 
 
-if not getattr(builtins.__import__, "_alphapulse_holder_hook", False):
-    _alphapulse_import._alphapulse_holder_hook = True
-    builtins.__import__ = _alphapulse_import
+if not getattr(builtins.__import__, "_whalealpha_holder_hook", False):
+    _whalealpha_import._whalealpha_holder_hook = True
+    builtins.__import__ = _whalealpha_import
 
 _install_if_ready()
 _install_real_wallet_guard_if_ready()

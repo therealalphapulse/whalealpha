@@ -3,7 +3,7 @@ import logging
 from config.settings import GOPLUS_API
 from providers.marketdata._resilience import get_json
 
-logger = logging.getLogger("AlphaPulse.GoPlus")
+logger = logging.getLogger("WhaleAlpha.GoPlus")
 
 
 def _is_on(value) -> bool:
@@ -212,7 +212,7 @@ async def check_token_security(contract_address: str) -> dict | None:
 
     logger.info(f"No GoPlus security data found for {contract_address}")
 
-    # Additive fallback (AlphaPulse Provider Integration Task, 2026-08-19):
+    # Additive fallback (WhaleAlpha Provider Integration Task, 2026-08-19):
     # only reached after both GoPlus endpoint attempts above have already
     # failed. Purely additive -- no-ops (returns None immediately) unless
     # RUGCHECK_API_KEY is configured, and never runs before or instead of

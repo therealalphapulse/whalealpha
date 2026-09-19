@@ -33,7 +33,7 @@ from providers.marketdata.dexscreener import get_token_card_info
 from domain.trading.real.robinhood_wallet import get_wallet_settings
 from domain.trading.real import real_trade_engine
 
-logger = logging.getLogger("AlphaPulse.RealExitEngine")
+logger = logging.getLogger("WhaleAlpha.RealExitEngine")
 
 VALID_KINDS = {"tp", "sl", "ptp"}
 

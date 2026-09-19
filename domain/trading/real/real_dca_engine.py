@@ -38,7 +38,7 @@ from domain.trading.real.robinhood_wallet import (
 )
 from domain.trading.real import real_trade_engine
 
-logger = logging.getLogger("AlphaPulse.RealDCAEngine")
+logger = logging.getLogger("WhaleAlpha.RealDCAEngine")
 
 # After this many consecutive failed/blocked ticks (RPC errors, cap
 # reached, kill switch, etc.) a schedule auto-pauses rather than

@@ -36,7 +36,7 @@ from domain.payments.premium_service import (
 )
 
 router = Router()
-logger = logging.getLogger("AlphaPulse.PremiumCmd")
+logger = logging.getLogger("WhaleAlpha.PremiumCmd")
 
 
 class PremiumPaymentStates(StatesGroup):
@@ -127,7 +127,7 @@ async def build_premium_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "💳 <b>Subscription Management</b>\n"
         + ("Manage or renew your plan any time from this screen.\n\n" if active else
            "Payment integration is built-in — pick a plan below to activate instantly.\n\n") +
-        "📊 AlphaPulse Premium"
+        "📊 WhaleAlpha Premium"
     )
 
     trading_suite_row = (

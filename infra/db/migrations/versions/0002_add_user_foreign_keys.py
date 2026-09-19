@@ -37,7 +37,7 @@ Instead, per the Bible's explicit phased plan:
      distinct, deliberate step an operator runs only after confirming
      step 2, not something that happens automatically on `upgrade head`.
 
-This migration has not been run against a live AlphaPulse database in
+This migration has not been run against a live WhaleAlpha database in
 this environment (no network access, no live Postgres available where it
 was authored) — it is written to the documented Postgres `NOT VALID` /
 `VALIDATE CONSTRAINT` behavior and should be treated with the same

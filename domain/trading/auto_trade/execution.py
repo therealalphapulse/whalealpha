@@ -22,7 +22,7 @@ from domain.trading.real.robinhood_swap import NATIVE_ETH_ADDRESS, SwapError
 from domain.trading.real.robinhood_wallet import get_real_wallet, PRIORITY_FEE_TIERS
 from infra.kms.wallet_crypto import decrypt_secret
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Execution")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Execution")
 
 
 def _output_decimals(quote: dict) -> int:
