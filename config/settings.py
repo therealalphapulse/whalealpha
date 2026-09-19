@@ -820,3 +820,18 @@ ETHEREUM_RPC_URL = os.getenv(
     "ETHEREUM_RPC_URL",
     f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY else "https://eth.llamarpc.com",
 )
+
+# Robinhood Chain <-> Ethereum canonical bridge. Robinhood Chain is an
+# Arbitrum Orbit rollup, so its canonical bridge IS the standard Arbitrum
+# bridge -- these are Arbitrum's own audited L1 contracts (Delayed Inbox
+# for deposits, Outbox for finalizing withdrawals), not a custom bridge.
+# Addresses per docs.robinhood.com/chain/protocol-contracts (mainnet).
+ROBINHOOD_BRIDGE_DELAYED_INBOX = os.getenv(
+    "ROBINHOOD_BRIDGE_DELAYED_INBOX", "0x1A07cc4BD17E0118BdB54D70990D2158AbAD7a2D"
+)
+ROBINHOOD_BRIDGE_OUTBOX = os.getenv(
+    "ROBINHOOD_BRIDGE_OUTBOX", "0xf0ce991ea4A0d2400A4AB49b20ae333f6Dce3DE9"
+)
+ARBSYS_PRECOMPILE = "0x0000000000000000000000000000000000000064"
+NODE_INTERFACE_PRECOMPILE = "0x00000000000000000000000000000000000000C8"
+BRIDGE_WITHDRAWAL_CHALLENGE_DAYS = 7

@@ -71,6 +71,7 @@ def _register_routers(dp: Dispatcher) -> None:
     from app_platform.commands.auto_trade_wallet import router as auto_trade_wallet_router
     from app_platform.commands.premium import router as premium_router
     from app_platform.commands.admin_panel import router as admin_panel_router
+    from app_platform.commands.bridge import router as bridge_router
     for router in (
         start_router, market_router, trending_router, token_router, security_router,
         score_router, watchlist_router, narrative_router, whales_router, portfolio_router,
@@ -78,6 +79,7 @@ def _register_routers(dp: Dispatcher) -> None:
         real_wallet_pnl_router, real_wallet_router, real_wallet_auto_settings_router,
         auto_trade_wallet_router, premium_router,
         admin_panel_router, auto_scan_router,
+        bridge_router,
     ):
         dp.include_router(router)
 
@@ -109,6 +111,7 @@ BOT_COMMANDS = [
     BotCommand(command="premium_signals", description="Premium AI + consensus signals"),
     BotCommand(command="premium_snapshot", description="Premium Token Snapshot (Premium only)"),
     BotCommand(command="premium_stats", description="Premium engine status"),
+    BotCommand(command="bridge", description="Bridge ETH between Ethereum & Robinhood Chain"),
 ]
 
 
