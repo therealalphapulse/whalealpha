@@ -16,6 +16,9 @@ class BridgeWithdrawal(Base):
 
     amount_eth = Column(Float, nullable=False)
     destination_address = Column(String, nullable=False)
+    # "mainnet" or "testnet" -- which contract set/RPCs to use when
+    # claiming (see domain/trading/real/robinhood_bridge.py _NETWORKS).
+    network = Column(String, nullable=False, server_default="mainnet")
 
     l2_tx_hash = Column(String, nullable=False)
     l2_to_l1_position = Column(String, nullable=False)

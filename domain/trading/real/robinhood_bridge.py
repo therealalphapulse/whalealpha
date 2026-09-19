@@ -55,6 +55,12 @@ from config.settings import (
     ARBSYS_PRECOMPILE,
     NODE_INTERFACE_PRECOMPILE,
     BRIDGE_WITHDRAWAL_CHALLENGE_DAYS,
+    SEPOLIA_CHAIN_ID,
+    SEPOLIA_RPC_URL,
+    ROBINHOOD_TESTNET_EVM_CHAIN_ID,
+    ROBINHOOD_TESTNET_RPC_URL,
+    ROBINHOOD_TESTNET_BRIDGE_DELAYED_INBOX,
+    ROBINHOOD_TESTNET_BRIDGE_OUTBOX,
 )
 
 logger = logging.getLogger("WhaleAlpha.RobinhoodBridge")
@@ -73,6 +79,38 @@ SELECTOR_SEND_MERKLE_TREE_STATE = "0x33430ff9"  # sendMerkleTreeState()
 L2_TO_L1_TX_TOPIC = "0x3e7aafa77dbf186b7fd488006beff893744caa3c4f6f299e8a709fa2087374fc"
 
 _RPC_TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+
+class _NetworkConfig:
+    """Bundles the L1 + L2 endpoint/contract set for one network so every
+    function below takes a single `network` argument instead of six.
+    "mainnet" is Ethereum <-> Robinhood Chain (real funds). "testnet" is
+    Ethereum Sepolia <-> Robinhood Chain Testnet -- a genuinely separate
+    L1 chain and separate bridge contract deployment, used to dry-run the
+    full deposit/withdraw/claim cycle (including the ~7-day challenge
+    period) with worthless test ETH before trusting this with real funds.
+    """
+
+    def __init__(self, l1_chain_id, l1_rpc_url, l2_chain_id, l2_rpc_url, delayed_inbox, outbox):
+        self.l1_chain_id = l1_chain_id
+        self.l1_rpc_url = l1_rpc_url
+        self.l2_chain_id = l2_chain_id
+        self.l2_rpc_url = l2_rpc_url
+        self.delayed_inbox = delayed_inbox
+        self.outbox = outbox
+
+
+_NETWORKS = {
+    "mainnet": _NetworkConfig(ETHEREUM_CHAIN_ID, ETHEREUM_RPC_URL, ROBINHOOD_EVM_CHAIN_ID, ROBINHOOD_RPC_URL, ROBINHOOD_BRIDGE_DELAYED_INBOX, ROBINHOOD_BRIDGE_OUTBOX),
+    "testnet": _NetworkConfig(SEPOLIA_CHAIN_ID, SEPOLIA_RPC_URL, ROBINHOOD_TESTNET_EVM_CHAIN_ID, ROBINHOOD_TESTNET_RPC_URL, ROBINHOOD_TESTNET_BRIDGE_DELAYED_INBOX, ROBINHOOD_TESTNET_BRIDGE_OUTBOX),
+}
+
+
+def _get_network(network: str) -> _NetworkConfig:
+    try:
+        return _NETWORKS[network]
+    except KeyError:
+        raise BridgeError(f"Unknown network {network!r}; expected 'mainnet' or 'testnet'.")
 
 
 def _pad32(hexstr: str) -> str:
@@ -133,9 +171,11 @@ async def _sign_send(rpc_url: str, chain_id: int, private_key: bytes, tx: dict) 
     return h, receipt, "confirmed"
 
 
-async def deposit_eth_to_robinhood(user_id: int, amount_eth: float) -> dict:
-    """Calls Inbox.depositEth(destAddr) on Ethereum L1. Only step needed
-    for a deposit -- no separate claim required."""
+async def deposit_eth_to_robinhood(user_id: int, amount_eth: float, network: str = "mainnet") -> dict:
+    """Calls Inbox.depositEth(destAddr) on L1 (Ethereum, or Sepolia for
+    network="testnet"). Only step needed for a deposit -- no separate
+    claim required."""
+    net = _get_network(network)
     wallet = await get_real_wallet(user_id)
     if not wallet:
         return {"ok": False, "reason": "No active Robinhood Chain wallet."}
@@ -145,18 +185,19 @@ async def deposit_eth_to_robinhood(user_id: int, amount_eth: float) -> dict:
     secret = decrypt_secret(wallet.encrypted_secret, wallet.encryption_nonce)
     try:
         data = "0x" + SELECTOR_DEPOSIT_ETH[2:] + _addr_param(wallet.public_key)
-        tx = {"to": ROBINHOOD_BRIDGE_DELAYED_INBOX, "data": data, "value": int(amount_eth * 10**18)}
-        tx_hash, receipt, status = await _sign_send(ETHEREUM_RPC_URL, ETHEREUM_CHAIN_ID, secret, tx)
+        tx = {"to": net.delayed_inbox, "data": data, "value": int(amount_eth * 10**18)}
+        tx_hash, receipt, status = await _sign_send(net.l1_rpc_url, net.l1_chain_id, secret, tx)
         if status != "confirmed":
             return {"ok": False, "reason": f"Deposit transaction did not confirm (status={status}).", "l1_tx_hash": tx_hash}
         return {
             "ok": True,
+            "network": network,
             "l1_tx_hash": tx_hash,
             "eta_minutes": 10,
-            "note": "Deposit confirmed on Ethereum. Funds typically appear on Robinhood Chain within ~10 minutes.",
+            "note": "Deposit confirmed on L1. Funds typically appear on Robinhood Chain within ~10 minutes.",
         }
     except Exception as e:
-        logger.error(f"deposit_eth_to_robinhood failed for user={user_id}: {e}")
+        logger.error(f"deposit_eth_to_robinhood failed for user={user_id} network={network}: {e}")
         return {"ok": False, "reason": str(e)}
     finally:
         del secret
@@ -172,11 +213,13 @@ def _extract_l2_to_l1_position(receipt: dict) -> str | None:
     return None
 
 
-async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float) -> dict:
-    """Calls ArbSys.withdrawEth(destAddr) on Robinhood Chain L2. Burns the
-    ETH on L2 and queues the L2-to-L1 message. Records a BridgeWithdrawal
-    row for claim_withdrawal() to use later -- this step alone does NOT
-    move funds to Ethereum yet."""
+async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float, network: str = "mainnet") -> dict:
+    """Calls ArbSys.withdrawEth(destAddr) on Robinhood Chain L2 (or
+    Robinhood Chain Testnet for network="testnet"). Burns the ETH on L2
+    and queues the L2-to-L1 message. Records a BridgeWithdrawal row for
+    claim_withdrawal() to use later -- this step alone does NOT move
+    funds to L1 yet."""
+    net = _get_network(network)
     wallet = await get_real_wallet(user_id)
     if not wallet:
         return {"ok": False, "reason": "No active Robinhood Chain wallet."}
@@ -187,7 +230,7 @@ async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float) -> di
     try:
         data = "0x" + SELECTOR_WITHDRAW_ETH[2:] + _addr_param(wallet.public_key)
         tx = {"to": ARBSYS_PRECOMPILE, "data": data, "value": int(amount_eth * 10**18)}
-        tx_hash, receipt, status = await _sign_send(ROBINHOOD_RPC_URL, ROBINHOOD_EVM_CHAIN_ID, secret, tx)
+        tx_hash, receipt, status = await _sign_send(net.l2_rpc_url, net.l2_chain_id, secret, tx)
         if status != "confirmed" or receipt is None:
             return {"ok": False, "reason": f"Withdrawal-initiate transaction did not confirm (status={status}).", "l2_tx_hash": tx_hash}
 
@@ -197,12 +240,12 @@ async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float) -> di
             return {
                 "ok": False,
                 "reason": "Withdrawal transaction confirmed but its L2-to-L1 message could not be identified. "
-                          "Do not retry -- check the transaction on the Robinhood Chain explorer before proceeding.",
+                          "Do not retry -- check the transaction on the explorer before proceeding.",
                 "l2_tx_hash": tx_hash,
             }
 
         l2_block_number = int(receipt["blockNumber"], 16)
-        l2_block = await _rpc_call(ROBINHOOD_RPC_URL, "eth_getBlockByNumber", [receipt["blockNumber"], False])
+        l2_block = await _rpc_call(net.l2_rpc_url, "eth_getBlockByNumber", [receipt["blockNumber"], False])
         l2_block_timestamp = int(l2_block["timestamp"], 16)
         claimable_after = datetime.now(timezone.utc) + timedelta(days=BRIDGE_WITHDRAWAL_CHALLENGE_DAYS)
 
@@ -211,6 +254,7 @@ async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float) -> di
                 user_id=user_id,
                 amount_eth=amount_eth,
                 destination_address=wallet.public_key,
+                network=network,
                 l2_tx_hash=tx_hash,
                 l2_to_l1_position=position,
                 l2_block_number=l2_block_number,
@@ -223,13 +267,14 @@ async def initiate_withdrawal_to_ethereum(user_id: int, amount_eth: float) -> di
 
         return {
             "ok": True,
+            "network": network,
             "l2_tx_hash": tx_hash,
             "withdrawal_id": withdrawal.id,
             "claimable_after": claimable_after.isoformat(),
-            "note": f"Withdrawal initiated. It becomes claimable on Ethereum in ~{BRIDGE_WITHDRAWAL_CHALLENGE_DAYS} days.",
+            "note": f"Withdrawal initiated. It becomes claimable on L1 in ~{BRIDGE_WITHDRAWAL_CHALLENGE_DAYS} days.",
         }
     except Exception as e:
-        logger.error(f"initiate_withdrawal_to_ethereum failed for user={user_id}: {e}")
+        logger.error(f"initiate_withdrawal_to_ethereum failed for user={user_id} network={network}: {e}")
         return {"ok": False, "reason": str(e)}
     finally:
         del secret
@@ -248,9 +293,9 @@ async def get_claimable_withdrawals(user_id: int) -> list[BridgeWithdrawal]:
     return [w for w in await get_pending_withdrawals(user_id) if w.claimable_after.replace(tzinfo=timezone.utc) <= now]
 
 
-async def _construct_outbox_proof(size: int, leaf: int) -> dict:
+async def _construct_outbox_proof(net: "_NetworkConfig", size: int, leaf: int) -> dict:
     data = "0x" + SELECTOR_CONSTRUCT_OUTBOX_PROOF[2:] + hex(size)[2:].rjust(64, "0") + hex(leaf)[2:].rjust(64, "0")
-    result = await _rpc_call(ROBINHOOD_RPC_URL, "eth_call", [{"to": NODE_INTERFACE_PRECOMPILE, "data": data}, "latest"])
+    result = await _rpc_call(net.l2_rpc_url, "eth_call", [{"to": NODE_INTERFACE_PRECOMPILE, "data": data}, "latest"])
     raw = bytes.fromhex(result[2:])
     proof_offset = int.from_bytes(raw[64:96], "big")
     proof_len = int.from_bytes(raw[proof_offset:proof_offset + 32], "big")
@@ -261,18 +306,20 @@ async def _construct_outbox_proof(size: int, leaf: int) -> dict:
     return {"proof": proof}
 
 
-async def _send_merkle_tree_state() -> int:
-    result = await _rpc_call(ROBINHOOD_RPC_URL, "eth_call", [{"to": ARBSYS_PRECOMPILE, "data": SELECTOR_SEND_MERKLE_TREE_STATE}, "latest"])
+async def _send_merkle_tree_state(net: "_NetworkConfig") -> int:
+    result = await _rpc_call(net.l2_rpc_url, "eth_call", [{"to": ARBSYS_PRECOMPILE, "data": SELECTOR_SEND_MERKLE_TREE_STATE}, "latest"])
     raw = bytes.fromhex(result[2:])
     return int.from_bytes(raw[0:32], "big")
 
 
 async def claim_withdrawal(user_id: int, withdrawal_id: int) -> dict:
     """Step 3: builds the outbox Merkle proof via NodeInterface and
-    submits Outbox.executeTransaction on Ethereum L1 to release the ETH.
-    Only valid once claimable_after has passed -- calling early simply
-    fails the L1 transaction (Arbitrum's Outbox enforces the challenge
-    period itself)."""
+    submits Outbox.executeTransaction on L1 to release the ETH. Only
+    valid once claimable_after has passed -- calling early simply fails
+    the L1 transaction (Arbitrum's Outbox enforces the challenge period
+    itself). Network (mainnet/testnet) is read from the withdrawal row
+    itself, set when it was initiated -- a withdrawal always claims on
+    the same network it started on."""
     wallet = await get_real_wallet(user_id)
     if not wallet:
         return {"ok": False, "reason": "No active Robinhood Chain wallet."}
@@ -290,14 +337,15 @@ async def claim_withdrawal(user_id: int, withdrawal_id: int) -> dict:
     if withdrawal.claimable_after.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
         return {"ok": False, "reason": f"Not claimable yet -- available after {withdrawal.claimable_after.isoformat()}."}
 
+    net = _get_network(withdrawal.network or "mainnet")
     secret = decrypt_secret(wallet.encrypted_secret, wallet.encryption_nonce)
     try:
         leaf = int(withdrawal.l2_to_l1_position)
-        size = await _send_merkle_tree_state()
+        size = await _send_merkle_tree_state(net)
         if leaf >= size:
             return {"ok": False, "reason": "Outbox tree does not yet include this withdrawal's leaf -- try again shortly."}
 
-        proof_data = await _construct_outbox_proof(size, leaf)
+        proof_data = await _construct_outbox_proof(net, size, leaf)
 
         num_head_words = 9
         head = [
@@ -316,8 +364,8 @@ async def claim_withdrawal(user_id: int, withdrawal_id: int) -> dict:
         tail.append("0" * 64)
 
         calldata = "0x" + SELECTOR_EXECUTE_TRANSACTION[2:] + "".join(head) + "".join(tail)
-        tx = {"to": ROBINHOOD_BRIDGE_OUTBOX, "data": calldata, "value": 0}
-        tx_hash, receipt, status = await _sign_send(ETHEREUM_RPC_URL, ETHEREUM_CHAIN_ID, secret, tx)
+        tx = {"to": net.outbox, "data": calldata, "value": 0}
+        tx_hash, receipt, status = await _sign_send(net.l1_rpc_url, net.l1_chain_id, secret, tx)
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(BridgeWithdrawal).where(BridgeWithdrawal.id == withdrawal_id))

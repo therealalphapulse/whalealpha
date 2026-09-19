@@ -34,7 +34,10 @@ HELP_TEXT = (
     "<code>/bridge status</code>\n"
     "See pending/claimable withdrawals.\n\n"
     "\u26a0\ufe0f Bridge transactions are irreversible. This uses Arbitrum's official bridge contracts, "
-    "not a custom bridge -- but consider testing with a small amount first."
+    "not a custom bridge.\n\n"
+    "Add <code>testnet</code> to any command (e.g. <code>/bridge deposit 0.01 testnet</code>) to dry-run the full "
+    "flow on Robinhood Chain Testnet / Ethereum Sepolia with worthless test ETH first -- "
+    "get funded at faucet.testnet.chain.robinhood.com."
 )
 
 
@@ -48,11 +51,26 @@ def _require_amount(command: CommandObject) -> float | None:
     return amount if amount > 0 else None
 
 
+def _pop_testnet_flag(args: list[str]) -> tuple[list[str], str]:
+    """`testnet` can appear anywhere after the subcommand, e.g.
+    `/bridge deposit 0.01 testnet`. Returns (remaining_args, network)."""
+    network = "mainnet"
+    remaining = []
+    for a in args:
+        if a.lower() == "testnet":
+            network = "testnet"
+        else:
+            remaining.append(a)
+    return remaining, network
+
+
 @router.message(Command("bridge"))
 async def cmd_bridge(message: Message, command: CommandObject):
     user_id = message.from_user.id
-    args = (command.args or "").strip().split()
-    sub = args[0].lower() if args else ""
+    raw_args = (command.args or "").strip().split()
+    sub = raw_args[0].lower() if raw_args else ""
+    args, network = _pop_testnet_flag(raw_args[1:])
+    net_label = " (testnet)" if network == "testnet" else ""
 
     wallet = await get_real_wallet(user_id)
     if not wallet and sub in ("deposit", "withdraw", "claim", "status"):
@@ -60,30 +78,37 @@ async def cmd_bridge(message: Message, command: CommandObject):
         return
 
     if sub == "deposit":
-        amount = float(args[1]) if len(args) > 1 else None
+        amount = float(args[0]) if args else None
         if not amount or amount <= 0:
-            await message.answer("Usage: <code>/bridge deposit &lt;amount&gt;</code> (e.g. <code>/bridge deposit 0.05</code>)")
+            await message.answer(
+                "Usage: <code>/bridge deposit &lt;amount&gt; [testnet]</code>\n"
+                "e.g. <code>/bridge deposit 0.05</code> or <code>/bridge deposit 0.05 testnet</code> to dry-run on "
+                "Robinhood Chain Testnet / Sepolia with worthless test ETH."
+            )
             return
-        status_msg = await message.answer(f"\u23f3 Depositing {amount} ETH to Robinhood Chain...")
-        result = await deposit_eth_to_robinhood(user_id, amount)
+        status_msg = await message.answer(f"\u23f3 Depositing {amount} ETH to Robinhood Chain{net_label}...")
+        result = await deposit_eth_to_robinhood(user_id, amount, network=network)
         if result["ok"]:
             await status_msg.edit_text(
-                f"\u2705 Deposit confirmed on Ethereum.\n<code>{result['l1_tx_hash']}</code>\n\n{result['note']}"
+                f"\u2705 Deposit confirmed{net_label}.\n<code>{result['l1_tx_hash']}</code>\n\n{result['note']}"
             )
         else:
             await status_msg.edit_text(f"\u274c Deposit failed: {result['reason']}")
         return
 
     if sub == "withdraw":
-        amount = float(args[1]) if len(args) > 1 else None
+        amount = float(args[0]) if args else None
         if not amount or amount <= 0:
-            await message.answer("Usage: <code>/bridge withdraw &lt;amount&gt;</code> (e.g. <code>/bridge withdraw 0.05</code>)")
+            await message.answer(
+                "Usage: <code>/bridge withdraw &lt;amount&gt; [testnet]</code> "
+                "(add <code>testnet</code> to dry-run on Robinhood Chain Testnet)"
+            )
             return
-        status_msg = await message.answer(f"\u23f3 Initiating withdrawal of {amount} ETH from Robinhood Chain...")
-        result = await initiate_withdrawal_to_ethereum(user_id, amount)
+        status_msg = await message.answer(f"\u23f3 Initiating withdrawal of {amount} ETH from Robinhood Chain{net_label}...")
+        result = await initiate_withdrawal_to_ethereum(user_id, amount, network=network)
         if result["ok"]:
             await status_msg.edit_text(
-                f"\u2705 Withdrawal initiated (id <code>{result['withdrawal_id']}</code>).\n"
+                f"\u2705 Withdrawal initiated{net_label} (id <code>{result['withdrawal_id']}</code>).\n"
                 f"<code>{result['l2_tx_hash']}</code>\n\n{result['note']}\n\n"
                 f"Run <code>/bridge claim {result['withdrawal_id']}</code> once it's claimable."
             )
@@ -92,14 +117,14 @@ async def cmd_bridge(message: Message, command: CommandObject):
         return
 
     if sub == "claim":
-        if len(args) < 2 or not args[1].isdigit():
+        if not args or not args[0].isdigit():
             await message.answer("Usage: <code>/bridge claim &lt;id&gt;</code> -- see <code>/bridge status</code> for ids.")
             return
-        withdrawal_id = int(args[1])
-        status_msg = await message.answer(f"\u23f3 Claiming withdrawal {withdrawal_id} on Ethereum...")
+        withdrawal_id = int(args[0])
+        status_msg = await message.answer(f"\u23f3 Claiming withdrawal {withdrawal_id}...")
         result = await claim_withdrawal(user_id, withdrawal_id)
         if result["ok"]:
-            await status_msg.edit_text(f"\u2705 Claimed on Ethereum.\n<code>{result['l1_claim_tx_hash']}</code>")
+            await status_msg.edit_text(f"\u2705 Claimed.\n<code>{result['l1_claim_tx_hash']}</code>")
         else:
             await status_msg.edit_text(f"\u274c Claim failed: {result['reason']}")
         return
@@ -111,8 +136,9 @@ async def cmd_bridge(message: Message, command: CommandObject):
             return
         lines = ["\U0001f4cb <b>Pending withdrawals</b>\n"]
         for w in pending:
+            net_tag = " [testnet]" if w.network == "testnet" else ""
             lines.append(
-                f"\u2022 id <code>{w.id}</code>: {w.amount_eth} ETH \u2014 claimable after {w.claimable_after.isoformat()}"
+                f"\u2022 id <code>{w.id}</code>{net_tag}: {w.amount_eth} ETH \u2014 claimable after {w.claimable_after.isoformat()}"
             )
         await message.answer("\n".join(lines))
         return

@@ -13,6 +13,7 @@ def upgrade():
         sa.Column("user_id", sa.BigInteger(), sa.ForeignKey("users.telegram_id"), nullable=False, index=True),
         sa.Column("amount_eth", sa.Float(), nullable=False),
         sa.Column("destination_address", sa.String(), nullable=False),
+        sa.Column("network", sa.String(), nullable=False, server_default="mainnet"),
         sa.Column("l2_tx_hash", sa.String(), nullable=False),
         sa.Column("l2_to_l1_position", sa.String(), nullable=False),
         sa.Column("l2_block_number", sa.BigInteger(), nullable=False),
