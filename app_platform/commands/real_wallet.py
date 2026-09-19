@@ -28,6 +28,7 @@ from domain.trading.real.robinhood_wallet import (
 )
 from domain.trading.real.robinhood_swap import get_native_balance, get_mint_decimals, NATIVE_ETH_ADDRESS
 from domain.trading.real.evm_multichain import get_multi_chain_snapshot
+from app_platform.commands.bridge import HELP_TEXT as BRIDGE_HELP_TEXT
 from domain.trading.real import real_trade_engine
 from domain.trading.real import robinhood_withdraw as wallet_withdraw
 from domain.trading.real import real_dca_engine
@@ -1451,6 +1452,17 @@ WITHDRAW_INTRO = (
     "to an address you control — Robinhood Chain transactions are irreversible "
     "once confirmed, so double-check the address before confirming.\n"
 )
+
+
+@router.callback_query(F.data == "rw:bridge")
+async def cb_bridge_info(callback: CallbackQuery, state: FSMContext):
+    # Bridging (Ethereum <-> Robinhood Chain) runs through the standalone
+    # /bridge command rather than this inline menu -- it needs free-form
+    # amount entry and a testnet flag, which don't fit the button-driven
+    # flow the rest of this menu uses. This button exists so /bridge is
+    # discoverable from /wallet at all.
+    await callback.answer()
+    await callback.message.answer(BRIDGE_HELP_TEXT)
 
 
 @router.callback_query(F.data == "rw:withdraw")
