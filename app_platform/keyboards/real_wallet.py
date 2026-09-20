@@ -24,8 +24,7 @@ def real_wallet_menu_kb(auto_trading_enabled: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🛒 Buy", callback_data="rw:buy_start"), InlineKeyboardButton(text="💱 Sell", callback_data="rw:positions")],
         [InlineKeyboardButton(text="📊 Positions", callback_data="rw:positions"), InlineKeyboardButton(text="💼 Portfolio", callback_data="rw:portfolio")],
         [InlineKeyboardButton(text="📜 Trade History", callback_data="rw:history"), InlineKeyboardButton(text="⚙️ Trade Settings", callback_data="rw:settings")],
-        [InlineKeyboardButton(text="🏧 Withdraw", callback_data="rw:withdraw"), InlineKeyboardButton(text="🌉 Bridge", callback_data="rw:bridge")],
-        [InlineKeyboardButton(text="🔁 Refresh", callback_data="rw:balance")],
+        [InlineKeyboardButton(text="🏧 Withdraw", callback_data="rw:withdraw"), InlineKeyboardButton(text="🔁 Refresh", callback_data="rw:balance")],
         [InlineKeyboardButton(text="🧬 DCA Schedules", callback_data="rw:dca_list")],
         [InlineKeyboardButton(text=auto_label, callback_data="rw:automation")],
         [InlineKeyboardButton(text="🎯 Limit Orders 💎", callback_data="rw:limit_list")],
@@ -53,7 +52,8 @@ def real_trade_position_kb(trade_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Sell 75%", callback_data=f"rw:sell:{trade_id}:0.75"), InlineKeyboardButton(text="Sell 100%", callback_data=f"rw:sell:{trade_id}:1.0")],
         [InlineKeyboardButton(text="✏️ Custom %", callback_data=f"rw:sell_custom:{trade_id}"), InlineKeyboardButton(text="🔁 Refresh", callback_data=f"rw:position_refresh:{trade_id}")],
         [InlineKeyboardButton(text="📊 Generate PnL Card", callback_data=f"rw:pnlcard:{trade_id}")],
-        [InlineKeyboardButton(text="🎯 TP / SL 💎", callback_data=f"rw:exit_menu:{trade_id}")],
+        [InlineKeyboardButton(text="🎯 TP / SL 💎", callback_data=f"rw:exit_menu:{trade_id}"),
+         InlineKeyboardButton(text="📉 Trailing Stop", callback_data=f"rw:trail_menu:{trade_id}")],
     ])
 
 
@@ -73,6 +73,18 @@ def real_wallet_exit_menu_kb(trade_id: int, rules: list) -> InlineKeyboardMarkup
     rows.append([InlineKeyboardButton(text="🎯 Add Take Profit", callback_data=f"rw:exit_add:tp:{trade_id}"), InlineKeyboardButton(text="🛑 Add Stop Loss", callback_data=f"rw:exit_add:sl:{trade_id}")])
     rows.append([InlineKeyboardButton(text="🎯 Add Partial Take Profit", callback_data=f"rw:exit_add:ptp:{trade_id}")])
     rows.append([InlineKeyboardButton(text="🔁 Refresh", callback_data=f"rw:exit_menu:{trade_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Position", callback_data=f"rw:position_refresh:{trade_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def real_wallet_trailing_menu_kb(trade_id: int, trailing_stop) -> InlineKeyboardMarkup:
+    rows = []
+    if trailing_stop is not None and trailing_stop.status in ("watching", "armed"):
+        rows.append([InlineKeyboardButton(text="❌ Cancel Trailing Stop", callback_data=f"rw:trail_cancel:{trade_id}")])
+        rows.append([InlineKeyboardButton(text="✏️ Replace Settings", callback_data=f"rw:trail_add:{trade_id}")])
+    else:
+        rows.append([InlineKeyboardButton(text="📉 Set Trailing Stop", callback_data=f"rw:trail_add:{trade_id}")])
+    rows.append([InlineKeyboardButton(text="🔁 Refresh", callback_data=f"rw:trail_menu:{trade_id}")])
     rows.append([InlineKeyboardButton(text="⬅️ Position", callback_data=f"rw:position_refresh:{trade_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -131,7 +143,7 @@ def real_wallet_automation_kb(auto_enabled: bool, kill_switch: bool, daily_cap_s
     ])
 
 
-def real_wallet_automation_filters_kb(signal_source: str = "both") -> InlineKeyboardMarkup:
+def real_wallet_automation_filters_kb(signal_source: str = "both", trailing_stop_enabled: bool = False) -> InlineKeyboardMarkup:
     # "both" is kept selected (checkmarked) for the New + Redelivered
     # button -- it is the legacy alias for "new_redelivered" and every
     # existing row still defaults to it, so this preserves the exact same
@@ -149,6 +161,14 @@ def real_wallet_automation_filters_kb(signal_source: str = "both") -> InlineKeyb
         [InlineKeyboardButton(text="💵 Auto-buy amount (USDT)", callback_data="rw:auto_filter_edit:auto_buy_amount_usdt")],
         [InlineKeyboardButton(text="🎯 Take Profit %", callback_data="rw:auto_filter_edit:take_profit_pct"), InlineKeyboardButton(text="🛑 Stop Loss %", callback_data="rw:auto_filter_edit:stop_loss_pct")],
         [InlineKeyboardButton(text="🔢 Daily auto-buy limit (1–20)", callback_data="rw:auto_filter_edit:daily_auto_buy_limit")],
+        [InlineKeyboardButton(
+            text=("🟢 " if trailing_stop_enabled else "⚪ ") + "Trailing Stop (auto-buys)",
+            callback_data="rw:trail_default_toggle",
+        )],
+        [InlineKeyboardButton(text="📈 Trailing Activation %", callback_data="rw:auto_filter_edit:trailing_activation_pct"),
+         InlineKeyboardButton(text="📉 Trailing %", callback_data="rw:auto_filter_edit:trailing_pct")],
+        [InlineKeyboardButton(text="🛑 Initial Stop Loss %", callback_data="rw:auto_filter_edit:trailing_initial_stop_loss_pct"),
+         InlineKeyboardButton(text="🪜 Trailing Step %", callback_data="rw:auto_filter_edit:trailing_step_pct")],
         [InlineKeyboardButton(text="📊 Min conviction score", callback_data="rw:auto_filter_edit:min_score")],
         [InlineKeyboardButton(text="🏦 Min market cap", callback_data="rw:auto_filter_edit:min_market_cap")],
         [InlineKeyboardButton(text="🏦 Max market cap", callback_data="rw:auto_filter_edit:max_market_cap")],
