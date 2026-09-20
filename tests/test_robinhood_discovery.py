@@ -24,7 +24,7 @@ import pytest
 from domain.signals.robinhood_discovery import (
     discover_candidates,
     _passes_activity_filters,
-    score_potential,
+    score_fresh_potential as score_potential,
     _cooldown_active,
     run_robinhood_discovery_cycle,
 )
@@ -131,8 +131,8 @@ def test_score_potential_rewards_strong_activity():
     weak_score, _ = score_potential(weak)
     assert strong_score > weak_score
     assert set(breakdown.keys()) == {
-        "liquidity", "liquidity_change", "volume", "volume_acceleration",
-        "buy_sell_pressure", "tx_acceleration", "momentum",
+        "liquidity", "volume", "volume_acceleration",
+        "buy_sell_pressure", "tx_acceleration", "momentum_quality",
     }
 
 
@@ -248,10 +248,10 @@ async def test_robinhood_signal_requires_no_wallet_consensus_and_persists_eviden
     assert stats["signals_sent"] == 1
     assert stats["tokens_promoted"] == 1
     assert session.committed is True
-    persisted = session.added[0]
-    assert isinstance(persisted, RobinhoodDiscoverySignal)
+    persisted = next((o for o in session.added if isinstance(o, RobinhoodDiscoverySignal)), None)
+    assert persisted is not None
     assert persisted.token_contract == "RH1"
-    assert persisted.discovery_source == "dexscreener_new"
+    assert persisted.discovery_source == "dexscreener_new:fresh"
     assert persisted.cooldown_expires_at is not None
     mock_send.assert_awaited_once()
     # No wallet-related import or object appears anywhere in this module.
@@ -277,7 +277,7 @@ async def test_safety_rejection_still_blocks_robinhood_alert():
 
     assert stats["signals_sent"] == 0
     assert stats["tokens_rejected"] == 1
-    assert session.added == []
+    assert not any(isinstance(o, RobinhoodDiscoverySignal) for o in session.added)
     mock_send.assert_not_awaited()
 
 
