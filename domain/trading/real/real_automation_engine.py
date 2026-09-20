@@ -1,6 +1,7 @@
 """Real Trade Automation — signal-driven unattended Real Wallet buys."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -18,7 +19,7 @@ from domain.trading.real.robinhood_wallet import (
     register_auto_buy,
     release_auto_buy,
 )
-from domain.trading.real import real_trade_engine, real_exit_engine
+from domain.trading.real import real_trade_engine, real_exit_engine, real_trailing_stop_engine
 from domain.trading.real.robinhood_swap import NATIVE_ETH_ADDRESS
 from providers.marketdata.dexscreener import get_token_card_info
 
@@ -106,6 +107,8 @@ async def update_filter(user_id: int, field: str, value) -> bool:
         "auto_buy_amount_usdt", "take_profit_pct", "stop_loss_pct",
         "daily_auto_buy_limit", "allow_multiple_positions_same_token",
         "auto_buy_signal_source",
+        "trailing_stop_enabled", "trailing_activation_pct", "trailing_pct",
+        "trailing_initial_stop_loss_pct", "trailing_step_pct", "trailing_profit_tiers",
     }
     if field not in allowed_fields:
         return False
@@ -115,8 +118,17 @@ async def update_filter(user_id: int, field: str, value) -> bool:
             return False
     if field == "auto_buy_signal_source" and value not in ALL_SIGNAL_SOURCE_VALUES:
         return False
-    if field in {"auto_buy_amount_usdt", "take_profit_pct", "stop_loss_pct"} and value is not None and float(value) <= 0:
+    if field in {"auto_buy_amount_usdt", "take_profit_pct", "stop_loss_pct", "trailing_pct"} and value is not None and float(value) <= 0:
         return False
+    if field in {"trailing_activation_pct", "trailing_step_pct"} and value is not None and float(value) < 0:
+        return False
+    if field == "trailing_initial_stop_loss_pct" and value is not None and float(value) <= 0:
+        return False
+    if field == "trailing_profit_tiers" and value is not None:
+        try:
+            real_trailing_stop_engine._validate_profit_tiers(json.loads(value))
+        except (TypeError, ValueError, real_trailing_stop_engine.TrailingStopValidationError):
+            return False
     await get_or_create_filter(user_id)
     async with async_session() as session:
         result = await session.execute(select(RealAutoBuyFilter).where(RealAutoBuyFilter.user_id == user_id))
@@ -355,6 +367,14 @@ async def _execute_auto_buy(bot, wallet: RealWallet, signal: SignalToken, filt: 
             await real_exit_engine.create_rule(wallet.user_id, trade.id, "sl", float(filt.stop_loss_pct), 1.0)
         except Exception as e:
             logger.error("Failed to attach SL to automated trade %s: %s", trade.id, e)
+
+    # Trailing Stop is attached last and independently of TP/SL above —
+    # a user can run a fixed TP/SL alongside a trailing stop (whichever
+    # condition the price hits first wins the atomic sell claim in
+    # real_trade_engine.execute_real_sell; see real_trailing_stop_engine's
+    # module docstring). Errors here are logged only, never raised — the
+    # buy already succeeded and must be reported as such regardless.
+    await real_trailing_stop_engine.attach_from_filter_if_enabled(wallet.user_id, trade, filt)
 
     await _notify(
         bot, wallet.user_id,
