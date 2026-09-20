@@ -8,11 +8,11 @@ from domain.admin.user_service import get_or_create_user
 from domain.signals.pump_radar import set_pump_subscription
 
 router = Router()
-logger = logging.getLogger("AlphaPulse.Start")
+logger = logging.getLogger("WhaleAlpha.Start")
 
 
 WELCOME_TEXT = (
-    "⚡ <b>AlphaPulse</b>\n"
+    "⚡ <b>WhaleAlpha</b>\n"
     "<i>AI-Powered Solana Signal &amp; Trading Intelligence</i>\n"
     "━━━━━━━━━━━━━━━━━━━━━\n\n"
     "✅ Signal alerts: <b>enabled</b>\n"
@@ -55,7 +55,7 @@ WELCOME_TEXT = (
 
     "━━━━━━━━━━━━━━━━━━━━━\n"
     "Start with /signals to see what's live, or /paper to check your account.\n"
-    "🔥 AlphaPulse v4.0"
+    "🔥 WhaleAlpha v4.0"
 )
 
 

@@ -5,7 +5,7 @@ from collections import defaultdict
 from providers.marketdata.dexscreener import get_trending_tokens
 from providers.marketdata.geckoterminal import get_trending_tokens as get_gt_trending_tokens
 
-logger = logging.getLogger("AlphaPulse.Narrative")
+logger = logging.getLogger("WhaleAlpha.Narrative")
 
 # Narrative keywords (expand as needed)
 # Broadened to cover the current memecoin ecosystem, not just the original
@@ -241,7 +241,7 @@ def format_narrative_report(narratives: dict) -> str:
         text += "\n"
 
     text += "━━━━━━━━━━━━━━━━━━━━━\n"
-    text += "⚡ Powered by AlphaPulse"
+    text += "⚡ Powered by WhaleAlpha"
 
     return text
 

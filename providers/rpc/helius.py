@@ -10,7 +10,7 @@ from providers.rpc.helius_request_manager import (
     PRIORITY_LOW,
 )
 
-logger = logging.getLogger("AlphaPulse.Helius")
+logger = logging.getLogger("WhaleAlpha.Helius")
 
 
 def _to_float(value, default: float = 0.0) -> float:
@@ -38,7 +38,7 @@ def _rpc_url() -> str:
 async def _rpc_call(method: str, params, priority: int = PRIORITY_LOW):
     payload = {
         "jsonrpc": "2.0",
-        "id": "alphapulse-activity",
+        "id": "whalealpha-activity",
         "method": method,
         "params": params,
     }

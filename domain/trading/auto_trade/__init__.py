@@ -2,7 +2,7 @@
 domain/trading/auto_trade/
 
 Standalone, Trojan-inspired Auto-Trade Engine. Sits downstream of an
-already-qualified AlphaPulse signal (domain/signals/) and owns the
+already-qualified WhaleAlpha signal (domain/signals/) and owns the
 complete signal-driven trade lifecycle: authorization -> buy ->
 on-chain confirmation -> position management -> TP/SL/trailing exits
 -> sell -> reconciliation -> P&L.
@@ -27,7 +27,7 @@ Isolation contract (see AUTO_TRADE_ARCHITECTURE.docx, esp. §2, §37,
     same qualification gate domain/trading/real/real_automation_engine.py
     uses (status == "active" and alert_delivered == True).
   * There is no copy-trading anywhere in this package. The only trade
-    trigger is a qualifying AlphaPulse SignalToken.
+    trigger is a qualifying WhaleAlpha SignalToken.
 
 Module map (mirrors the spec's §38 suggested structure, adapted to this
 repo's flat domain/trading/<engine>/ convention):

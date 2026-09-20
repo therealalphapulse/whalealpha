@@ -12,7 +12,7 @@ from infra.db.session import async_session
 from models.real_trade import RealTrade
 from models.real_wallet import RealWallet
 
-logger = logging.getLogger("AlphaPulse.WalletPortfolio")
+logger = logging.getLogger("WhaleAlpha.WalletPortfolio")
 
 WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 MAX_PORTFOLIO_TOKENS = 50
@@ -225,7 +225,7 @@ async def get_wallet_portfolio_value(wallet_address: str, limit: int = MAX_PORTF
 
 def _pnl_line(token: dict) -> str:
     if not token.get("pnl_known"):
-        return "   📊 PnL: <b>N/A</b> <i>(no recorded AlphaPulse cost basis)</i>\n"
+        return "   📊 PnL: <b>N/A</b> <i>(no recorded WhaleAlpha cost basis)</i>\n"
     pnl = token["pnl_usd"]
     pct = token["pnl_pct"]
     sign = "+" if pnl >= 0 else ""
@@ -279,7 +279,7 @@ async def build_wallet_portfolio_report(wallet_address: str, limit: int = MAX_PO
                 f"{_pnl_line(token)}\n"
             )
 
-        return text + "━━━━━━━━━━━━━━━━━━━━━\n⚡ Live snapshot • AlphaPulse"
+        return text + "━━━━━━━━━━━━━━━━━━━━━\n⚡ Live snapshot • WhaleAlpha"
     except Exception as e:
         logger.error(f"Wallet portfolio report error: {e}")
         return "⚠️ <b>Wallet Portfolio Error</b>\n\nCould not build the holdings snapshot right now. Please try again shortly."

@@ -13,7 +13,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 
-logger = logging.getLogger("AlphaPulse.KMS")
+logger = logging.getLogger("WhaleAlpha.KMS")
 
 
 class MasterKeyProvider(ABC):

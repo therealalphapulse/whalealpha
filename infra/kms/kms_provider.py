@@ -45,7 +45,7 @@ import os
 
 from infra.kms.provider import MasterKeyProvider
 
-logger = logging.getLogger("AlphaPulse.KMS")
+logger = logging.getLogger("WhaleAlpha.KMS")
 
 
 class KMSMasterKeyProvider(MasterKeyProvider):

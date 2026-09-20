@@ -3,7 +3,7 @@ Smart Wallet Discovery Engine.
 
 Continuously discovers candidate Solana wallets for the Premium
 Smart Money database, using every reliable signal already available
-inside AlphaPulse (Blueprint requirement: "using all available project
+inside WhaleAlpha (Blueprint requirement: "using all available project
 integrations and reliable data sources") instead of any single feed:
 
   1. KOL provider wallets   — services/kol_tracker.py's synced KolWallet
@@ -32,7 +32,7 @@ integrations and reliable data sources") instead of any single feed:
                                on top of #2 above, not a dependency —
                                discovery does not wait on it or require
                                it to produce anything.
-  4. Popular tracked wallets — wallets multiple different AlphaPulse
+  4. Popular tracked wallets — wallets multiple different WhaleAlpha
                                users have chosen to track manually
                                (models/tracked_wallet.py); independent
                                user conviction is itself a weak signal.
@@ -86,7 +86,7 @@ from providers.marketdata.dexscreener import get_token_card_info
 # Signal Engine ever alerting on anything.
 from domain.signals.pump_radar import fetch_pump_fun_launches
 
-logger = logging.getLogger("AlphaPulse.PremiumDiscovery")
+logger = logging.getLogger("WhaleAlpha.PremiumDiscovery")
 
 
 async def migrate_premium_schema() -> None:
@@ -268,7 +268,7 @@ async def _collect_from_tracked_wallets(session, existing: set[str]) -> dict:
 async def _collect_from_winning_signals(session, existing: set[str], limit_tokens: int = 15) -> dict:
     """
     Top holders of the most recent tokens that hit a big multiple in the
-    free Signal Engine. Cheap, reuses data AlphaPulse already tracks —
+    free Signal Engine. Cheap, reuses data WhaleAlpha already tracks —
     no extra external accounts needed.
     """
     candidates = {}

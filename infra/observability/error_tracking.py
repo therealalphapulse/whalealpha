@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 
-logger = logging.getLogger("AlphaPulse.ErrorTracking")
+logger = logging.getLogger("WhaleAlpha.ErrorTracking")
 
 _initialized = False
 

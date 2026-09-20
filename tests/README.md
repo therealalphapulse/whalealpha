@@ -1,4 +1,4 @@
-# AlphaPulse v4 — Test Suite
+# WhaleAlpha v4 — Test Suite
 
 Part of the v4.0 "Foundation" phase (Bible §12). The audit found **zero**
 automated tests anywhere in v3. This is the start of a real suite, not a

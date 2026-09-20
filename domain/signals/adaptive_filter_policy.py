@@ -1,4 +1,4 @@
-"""Adaptive market-quality filter policy for AlphaPulse.
+"""Adaptive market-quality filter policy for WhaleAlpha.
 
 This is deliberately a small runtime policy adapter. It replaces the overly
 coarse MC/liquidity/volume gates with context-aware checks while preserving

@@ -28,7 +28,7 @@ from providers.marketdata.dexscreener import (
     get_token_card_info,
 )
 
-logger = logging.getLogger("AlphaPulse.PumpRadar")
+logger = logging.getLogger("WhaleAlpha.PumpRadar")
 
 _DISCOVERY_CHAIN = "solana"
 _ALLOWED_DEX_IDS = {"pumpfun", "pumpswap"}
@@ -119,7 +119,7 @@ def install() -> None:
     from domain.signals import pump_radar
 
     original = pump_radar.fetch_pump_fun_launches
-    if getattr(original, "_alphapulse_dexscreener_discovery", False):
+    if getattr(original, "_whalealpha_dexscreener_discovery", False):
         return
 
     async def fetch_pump_fun_launches(limit: int = 30) -> list[str]:
@@ -160,7 +160,7 @@ def install() -> None:
         )
         return selected
 
-    fetch_pump_fun_launches._alphapulse_dexscreener_discovery = True
+    fetch_pump_fun_launches._whalealpha_dexscreener_discovery = True
     pump_radar.fetch_pump_fun_launches = fetch_pump_fun_launches
     logger.info(
         "[PumpRadar] DexScreener discovery installed: Solana, pumpfun/pumpswap, age<6h, MC=$50K-$1M, LIQ>$15K"

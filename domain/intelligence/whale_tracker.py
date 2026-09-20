@@ -8,7 +8,7 @@ from infra.db.session import async_session
 from models.tracked_wallet import TrackedWallet
 from providers.rpc.helius import get_wallet_transactions
 
-logger = logging.getLogger("AlphaPulse.Whales")
+logger = logging.getLogger("WhaleAlpha.Whales")
 
 
 def _esc(value) -> str:
@@ -220,7 +220,7 @@ def format_wallet_activity(wallet_address: str, transactions: list[dict]) -> str
 
         text += "\n"
 
-    text += "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by AlphaPulse"
+    text += "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by WhaleAlpha"
 
     return text
 
@@ -253,7 +253,7 @@ def format_all_wallets(wallets: list) -> str:
     text += (
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Total: {len(wallets)} wallets\n"
-        f"⚡ Powered by AlphaPulse"
+        f"⚡ Powered by WhaleAlpha"
     )
 
     return text

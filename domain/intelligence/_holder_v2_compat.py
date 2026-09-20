@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 
 def install() -> None:
@@ -13,7 +13,7 @@ def install() -> None:
     from providers.rpc.helius_request_manager import helius_manager, PRIORITY_LOW
 
     original = holders._fetch_via_program_accounts_v2
-    if getattr(original, "_alphapulse_v2_normalized", False):
+    if getattr(original, "_whalealpha_v2_normalized", False):
         return
 
     token_program_id = holders.TOKEN_PROGRAM_ID
@@ -39,7 +39,7 @@ def install() -> None:
 
             payload = {
                 "jsonrpc": "2.0",
-                "id": "alphapulse-holder-data-v2",
+                "id": "whalealpha-holder-data-v2",
                 "method": "getProgramAccountsV2",
                 "params": [token_program_id, params],
             }
@@ -103,6 +103,6 @@ def install() -> None:
         )
         return all_accounts
 
-    normalized._alphapulse_v2_normalized = True
+    normalized._whalealpha_v2_normalized = True
     holders._fetch_via_program_accounts_v2 = normalized
     logger.info("[HolderDiag] Helius V2 compatibility adapter installed")

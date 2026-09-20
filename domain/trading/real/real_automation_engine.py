@@ -22,7 +22,7 @@ from domain.trading.real import real_trade_engine, real_exit_engine
 from domain.trading.real.robinhood_swap import NATIVE_ETH_ADDRESS
 from providers.marketdata.dexscreener import get_token_card_info
 
-logger = logging.getLogger("AlphaPulse.RealAutomationEngine")
+logger = logging.getLogger("WhaleAlpha.RealAutomationEngine")
 
 SIGNAL_LOOKBACK_MINUTES = 20
 DEFAULT_ETH_PER_TRADE = 0.1
