@@ -42,6 +42,24 @@ class RealAutoBuyFilter(Base):
     # real_automation_engine.update_filter().
     auto_buy_signal_source = Column(String, nullable=False, default="both")
 
+    # Default Trailing Stop config, auto-attached to every position this
+    # wallet's automation opens (mirrors how take_profit_pct/stop_loss_pct
+    # above are auto-attached) -- see
+    # domain/trading/real/real_trailing_stop_engine.attach_from_filter_if_enabled.
+    # Snapshotted onto the resulting models/real_trailing_stop.py row at
+    # creation time, so changing these later never mutates an
+    # already-attached trailing stop. Manual buys get their own
+    # independent "Set Trailing Stop" UI per position
+    # (app_platform/commands/real_wallet.py) and do not read these
+    # defaults -- these fields govern the automation path only.
+    trailing_stop_enabled = Column(Boolean, nullable=False, default=False)
+    trailing_activation_pct = Column(Float, nullable=True)
+    trailing_pct = Column(Float, nullable=True)
+    trailing_initial_stop_loss_pct = Column(Float, nullable=True)
+    trailing_step_pct = Column(Float, nullable=True)
+    # JSON string, e.g. '[{"gain_pct":50,"trail_pct":10},{"gain_pct":100,"trail_pct":5}]'
+    trailing_profit_tiers = Column(String, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
