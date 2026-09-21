@@ -45,6 +45,7 @@ from models.real_dca_schedule import RealDCASchedule  # noqa: F401
 from models.real_exit_rule import RealExitRule  # noqa: F401
 from models.real_limit_order import RealLimitOrder  # noqa: F401
 from models.real_trade import RealTrade  # noqa: F401
+from models.real_trailing_stop import RealTrailingStop  # noqa: F401
 from models.real_wallet import RealWallet  # noqa: F401
 from models.auto_trade_policy import AutoTradePolicy  # noqa: F401
 from models.auto_trade_position import AutoTradePosition  # noqa: F401
@@ -92,6 +93,7 @@ __all__ = [
     "RealExitRule",
     "RealLimitOrder",
     "RealTrade",
+    "RealTrailingStop",
     "RealWallet",
     "AutoTradePolicy",
     "AutoTradePosition",
