@@ -36,6 +36,7 @@ from domain.trading.auto_trade.worker import auto_trade_scan_loop, auto_trade_ex
 from domain.trading.real.real_dca_engine import real_dca_scheduler_loop
 from domain.trading.real.real_automation_engine import real_automation_loop
 from domain.trading.real.real_exit_engine import real_exit_engine_loop
+from domain.trading.real.real_trailing_stop_engine import real_trailing_stop_loop
 from domain.trading.real.real_limit_order_engine import real_limit_order_engine_loop
 from domain.payments.premium_payments import payment_expiry_sweep_loop
 from config.settings import (
@@ -172,6 +173,8 @@ def build_trading_jobs(bot) -> list:
         run_as_leader("loop:real_dca", lambda: real_dca_scheduler_loop(bot, interval_seconds=30),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:real_exit_engine", lambda: real_exit_engine_loop(bot, interval_seconds=20),
+                       lease_seconds=90, renew_interval_seconds=30),
+        run_as_leader("loop:real_trailing_stop", lambda: real_trailing_stop_loop(bot, interval_seconds=20),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:real_limit_orders", lambda: real_limit_order_engine_loop(bot, interval_seconds=20),
                        lease_seconds=90, renew_interval_seconds=30),
