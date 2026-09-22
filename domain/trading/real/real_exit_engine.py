@@ -126,6 +126,52 @@ async def cancel_rule(user_id: int, rule_id: int) -> bool:
     return True
 
 
+async def cancel_all_trail_rules(user_id: int) -> int:
+    """Cancels every active kind="trail" rule this user has, across all
+    their open positions -- used by the global Trailing Stop OFF toggle
+    (app_platform/commands/real_wallet.py's rw:trail_global_toggle).
+    Never touches tp/sl/ptp rules. Returns the number cancelled."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(RealExitRule).where(
+                RealExitRule.user_id == user_id, RealExitRule.kind == "trail", RealExitRule.status == "active",
+            )
+        )
+        rules = result.scalars().all()
+        for rule in rules:
+            rule.status = "cancelled"
+        await session.commit()
+    return len(rules)
+
+
+async def attach_trail_to_all_open_positions(user_id: int, trail_pct: float, arm_pct: float) -> int:
+    """Adds a kind="trail" rule to every open RealTrade this user has
+    that doesn't already have an active trailing stop -- used by the
+    global Trailing Stop ON toggle. Skips (does not touch) a position
+    that already has its own custom trail rule, and never touches
+    tp/sl/ptp rules on any position. Returns the number attached."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(RealTrade).where(RealTrade.user_id == user_id, RealTrade.status == "open")
+        )
+        trades = result.scalars().all()
+
+    attached = 0
+    for trade in trades:
+        existing = await get_rules_for_trade(user_id, trade.id)
+        if any(r.kind == "trail" and r.status == "active" for r in existing):
+            continue
+        try:
+            await create_rule(
+                user_id=user_id, trade_id=trade.id, kind="trail",
+                trigger_pct=trail_pct, sell_fraction=1.0, arm_pct=arm_pct,
+            )
+            attached += 1
+        except ExitRuleValidationError as e:
+            logger.warning("[RealExitEngine] could not auto-attach trail to trade=%s: %s", trade.id, e)
+    return attached
+
+
 def _trigger_price(entry_price: float, kind: str, trigger_pct: float) -> float:
     if kind == "sl":
         return entry_price * (1 - trigger_pct / 100)

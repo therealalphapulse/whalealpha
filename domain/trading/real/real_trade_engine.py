@@ -244,6 +244,27 @@ async def execute_real_buy(
             await session.commit()
             await session.refresh(trade)
 
+        # Global Trailing Stop (Trailing section under /realwallet): if the
+        # user has it turned on, every new manual buy gets a trailing stop
+        # attached automatically, same as an auto-bought position does via
+        # AutoTradePolicy.trailing_stop_enabled. Best-effort and never
+        # allowed to turn a successful on-chain buy into an error response
+        # -- the buy already happened; a failure here just means the user's
+        # existing "Apply to an open position" button in the Trailing
+        # section still works as a manual fallback. Deferred import: this
+        # module is imported BY real_exit_engine.py (its sell primitive),
+        # so importing it back at module level here would be circular.
+        if getattr(wallet, "trail_global_enabled", False):
+            try:
+                from domain.trading.real import real_exit_engine
+                await real_exit_engine.create_rule(
+                    user_id=user_id, trade_id=trade.id, kind="trail",
+                    trigger_pct=wallet.trail_default_pct or 10.0,
+                    sell_fraction=1.0, arm_pct=wallet.trail_default_arm_pct or 0.0,
+                )
+            except Exception as e:
+                logger.warning("[RealWallet] auto-attach trailing stop failed for new buy trade=%s: %s", trade.id, e)
+
         return {"ok": True, "trade": trade, "signature": signature, "confirmation": send_result["status"]}
 
 

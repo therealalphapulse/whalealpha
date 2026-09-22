@@ -171,9 +171,11 @@ def real_wallet_automation_filters_kb(signal_source: str = "both") -> InlineKeyb
     ])
 
 
-def real_wallet_trailing_kb(trail_pct: float, arm_pct: float) -> InlineKeyboardMarkup:
+def real_wallet_trailing_kb(trail_pct: float, arm_pct: float, global_enabled: bool = False) -> InlineKeyboardMarkup:
     pct_row = [InlineKeyboardButton(text=("✅ " if p == trail_pct else "") + f"{p:g}%", callback_data=f"rw:trail_set_pct:{p}") for p in TRAIL_PCT_PRESETS]
+    toggle_text = "🟢 Trailing Stop: ON (tap to turn OFF)" if global_enabled else "⚪ Trailing Stop: OFF (tap to turn ON)"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle_text, callback_data="rw:trail_global_toggle")],
         pct_row[:3], pct_row[3:],
         [InlineKeyboardButton(text=f"⚙️ Arm at +{arm_pct:g}% gain (tap to edit)", callback_data="rw:trail_set_arm")],
         [InlineKeyboardButton(text="🔻 Apply to an open position", callback_data="rw:trail_apply_pick")],
