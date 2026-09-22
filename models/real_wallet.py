@@ -37,6 +37,14 @@ class RealWallet(Base):
     trail_default_pct = Column(Float, default=10.0)
     trail_default_arm_pct = Column(Float, default=0.0)
 
+    # Master ON/OFF switch (Trailing section under /realwallet). When True,
+    # every open and future position — manual (RealExitRule kind="trail")
+    # and auto-bought (AutoTradePolicy.trailing_stop_enabled, a separate
+    # existing system) — gets a trailing stop; when False, trailing is
+    # cancelled/disabled everywhere without touching TP/SL. See
+    # app_platform/commands/real_wallet.py's rw:trail_global_toggle.
+    trail_global_enabled = Column(Boolean, default=False)
+
     is_active = Column(Boolean, default=True)
 
     created_at = Column(DateTime, server_default=func.now())

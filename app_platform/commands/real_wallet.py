@@ -27,8 +27,10 @@ from domain.trading.real.robinhood_wallet import (
     get_trailing_defaults,
     set_trailing_default_pct,
     set_trailing_default_arm_pct,
+    set_trail_global_enabled,
     WalletImportError,
 )
+from domain.trading.auto_trade import policy_service as auto_trade_policy_service
 from domain.trading.real.robinhood_swap import get_native_balance, get_mint_decimals, NATIVE_ETH_ADDRESS
 from domain.trading.real.evm_multichain import get_multi_chain_snapshot
 from app_platform.commands.bridge import HELP_TEXT as BRIDGE_HELP_TEXT
@@ -1353,18 +1355,23 @@ async def cb_exit_cancel(callback: CallbackQuery):
 
 async def _show_trailing_panel(target, user_id: int, edit: bool):
     defaults = await get_trailing_defaults(user_id)
+    status_line = "🟢 <b>ON</b> — active for every open and future position" if defaults["global_enabled"] else "⚪ <b>OFF</b>"
     text = (
         "🔻 <b>Trailing Stop</b>\n\n"
         "A trailing stop tracks a position's highest price and sells automatically "
         "if it falls a set % below that peak — locking in gains without a fixed "
         "take-profit target.\n\n"
+        f"Global toggle: {status_line}\n"
         f"Default trail distance: <b>{defaults['trail_pct']:g}%</b>\n"
         f"Default arm distance: <b>+{defaults['arm_pct']:g}%</b> gain before tracking starts\n\n"
-        "These defaults are used when you tap \"Apply to an open position\" below. "
-        "Each position's trailing stop can also be set individually with a custom "
-        "distance from its own 🎯 TP/SL menu."
+        "Turning the toggle ON applies these defaults to every open position right "
+        "now — manual buys and Auto-Trade buys alike — and to every new buy going "
+        "forward, until you turn it back OFF. Turning it OFF cancels trailing on "
+        "every position without touching Take-Profit/Stop-Loss or anything else. "
+        "You can still set a custom trail on one position at a time from its own "
+        "🎯 TP/SL menu, independent of this toggle."
     )
-    kb = real_wallet_trailing_kb(defaults["trail_pct"], defaults["arm_pct"])
+    kb = real_wallet_trailing_kb(defaults["trail_pct"], defaults["arm_pct"], defaults["global_enabled"])
     if edit:
         await target.edit_text(text, reply_markup=kb)
     else:
@@ -1375,6 +1382,51 @@ async def _show_trailing_panel(target, user_id: int, edit: bool):
 async def cb_trailing_panel(callback: CallbackQuery):
     await _show_trailing_panel(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
+
+
+@router.callback_query(F.data == "rw:trail_global_toggle")
+async def cb_trail_global_toggle(callback: CallbackQuery):
+    """Master ON/OFF for Trailing Stop, covering every open AND future
+    position -- manual (RealExitRule kind="trail") and auto-bought
+    (AutoTradePolicy.trailing_stop_enabled, a separate existing engine).
+    Turning ON attaches/enables a trail on every currently-open position
+    that doesn't already have one and arms it for every future buy;
+    turning OFF cancels/disables it everywhere. TP/SL and every other
+    setting is left untouched in both directions."""
+    user_id = callback.from_user.id
+    defaults = await get_trailing_defaults(user_id)
+    new_value = not defaults["global_enabled"]
+
+    ok = await set_trail_global_enabled(user_id, new_value)
+    if not ok:
+        await callback.answer("Set up a Real Wallet first.", show_alert=True)
+        return
+
+    manual_count = 0
+    auto_count = 0
+    if new_value:
+        manual_count = await real_exit_engine.attach_trail_to_all_open_positions(
+            user_id, defaults["trail_pct"], defaults["arm_pct"]
+        )
+        await auto_trade_policy_service.update_policy_field(user_id, "trailing_stop_enabled", True)
+        policy = await auto_trade_policy_service.get_or_create_policy(user_id)
+        if not policy.trailing_stop_pct and not policy.trailing_retracement_pct:
+            await auto_trade_policy_service.update_policy_field(user_id, "trailing_stop_pct", defaults["trail_pct"])
+        if not policy.trailing_activation_pct:
+            await auto_trade_policy_service.update_policy_field(user_id, "trailing_activation_pct", defaults["arm_pct"])
+        auto_count = await auto_trade_policy_service.set_trailing_for_all_open_positions(
+            user_id, True, defaults["trail_pct"], defaults["arm_pct"]
+        )
+    else:
+        manual_count = await real_exit_engine.cancel_all_trail_rules(user_id)
+        await auto_trade_policy_service.update_policy_field(user_id, "trailing_stop_enabled", False)
+        auto_count = await auto_trade_policy_service.set_trailing_for_all_open_positions(user_id, False)
+
+    await _show_trailing_panel(callback.message, user_id, edit=True)
+    if new_value:
+        await callback.answer(f"Trailing Stop turned ON — applied to {manual_count + auto_count} open position(s).")
+    else:
+        await callback.answer(f"Trailing Stop turned OFF — removed from {manual_count + auto_count} open position(s).")
 
 
 @router.callback_query(F.data.startswith("rw:trail_set_pct:"))

@@ -139,6 +139,64 @@ def snapshot_policy(policy: AutoTradePolicy) -> TradePolicySnapshot:
     )
 
 
+async def set_trailing_for_all_open_positions(
+    user_id: int,
+    enabled: bool,
+    trail_pct: float | None = None,
+    activation_pct: float | None = None,
+) -> int:
+    """Retroactively enables/disables trailing on every currently-open
+    AutoTradePosition this user has, by rewriting the trailing_stop_enabled
+    (and, only when enabling and unset, trailing_stop_pct /
+    trailing_activation_pct) keys of the frozen policy_snapshot_json each
+    position was opened with -- every other field in that snapshot
+    (take_profit_pct, stop_loss_pct, slippage_bps, etc.) is left exactly
+    as it was. Used by the global Trailing Stop toggle in the Real
+    Wallet's Trailing section (app_platform/commands/real_wallet.py's
+    rw:trail_global_toggle) so the toggle covers auto-bought positions
+    already open, not only new ones -- an explicit, user-requested
+    exception to this snapshot's normal "never mutates an already-open
+    position" immutability (see TradePolicySnapshot's docstring). New
+    positions opened after this call pick up the change automatically
+    through the ordinary snapshot_policy(policy) path, since it also
+    updates the live AutoTradePolicy row's trailing_stop_enabled via
+    update_policy_field -- callers should do that alongside this.
+    Returns the number of open positions updated.
+
+    Deferred import of position_manager to avoid a circular import: that
+    module doesn't import this one, but exit_engine.py -- which sits
+    between them -- already defers its own import of this module for the
+    same reason (see its _check_exit_trigger)."""
+    from models.auto_trade_position import AutoTradePosition
+    from .position_manager import get_open_positions
+
+    positions = await get_open_positions(user_id)
+    if not positions:
+        return 0
+
+    updated = 0
+    async with async_session() as session:
+        for position in positions:
+            snapshot = TradePolicySnapshot.from_json(position.policy_snapshot_json)
+            if snapshot is None:
+                continue
+            fields = asdict(snapshot)
+            fields["trailing_stop_enabled"] = enabled
+            if enabled:
+                if not fields.get("trailing_stop_pct") and not fields.get("trailing_retracement_pct"):
+                    fields["trailing_stop_pct"] = trail_pct
+                if not fields.get("trailing_activation_pct"):
+                    fields["trailing_activation_pct"] = activation_pct
+            new_snapshot = TradePolicySnapshot(**fields)
+            db_position = await session.get(AutoTradePosition, position.id)
+            if db_position is None:
+                continue
+            db_position.policy_snapshot_json = new_snapshot.to_json()
+            updated += 1
+        await session.commit()
+    return updated
+
+
 def signal_is_after_activation(signal_detected_at, policy: AutoTradePolicy) -> bool:
     activation_at = policy.auto_trade_enabled_at
     if activation_at is None or signal_detected_at is None:
