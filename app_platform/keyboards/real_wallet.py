@@ -1,5 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from domain.trading.real.robinhood_wallet import AUTO_DAILY_CAP_PRESETS_ETH
+from domain.trading.real.robinhood_wallet import AUTO_DAILY_CAP_PRESETS_ETH, TRAIL_PCT_PRESETS
 
 BUY_PRESETS_ETH = [0.01, 0.05, 0.1, 0.25]
 SLIPPAGE_LABELS_BPS = {50: "0.5%", 100: "1%", 150: "1.5%", 300: "3%", 500: "5%"}
@@ -28,6 +28,7 @@ def real_wallet_menu_kb(auto_trading_enabled: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔁 Refresh", callback_data="rw:balance")],
         [InlineKeyboardButton(text="🧬 DCA Schedules", callback_data="rw:dca_list")],
         [InlineKeyboardButton(text=auto_label, callback_data="rw:automation")],
+        [InlineKeyboardButton(text="🔻 Trailing", callback_data="rw:trailing")],
         [InlineKeyboardButton(text="🎯 Limit Orders 💎", callback_data="rw:limit_list")],
         [InlineKeyboardButton(text="🔑 Export Private Key", callback_data="rw:export")],
         [InlineKeyboardButton(text="🔌 Disconnect Wallet", callback_data="rw:disconnect_confirm")],
@@ -66,12 +67,16 @@ def real_wallet_exit_menu_kb(trade_id: int, rules: list) -> InlineKeyboardMarkup
     for r in rules:
         if r.status != "active":
             continue
-        label_kind = {"tp": "🎯 TP", "sl": "🛑 SL", "ptp": "🎯 Partial TP"}.get(r.kind, r.kind)
-        pct_label = f"+{r.trigger_pct:g}%" if r.kind != "sl" else f"-{r.trigger_pct:g}%"
+        label_kind = {"tp": "🎯 TP", "sl": "🛑 SL", "ptp": "🎯 Partial TP", "trail": "🔻 Trail"}.get(r.kind, r.kind)
+        if r.kind == "trail":
+            pct_label = f"-{r.trigger_pct:g}% from peak" if r.high_water_price else f"-{r.trigger_pct:g}% (arming)"
+        else:
+            pct_label = f"+{r.trigger_pct:g}%" if r.kind != "sl" else f"-{r.trigger_pct:g}%"
         extra = f" (sell {r.sell_fraction * 100:.0f}%)" if r.kind == "ptp" else ""
         rows.append([InlineKeyboardButton(text=f"❌ {label_kind} {pct_label}{extra}", callback_data=f"rw:exit_cancel:{r.id}:{trade_id}")])
     rows.append([InlineKeyboardButton(text="🎯 Add Take Profit", callback_data=f"rw:exit_add:tp:{trade_id}"), InlineKeyboardButton(text="🛑 Add Stop Loss", callback_data=f"rw:exit_add:sl:{trade_id}")])
     rows.append([InlineKeyboardButton(text="🎯 Add Partial Take Profit", callback_data=f"rw:exit_add:ptp:{trade_id}")])
+    rows.append([InlineKeyboardButton(text="🔻 Add Trailing Stop", callback_data=f"rw:exit_add:trail:{trade_id}")])
     rows.append([InlineKeyboardButton(text="🔁 Refresh", callback_data=f"rw:exit_menu:{trade_id}")])
     rows.append([InlineKeyboardButton(text="⬅️ Position", callback_data=f"rw:position_refresh:{trade_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -164,6 +169,22 @@ def real_wallet_automation_filters_kb(signal_source: str = "both") -> InlineKeyb
         [InlineKeyboardButton(text="🧹 Clear all filters", callback_data="rw:auto_filters_clear")],
         [InlineKeyboardButton(text="⬅️ Automation", callback_data="rw:automation")],
     ])
+
+
+def real_wallet_trailing_kb(trail_pct: float, arm_pct: float) -> InlineKeyboardMarkup:
+    pct_row = [InlineKeyboardButton(text=("✅ " if p == trail_pct else "") + f"{p:g}%", callback_data=f"rw:trail_set_pct:{p}") for p in TRAIL_PCT_PRESETS]
+    return InlineKeyboardMarkup(inline_keyboard=[
+        pct_row[:3], pct_row[3:],
+        [InlineKeyboardButton(text=f"⚙️ Arm at +{arm_pct:g}% gain (tap to edit)", callback_data="rw:trail_set_arm")],
+        [InlineKeyboardButton(text="🔻 Apply to an open position", callback_data="rw:trail_apply_pick")],
+        [InlineKeyboardButton(text="⬅️ Wallet Menu", callback_data="rw:menu")],
+    ])
+
+
+def real_wallet_trail_apply_pick_kb(trades: list) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=f"{t.symbol or t.contract[:6]} — entry ${t.entry_price:.8f}", callback_data=f"rw:trail_apply:{t.id}")] for t in trades]
+    rows.append([InlineKeyboardButton(text="⬅️ Trailing", callback_data="rw:trailing")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def real_wallet_dca_list_kb(schedules: list) -> InlineKeyboardMarkup:

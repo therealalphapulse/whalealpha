@@ -22,6 +22,14 @@ AUTO_DAILY_CAP_PRESETS_ETH = [0.05, 0.1, 0.25, 0.5, 1.0]
 DEFAULT_AUTO_DAILY_CAP_SOL = DEFAULT_AUTO_DAILY_CAP_ETH
 AUTO_DAILY_CAP_PRESETS_SOL = AUTO_DAILY_CAP_PRESETS_ETH
 
+# Trailing Stop global defaults (Trailing section under /wallet). These are
+# only the *default* trail%/arm% offered when applying a trail to a
+# position — each RealExitRule(kind="trail") stores its own values and can
+# be customized independently at creation.
+DEFAULT_TRAIL_PCT = 10.0
+DEFAULT_TRAIL_ARM_PCT = 0.0
+TRAIL_PCT_PRESETS = [5.0, 10.0, 15.0, 20.0, 25.0]
+
 def _today_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -186,6 +194,10 @@ async def migrate_real_wallet_schema() -> None:
         "ALTER TABLE real_autobuy_filters ADD COLUMN IF NOT EXISTS stop_loss_pct FLOAT",
         "ALTER TABLE real_autobuy_filters ADD COLUMN IF NOT EXISTS daily_auto_buy_limit BIGINT DEFAULT 5",
         "ALTER TABLE real_autobuy_filters ADD COLUMN IF NOT EXISTS auto_buy_signal_source VARCHAR DEFAULT 'both'",
+        f"ALTER TABLE real_wallets ADD COLUMN IF NOT EXISTS trail_default_pct FLOAT DEFAULT {DEFAULT_TRAIL_PCT}",
+        f"ALTER TABLE real_wallets ADD COLUMN IF NOT EXISTS trail_default_arm_pct FLOAT DEFAULT {DEFAULT_TRAIL_ARM_PCT}",
+        "ALTER TABLE real_exit_rules ADD COLUMN IF NOT EXISTS arm_pct FLOAT DEFAULT 0.0",
+        "ALTER TABLE real_exit_rules ADD COLUMN IF NOT EXISTS high_water_price FLOAT",
         "UPDATE real_wallets SET is_active = FALSE WHERE is_active = TRUE AND (chain_id IS NULL OR chain_id <> 4663)",
     ]
     try:
@@ -212,6 +224,29 @@ async def set_wallet_priority_tier(user_id: int, tier: str) -> bool:
         result=await session.execute(select(RealWallet).where(RealWallet.user_id==user_id, RealWallet.is_active==True, RealWallet.chain_id==ROBINHOOD_EVM_CHAIN_ID)); wallet=result.scalar_one_or_none()
         if not wallet: return False
         wallet.priority_fee_tier=tier; await session.commit(); return True
+
+async def get_trailing_defaults(user_id: int) -> dict:
+    wallet = await get_real_wallet(user_id)
+    if not wallet:
+        return {"trail_pct": DEFAULT_TRAIL_PCT, "arm_pct": DEFAULT_TRAIL_ARM_PCT}
+    return {
+        "trail_pct": wallet.trail_default_pct if wallet.trail_default_pct is not None else DEFAULT_TRAIL_PCT,
+        "arm_pct": wallet.trail_default_arm_pct if wallet.trail_default_arm_pct is not None else DEFAULT_TRAIL_ARM_PCT,
+    }
+
+async def set_trailing_default_pct(user_id: int, trail_pct: float) -> bool:
+    if not (0 < trail_pct < 100): return False
+    async with async_session() as session:
+        result = await session.execute(select(RealWallet).where(RealWallet.user_id == user_id, RealWallet.is_active == True, RealWallet.chain_id == ROBINHOOD_EVM_CHAIN_ID)); wallet = result.scalar_one_or_none()
+        if not wallet: return False
+        wallet.trail_default_pct = trail_pct; await session.commit(); return True
+
+async def set_trailing_default_arm_pct(user_id: int, arm_pct: float) -> bool:
+    if arm_pct < 0: return False
+    async with async_session() as session:
+        result = await session.execute(select(RealWallet).where(RealWallet.user_id == user_id, RealWallet.is_active == True, RealWallet.chain_id == ROBINHOOD_EVM_CHAIN_ID)); wallet = result.scalar_one_or_none()
+        if not wallet: return False
+        wallet.trail_default_arm_pct = arm_pct; await session.commit(); return True
 
 async def get_automation_status(user_id: int) -> dict | None:
     wallet=await get_real_wallet(user_id)

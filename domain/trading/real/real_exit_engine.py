@@ -35,7 +35,7 @@ from domain.trading.real import real_trade_engine
 
 logger = logging.getLogger("AlphaPulse.RealExitEngine")
 
-VALID_KINDS = {"tp", "sl", "ptp"}
+VALID_KINDS = {"tp", "sl", "ptp", "trail"}
 
 
 class ExitRuleValidationError(ValueError):
@@ -46,17 +46,21 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _validate_rule(kind: str, trigger_pct: float, sell_fraction: float) -> None:
+def _validate_rule(kind: str, trigger_pct: float, sell_fraction: float, arm_pct: float = 0.0) -> None:
     if kind not in VALID_KINDS:
         raise ExitRuleValidationError("Unknown rule type.")
     if trigger_pct <= 0:
         raise ExitRuleValidationError("Trigger % must be greater than 0.")
+    if kind == "trail" and trigger_pct >= 100:
+        raise ExitRuleValidationError("Trailing distance must be less than 100%.")
     if not (0.0 < sell_fraction <= 1.0):
         raise ExitRuleValidationError("Sell fraction must be between 0% and 100%.")
-    if kind in ("tp", "sl") and sell_fraction != 1.0:
-        # Full TP/SL always close the position outright; use "ptp" for
+    if kind in ("tp", "sl", "trail") and sell_fraction != 1.0:
+        # Full TP/SL/Trail always close the position outright; use "ptp" for
         # a partial exit so the distinction stays visible in history.
-        raise ExitRuleValidationError("Take Profit / Stop Loss always sell 100% — use Partial Take Profit for a partial exit.")
+        raise ExitRuleValidationError("Take Profit / Stop Loss / Trailing Stop always sell 100% — use Partial Take Profit for a partial exit.")
+    if arm_pct < 0:
+        raise ExitRuleValidationError("Arm % cannot be negative.")
 
 
 async def create_rule(
@@ -65,8 +69,9 @@ async def create_rule(
     kind: str,
     trigger_pct: float,
     sell_fraction: float = 1.0,
+    arm_pct: float = 0.0,
 ) -> RealExitRule:
-    _validate_rule(kind, trigger_pct, sell_fraction)
+    _validate_rule(kind, trigger_pct, sell_fraction, arm_pct)
 
     async with async_session() as session:
         result = await session.execute(
@@ -74,8 +79,14 @@ async def create_rule(
                 RealTrade.id == trade_id, RealTrade.user_id == user_id, RealTrade.status == "open"
             )
         )
-        if not result.scalar_one_or_none():
+        trade = result.scalar_one_or_none()
+        if not trade:
             raise ExitRuleValidationError("Position not found or already closed.")
+
+        # A "trail" rule with arm_pct=0 arms immediately — seed the peak
+        # with entry_price now so the first tick has a baseline instead of
+        # waiting for real_exit_engine.py to observe a price.
+        high_water_price = trade.entry_price if (kind == "trail" and arm_pct <= 0) else None
 
         rule = RealExitRule(
             user_id=user_id,
@@ -83,6 +94,8 @@ async def create_rule(
             kind=kind,
             trigger_pct=trigger_pct,
             sell_fraction=sell_fraction,
+            arm_pct=arm_pct,
+            high_water_price=high_water_price,
         )
         session.add(rule)
         await session.commit()
@@ -125,6 +138,40 @@ def _condition_met(kind: str, current_price: float, target_price: float) -> bool
     return current_price >= target_price
 
 
+async def _tick_trail_rule(rule: RealExitRule, entry_price: float, current_price: float) -> bool:
+    """One trailing-stop tick for a "trail" rule.
+
+    Arms the rule once price first reaches entry_price * (1 + arm_pct/100),
+    then persists the highest price seen since arming (high_water_price)
+    on every tick — even ticks that don't fire — so the peak survives a
+    worker restart. Returns True once current_price has fallen
+    trigger_pct% below that peak (i.e. the trail should fire now).
+    Returns False on every tick before the rule is armed.
+    """
+    armed = rule.high_water_price is not None
+    if not armed:
+        arm_price = entry_price * (1 + rule.arm_pct / 100)
+        if current_price < arm_price:
+            return False
+        new_peak = current_price
+    else:
+        new_peak = max(rule.high_water_price, current_price)
+
+    if new_peak != rule.high_water_price:
+        async with async_session() as session:
+            result = await session.execute(
+                select(RealExitRule).where(RealExitRule.id == rule.id, RealExitRule.status == "active")
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                row.high_water_price = new_peak
+                await session.commit()
+        rule.high_water_price = new_peak
+
+    target = rule.high_water_price * (1 - rule.trigger_pct / 100)
+    return current_price <= target
+
+
 async def _get_active_rules_by_trade() -> dict[int, list[RealExitRule]]:
     async with async_session() as session:
         result = await session.execute(
@@ -147,7 +194,7 @@ async def _notify(bot, user_id: int, text: str) -> None:
         logger.warning(f"Could not notify user {user_id} about an exit rule: {e}")
 
 
-KIND_LABELS = {"tp": "🎯 Take Profit", "sl": "🛑 Stop Loss", "ptp": "🎯 Partial Take Profit"}
+KIND_LABELS = {"tp": "🎯 Take Profit", "sl": "🛑 Stop Loss", "ptp": "🎯 Partial Take Profit", "trail": "🔻 Trailing Stop"}
 
 # Reasons execute_real_sell() can return that are structural/terminal for
 # this position — no retry at any price or balance will ever change the
@@ -229,10 +276,14 @@ async def _fire_rule(bot, rule: RealExitRule, trade: RealTrade, current_price: f
         await session.commit()
 
     if result["ok"]:
+        if rule.kind == "trail":
+            move_desc = f"-{rule.trigger_pct:g}% from its peak of {rule.high_water_price:.8f}"
+        else:
+            move_desc = f"at +{rule.trigger_pct if rule.kind != 'sl' else -rule.trigger_pct}% from entry"
         await _notify(
             bot, rule.user_id,
-            f"{KIND_LABELS[rule.kind]} triggered on {trade.symbol or trade.contract[:6]} at +{rule.trigger_pct if rule.kind != 'sl' else -rule.trigger_pct}% "
-            f"from entry.\nSold {rule.sell_fraction * 100:.0f}% of the position.\n"
+            f"{KIND_LABELS[rule.kind]} triggered on {trade.symbol or trade.contract[:6]} {move_desc}.\n"
+            f"Sold {rule.sell_fraction * 100:.0f}% of the position.\n"
             f"Received: {result.get('sol_received', 0):.4f} ETH\n"
             f"Tx: <code>{result['signature']}</code>",
         )
@@ -285,13 +336,23 @@ async def scan_and_execute(bot=None) -> int:
             continue
 
         for rule in active_user_rules:
-            target = _trigger_price(trade.entry_price, rule.kind, rule.trigger_pct)
-            if _condition_met(rule.kind, current_price, target):
+            if rule.kind == "trail":
                 try:
-                    await _fire_rule(bot, rule, trade, current_price)
-                    fired += 1
+                    should_fire = await _tick_trail_rule(rule, trade.entry_price, current_price)
                 except Exception as e:
-                    logger.error(f"Exit rule {rule.id} failed to fire: {e}")
+                    logger.error(f"Trailing stop {rule.id} failed to update its peak: {e}")
+                    continue
+                if not should_fire:
+                    continue
+            else:
+                target = _trigger_price(trade.entry_price, rule.kind, rule.trigger_pct)
+                if not _condition_met(rule.kind, current_price, target):
+                    continue
+            try:
+                await _fire_rule(bot, rule, trade, current_price)
+                fired += 1
+            except Exception as e:
+                logger.error(f"Exit rule {rule.id} failed to fire: {e}")
 
     return fired
 

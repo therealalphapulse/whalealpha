@@ -24,6 +24,9 @@ from domain.trading.real.robinhood_wallet import (
     set_auto_trading,
     set_auto_kill_switch,
     set_auto_daily_cap,
+    get_trailing_defaults,
+    set_trailing_default_pct,
+    set_trailing_default_arm_pct,
     WalletImportError,
 )
 from domain.trading.real.robinhood_swap import get_native_balance, get_mint_decimals, NATIVE_ETH_ADDRESS
@@ -62,6 +65,8 @@ from app_platform.keyboards.real_wallet import (
     real_wallet_dca_cancel_confirm_kb,
     real_wallet_dca_skip_optional_kb,
     real_wallet_exit_menu_kb,
+    real_wallet_trailing_kb,
+    real_wallet_trail_apply_pick_kb,
     real_wallet_limit_list_kb,
     real_wallet_limit_detail_kb,
     real_wallet_limit_direction_kb,
@@ -92,6 +97,8 @@ class RealWalletStates(StatesGroup):
     waiting_dca_price_ceiling = State()
     waiting_exit_trigger_pct = State()
     waiting_exit_sell_fraction = State()
+    waiting_exit_arm_pct = State()
+    waiting_trailing_arm_pct = State()
     waiting_limit_contract = State()
     waiting_limit_price = State()
     waiting_limit_amount = State()
@@ -1131,7 +1138,7 @@ async def cb_position_refresh(callback: CallbackQuery):
 # Premium — Take Profit / Stop Loss / Partial Take Profit
 # ---------------------------------------------------------------------------
 
-_EXIT_KIND_LABELS = {"tp": "Take Profit", "sl": "Stop Loss", "ptp": "Partial Take Profit"}
+_EXIT_KIND_LABELS = {"tp": "Take Profit", "sl": "Stop Loss", "ptp": "Partial Take Profit", "trail": "Trailing Stop"}
 
 
 @router.callback_query(F.data.startswith("rw:exit_menu:"))
@@ -1140,10 +1147,16 @@ async def cb_exit_menu(callback: CallbackQuery):
 
     rules = await real_exit_engine.get_rules_for_trade(callback.from_user.id, trade_id)
     active_rules = [r for r in rules if r.status == "active"]
-    lines = ["🎯 <b>Take Profit / Stop Loss</b>\n"]
+    lines = ["🎯 <b>Take Profit / Stop Loss / Trailing Stop</b>\n"]
     if active_rules:
         for r in active_rules:
             label = _EXIT_KIND_LABELS[r.kind]
+            if r.kind == "trail":
+                if r.high_water_price:
+                    lines.append(f"• {label}: -{r.trigger_pct:g}% from peak (peak so far: {r.high_water_price:.8f})")
+                else:
+                    lines.append(f"• {label}: -{r.trigger_pct:g}% from peak (arming at +{r.arm_pct:g}% gain)")
+                continue
             direction = "-" if r.kind == "sl" else "+"
             extra = f" (sell {r.sell_fraction * 100:.0f}%)" if r.kind == "ptp" else ""
             lines.append(f"• {label}: {direction}{r.trigger_pct:g}% from entry{extra}")
@@ -1163,11 +1176,18 @@ async def cb_exit_add(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RealWalletStates.waiting_exit_trigger_pct)
     await state.update_data(exit_kind=kind, exit_trade_id=trade_id)
     label = _EXIT_KIND_LABELS[kind]
-    direction = "drops" if kind == "sl" else "rises"
-    await callback.message.edit_text(
-        f"✏️ <b>{label}</b>\n\nHow many % should price {direction} from entry to trigger this? "
-        f"(e.g. <code>50</code> for 50%)\n\nSend /cancel to back out."
-    )
+    if kind == "trail":
+        prompt = (
+            f"✏️ <b>{label}</b>\n\nHow many % should price fall from its peak (highest price reached) "
+            f"to trigger a sell? (e.g. <code>10</code> for a 10% trailing stop)\n\nSend /cancel to back out."
+        )
+    else:
+        direction = "drops" if kind == "sl" else "rises"
+        prompt = (
+            f"✏️ <b>{label}</b>\n\nHow many % should price {direction} from entry to trigger this? "
+            f"(e.g. <code>50</code> for 50%)\n\nSend /cancel to back out."
+        )
+    await callback.message.edit_text(prompt)
     await callback.answer()
 
 
@@ -1196,6 +1216,16 @@ async def on_exit_trigger_pct_message(message: Message, state: FSMContext):
         await message.answer(
             "✏️ <b>Sell fraction</b>\n\nWhat % of the position should this rung sell when it triggers? "
             "(e.g. <code>25</code> for 25%)\n\nSend /cancel to back out."
+        )
+        return
+
+    if kind == "trail":
+        await state.update_data(exit_trigger_pct=trigger_pct)
+        await state.set_state(RealWalletStates.waiting_exit_arm_pct)
+        await message.answer(
+            "✏️ <b>Arm distance</b>\n\nHow many % should price first rise above entry before the trail "
+            "starts tracking a peak? Send <code>0</code> (or <code>skip</code>) to start tracking immediately.\n\n"
+            "Send /cancel to back out."
         )
         return
 
@@ -1254,6 +1284,48 @@ async def on_exit_sell_fraction_message(message: Message, state: FSMContext):
     )
 
 
+@router.message(RealWalletStates.waiting_exit_arm_pct)
+async def on_exit_arm_pct_message(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if raw.lower() == "/cancel":
+        await state.clear()
+        await message.answer("Cancelled.")
+        return
+    if raw.lower() == "skip":
+        raw = "0"
+    try:
+        arm_pct = float(raw)
+        if arm_pct < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Enter a non-negative number, e.g. <code>0</code> or <code>10</code>, or /cancel.")
+        return
+
+    data = await state.get_data()
+    trade_id = data.get("exit_trade_id")
+    trigger_pct = data.get("exit_trigger_pct")
+    await state.clear()
+    if trade_id is None or trigger_pct is None:
+        await message.answer("❌ Lost track of this setup — open Trailing Stop again from the position.")
+        return
+
+    try:
+        await real_exit_engine.create_rule(
+            user_id=message.from_user.id, trade_id=trade_id, kind="trail",
+            trigger_pct=trigger_pct, sell_fraction=1.0, arm_pct=arm_pct,
+        )
+    except real_exit_engine.ExitRuleValidationError as e:
+        await message.answer(f"❌ {html.escape(str(e))}")
+        return
+
+    rules = await real_exit_engine.get_rules_for_trade(message.from_user.id, trade_id)
+    arm_desc = "immediately" if arm_pct <= 0 else f"once price is +{arm_pct:g}% from entry"
+    await message.answer(
+        f"✅ Trailing Stop set: sells if price falls {trigger_pct:g}% from its peak, tracking starts {arm_desc}.",
+        reply_markup=real_wallet_exit_menu_kb(trade_id, rules),
+    )
+
+
 @router.callback_query(F.data.startswith("rw:exit_cancel:"))
 async def cb_exit_cancel(callback: CallbackQuery):
     _, _, rule_id, trade_id = callback.data.split(":")
@@ -1264,6 +1336,120 @@ async def cb_exit_cancel(callback: CallbackQuery):
     rules = await real_exit_engine.get_rules_for_trade(callback.from_user.id, int(trade_id))
     await callback.message.edit_reply_markup(reply_markup=real_wallet_exit_menu_kb(int(trade_id), rules))
     await callback.answer("Removed.")
+
+
+# ---------------------------------------------------------------------------
+# Trailing Stop — dedicated Trailing section under /wallet
+#
+# The persistent per-position trigger logic lives entirely in
+# domain/trading/real/real_exit_engine.py as RealExitRule(kind="trail") —
+# the same battle-tested engine that ticks TP/SL/Partial TP, reusing its
+# execute_real_sell call site and its "always retry, never silently drop
+# a rule" semantics. This section only adds: (1) customizable default
+# trail%/arm% for this wallet, and (2) a one-tap way to apply those
+# defaults to any open position without going through each position's
+# individual TP/SL/Trail menu.
+# ---------------------------------------------------------------------------
+
+async def _show_trailing_panel(target, user_id: int, edit: bool):
+    defaults = await get_trailing_defaults(user_id)
+    text = (
+        "🔻 <b>Trailing Stop</b>\n\n"
+        "A trailing stop tracks a position's highest price and sells automatically "
+        "if it falls a set % below that peak — locking in gains without a fixed "
+        "take-profit target.\n\n"
+        f"Default trail distance: <b>{defaults['trail_pct']:g}%</b>\n"
+        f"Default arm distance: <b>+{defaults['arm_pct']:g}%</b> gain before tracking starts\n\n"
+        "These defaults are used when you tap \"Apply to an open position\" below. "
+        "Each position's trailing stop can also be set individually with a custom "
+        "distance from its own 🎯 TP/SL menu."
+    )
+    kb = real_wallet_trailing_kb(defaults["trail_pct"], defaults["arm_pct"])
+    if edit:
+        await target.edit_text(text, reply_markup=kb)
+    else:
+        await target.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "rw:trailing")
+async def cb_trailing_panel(callback: CallbackQuery):
+    await _show_trailing_panel(callback.message, callback.from_user.id, edit=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("rw:trail_set_pct:"))
+async def cb_trail_set_pct(callback: CallbackQuery):
+    pct = float(callback.data.split(":")[-1])
+    ok = await set_trailing_default_pct(callback.from_user.id, pct)
+    if not ok:
+        await callback.answer("No active wallet.", show_alert=True)
+        return
+    await _show_trailing_panel(callback.message, callback.from_user.id, edit=True)
+    await callback.answer(f"Default trail distance set to {pct:g}%")
+
+
+@router.callback_query(F.data == "rw:trail_set_arm")
+async def cb_trail_set_arm(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(RealWalletStates.waiting_trailing_arm_pct)
+    await callback.message.edit_text(
+        "✏️ <b>Default arm distance</b>\n\nHow many % should price first rise above entry before a "
+        "newly-applied trailing stop starts tracking a peak? Send <code>0</code> to start tracking "
+        "immediately.\n\nSend /cancel to back out."
+    )
+    await callback.answer()
+
+
+@router.message(RealWalletStates.waiting_trailing_arm_pct)
+async def on_trailing_arm_pct_message(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if raw.lower() == "/cancel":
+        await state.clear()
+        await message.answer("Cancelled.")
+        return
+    try:
+        arm_pct = float(raw)
+        if arm_pct < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Enter a non-negative number, e.g. <code>0</code> or <code>10</code>, or /cancel.")
+        return
+
+    await state.clear()
+    ok = await set_trailing_default_arm_pct(message.from_user.id, arm_pct)
+    if not ok:
+        await message.answer("❌ No active wallet.")
+        return
+    await _show_trailing_panel(message, message.from_user.id, edit=False)
+
+
+@router.callback_query(F.data == "rw:trail_apply_pick")
+async def cb_trail_apply_pick(callback: CallbackQuery):
+    positions = await real_trade_engine.get_real_positions_view(callback.from_user.id)
+    if not positions:
+        await callback.answer("No open positions right now.", show_alert=True)
+        return
+    trades = [p["trade"] for p in positions]
+    await callback.message.edit_text(
+        "🔻 <b>Apply Trailing Stop</b>\n\nPick an open position to apply your default trail to:",
+        reply_markup=real_wallet_trail_apply_pick_kb(trades),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("rw:trail_apply:"))
+async def cb_trail_apply(callback: CallbackQuery):
+    trade_id = int(callback.data.split(":")[-1])
+    defaults = await get_trailing_defaults(callback.from_user.id)
+    try:
+        await real_exit_engine.create_rule(
+            user_id=callback.from_user.id, trade_id=trade_id, kind="trail",
+            trigger_pct=defaults["trail_pct"], sell_fraction=1.0, arm_pct=defaults["arm_pct"],
+        )
+    except real_exit_engine.ExitRuleValidationError as e:
+        await callback.answer(str(e), show_alert=True)
+        return
+    await callback.answer(f"Trailing Stop applied: -{defaults['trail_pct']:g}% from peak.")
+    await _show_trailing_panel(callback.message, callback.from_user.id, edit=True)
 
 
 # ---------------------------------------------------------------------------
