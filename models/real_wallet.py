@@ -28,6 +28,15 @@ class RealWallet(Base):
 
     slippage_bps = Column(Integer, default=150)
     priority_fee_tier = Column(String, default="auto")
+
+    # Global Trailing Stop defaults for this wallet, set from the
+    # dedicated Trailing section under /wallet. Used to prefill "apply my
+    # default trail" on any open position; each position's actual rule is
+    # still an independent RealExitRule (kind="trail") and can be
+    # customized per-position regardless of these defaults.
+    trail_default_pct = Column(Float, default=10.0)
+    trail_default_arm_pct = Column(Float, default=0.0)
+
     is_active = Column(Boolean, default=True)
 
     created_at = Column(DateTime, server_default=func.now())

@@ -25,6 +25,12 @@ class RealExitRule(Base):
         "sl"       — Stop Loss:   trigger when price <= entry_price * (1 - trigger_pct/100)
         "ptp"      — Partial Take Profit: same trigger condition as "tp",
                      but sell_fraction is user-set (< 1.0) instead of always closing.
+        "trail"    — Trailing Stop: arms once price rises arm_pct% above entry
+                     (arm_pct=0 arms immediately), then tracks the highest price
+                     seen (high_water_price) and sells when price falls
+                     trigger_pct% below that peak. Always closes 100% of the
+                     remaining position — use "ptp" first if a partial exit is
+                     wanted before the trail takes over.
 
     A trade can have multiple rules at once (e.g. one SL + several PTP
     rungs) — each fires independently and once (status flips to
@@ -47,6 +53,17 @@ class RealExitRule(Base):
     # Fraction of the position's remaining_quantity to sell when this
     # rule fires. 1.0 for a full TP/SL close; <1.0 for Partial TP rungs.
     sell_fraction = Column(Float, nullable=False, default=1.0)
+
+    # --- Trailing Stop only (kind="trail") -----------------------------
+    # % gain from entry_price required before the trail starts tracking a
+    # peak. 0.0 (default) arms immediately on creation. Ignored by tp/sl/ptp.
+    arm_pct = Column(Float, nullable=False, default=0.0)
+
+    # Highest price observed since the rule armed. NULL until armed.
+    # real_exit_engine.py updates this on every tick while the rule is
+    # active and re-derives the trailing target from it each time — it is
+    # never used by tp/sl/ptp, whose target is fixed at entry_price.
+    high_water_price = Column(Float, nullable=True)
 
     # "active" -> being watched by the exit engine.
     # "triggered" -> fired successfully, sell executed.
