@@ -484,6 +484,23 @@ def hard_reject_reasons(
     if _is_on(sec.get("freezable")):
         reasons.append("Freeze authority active")
 
+    # Malicious contract functions — distinct from the honeypot/blacklist
+    # checks above (which cover "can't sell") and the mint/freeze checks
+    # above (which cover "supply/account can be tampered with"): these are
+    # capabilities that let the contract or its owner drain or rewrite
+    # holder balances outright. GoPlus already surfaces all four on both
+    # the Solana and Robinhood Chain (EVM) paths via
+    # providers.marketdata.goplus._normalize_token_security(); until now
+    # they were captured but never enforced here.
+    if _is_on(sec.get("selfdestruct")):
+        reasons.append("Contract has a self-destruct function")
+    if _is_on(sec.get("external_call")):
+        reasons.append("Contract can make untrusted external calls")
+    if _is_on(sec.get("owner_change_balance")):
+        reasons.append("Owner can arbitrarily change holder balances")
+    if _is_on(sec.get("can_take_back_ownership")):
+        reasons.append("Ownership can be reclaimed after renouncing")
+
     top_holder_pct = _to_float(
         holder_analysis.get("top_holder_pct")
         if holder_analysis.get("top_holder_pct") is not None

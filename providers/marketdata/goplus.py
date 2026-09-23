@@ -172,6 +172,7 @@ def _normalize_token_security(token_data: dict) -> dict:
         "cannot_sell_all": str(token_data.get("cannot_sell_all", "0")),
         "cannot_buy": str(token_data.get("cannot_buy", "0")),
         "trading_cooldown": str(token_data.get("trading_cooldown", "0")),
+        "can_take_back_ownership": str(token_data.get("can_take_back_ownership", "0")),
     }
 
 
