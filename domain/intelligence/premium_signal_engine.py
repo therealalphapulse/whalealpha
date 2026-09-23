@@ -368,6 +368,20 @@ async def _run_ai_analysis(mint: str) -> dict | None:
         return None
 
     sec = await check_token_security(mint)
+
+    # Fail-closed on unavailable security data. hard_reject_reasons()
+    # below treats sec=None as "nothing to evaluate" -- fail-closed is
+    # each caller's responsibility, and pump_radar.analyze_candidate() /
+    # candidate_validation.build_validated_candidate() already enforce it
+    # on their paths. This engine was the one caller that didn't, which
+    # meant a GoPlus outage or rate-limit could let a Premium Signal
+    # through with its security status never actually confirmed instead
+    # of rejecting and retrying, exactly the case fail-closed exists to
+    # prevent.
+    if sec is None:
+        logger.warning(f"Premium signal engine: rejecting {mint[:8]} — GoPlus security data unavailable")
+        return {"eligible": False, "reasons": ["security_data_unavailable"], "data": data}
+
     dev_address = (sec or {}).get("creator_address")
     holder_analysis = await get_holder_analysis(mint, dev_address=dev_address)
     holders = holder_analysis.get("total_holders") if holder_analysis else None
