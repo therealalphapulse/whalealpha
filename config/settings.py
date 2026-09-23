@@ -710,6 +710,28 @@ ROBINHOOD_DISCOVERY_INTERVAL_SECONDS = _env_int("ROBINHOOD_DISCOVERY_INTERVAL_SE
 ROBINHOOD_MAX_CANDIDATES_PER_CYCLE = _env_int("ROBINHOOD_MAX_CANDIDATES_PER_CYCLE", 60)
 ROBINHOOD_MAX_ALERTS_PER_CYCLE = _env_int("ROBINHOOD_MAX_ALERTS_PER_CYCLE", 3)
 
+# ---------------------------------------------------------------------
+# Auto-Trade scan + exit/trailing monitor cadence (workers/signal_trading_worker.py)
+# ---------------------------------------------------------------------
+# auto_trade_scan_loop (signal -> buy decision): evaluate_user_policy() is
+# documented DB-only, no network call; evaluate_execution_risk()'s wallet
+# balance RPC call only fires for a candidate that already passed every
+# DB-only filter, i.e. only when a buy is actually about to happen -- so
+# this loop has no external rate limit to respect and its real cost is
+# Postgres query load. 5s is a fast, DB-load-appropriate cadence, not a
+# rate-limit-driven one.
+AUTO_TRADE_SCAN_INTERVAL_SECONDS = _env_int("AUTO_TRADE_SCAN_INTERVAL_SECONDS", 5)
+
+# real_exit_engine_loop and auto_trade_exit_loop (TP/SL/trailing monitor,
+# both real and auto-bought positions): both price their positions via
+# providers.marketdata.dexscreener.get_token_card_info(), which caches
+# for 15s. 18s (15s + ~20% buffer) guarantees a fresh fetch every tick
+# without landing exactly on the cache boundary (which would cause every
+# other tick to silently reuse a stale price instead of refreshing).
+# Ticking faster than the cache TTL would not improve freshness, only add
+# wasted ticks and DexScreener call volume for no benefit.
+EXIT_MONITOR_INTERVAL_SECONDS = _env_int("EXIT_MONITOR_INTERVAL_SECONDS", 18)
+
 # "New token" bucket — freshly-created Robinhood Chain pairs.
 ROBINHOOD_NEW_MAX_AGE_HOURS = _env_float("ROBINHOOD_NEW_MAX_AGE_HOURS", 24.0)
 # "Renewed activity" bucket — older pairs showing a fresh acceleration in
