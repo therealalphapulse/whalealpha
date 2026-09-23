@@ -45,6 +45,8 @@ from config.settings import (
     ROBINHOOD_DISCOVERY_ENABLED,
     ROBINHOOD_DISCOVERY_INTERVAL_SECONDS,
     REAL_AUTOMATION_ENABLED,
+    AUTO_TRADE_SCAN_INTERVAL_SECONDS,
+    EXIT_MONITOR_INTERVAL_SECONDS,
 )
 from domain.signals.wallet_consensus_engine import wallet_consensus_loop
 from domain.signals.robinhood_discovery import robinhood_discovery_loop
@@ -171,13 +173,13 @@ def build_trading_jobs(bot) -> list:
     jobs = [
         run_as_leader("loop:real_dca", lambda: real_dca_scheduler_loop(bot, interval_seconds=30),
                        lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:real_exit_engine", lambda: real_exit_engine_loop(bot, interval_seconds=20),
+        run_as_leader("loop:real_exit_engine", lambda: real_exit_engine_loop(bot, interval_seconds=EXIT_MONITOR_INTERVAL_SECONDS),
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:real_limit_orders", lambda: real_limit_order_engine_loop(bot, interval_seconds=20),
                        lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:auto_trade_scan", lambda: auto_trade_scan_loop(bot, interval_seconds=20),
+        run_as_leader("loop:auto_trade_scan", lambda: auto_trade_scan_loop(bot, interval_seconds=AUTO_TRADE_SCAN_INTERVAL_SECONDS),
                        lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:auto_trade_exit", lambda: auto_trade_exit_loop(bot, interval_seconds=20),
+        run_as_leader("loop:auto_trade_exit", lambda: auto_trade_exit_loop(bot, interval_seconds=EXIT_MONITOR_INTERVAL_SECONDS),
                        lease_seconds=90, renew_interval_seconds=30),
     ]
 
