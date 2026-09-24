@@ -811,6 +811,12 @@ ROBINHOOD_REVIVAL_MIN_RECOVERY_PCT = _env_float("ROBINHOOD_REVIVAL_MIN_RECOVERY_
 ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT = _env_float("ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT", 85.0)
 ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE", 2)
 
+# Anti-late-pump filter, fresh lane only (domain/signals/robinhood_discovery.py):
+# hard-reject a fresh candidate whose price has already run up this much,
+# rather than alert on a move that's largely already happened.
+ROBINHOOD_FRESH_MAX_PUMP_5M_PCT = _env_float("ROBINHOOD_FRESH_MAX_PUMP_5M_PCT", 35.0)
+ROBINHOOD_FRESH_MAX_PUMP_1H_PCT = _env_float("ROBINHOOD_FRESH_MAX_PUMP_1H_PCT", 80.0)
+
 ROBINHOOD_COOLDOWN_HOURS = _env_float("ROBINHOOD_COOLDOWN_HOURS", 24.0)
 # Comma-separated chat IDs / @usernames for ROBINHOOD_DISCOVERY alerts.
 # Falls back to PUMP_ALERT_CHANNEL_IDS when unset.
