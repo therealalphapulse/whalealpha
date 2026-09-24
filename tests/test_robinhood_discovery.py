@@ -325,3 +325,75 @@ async def test_provider_failure_during_discovery_is_handled_gracefully():
 
     assert stats["pairs_scanned"] == 0
     assert stats["signals_sent"] == 0
+
+
+
+# ---------------------------------------------------------------------
+# Anti-late-pump filter (fresh lane only)
+# ---------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fresh_token_late_pump_5m_is_hard_rejected():
+    """A fresh candidate up 35%+ in 5 minutes is rejected even though it
+    would otherwise pass safety validation -- proves this specific filter
+    is what blocks it, not the existing hard-reject pipeline."""
+    pumped_data = dict(HEALTHY_DATA, price_change_5m=40)
+    candidate_entry = {"contract": "RH_PUMP5M", "source": "dexscreener_new", "prefetched_data": pumped_data}
+    fake_card = {"contract": "RH_PUMP5M", "data": pumped_data, "pump": {"final_score": 70.0}}
+    session = _FakeSession(existing_signal=None)
+    bot = AsyncMock()
+
+    with patch("domain.signals.robinhood_discovery.discover_candidates", new=AsyncMock(return_value=[candidate_entry])), \
+         patch("domain.signals.robinhood_discovery.async_session", return_value=session), \
+         patch("domain.signals.robinhood_discovery.build_validated_candidate", new=AsyncMock(return_value=(fake_card, []))), \
+         patch("domain.signals.robinhood_discovery.load_channel_ids", return_value=[999]), \
+         patch("domain.signals.robinhood_discovery.send_pump_card", new=AsyncMock()) as mock_send:
+        stats = await run_robinhood_discovery_cycle(bot)
+
+    assert stats["signals_sent"] == 0
+    assert stats["tokens_rejected"] == 1
+    assert not any(isinstance(o, RobinhoodDiscoverySignal) for o in session.added)
+    mock_send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fresh_token_late_pump_1h_is_hard_rejected():
+    """A fresh candidate up 80%+ in 1 hour is rejected the same way."""
+    pumped_data = dict(HEALTHY_DATA, price_change_1h=90)
+    candidate_entry = {"contract": "RH_PUMP1H", "source": "dexscreener_new", "prefetched_data": pumped_data}
+    fake_card = {"contract": "RH_PUMP1H", "data": pumped_data, "pump": {"final_score": 70.0}}
+    session = _FakeSession(existing_signal=None)
+    bot = AsyncMock()
+
+    with patch("domain.signals.robinhood_discovery.discover_candidates", new=AsyncMock(return_value=[candidate_entry])), \
+         patch("domain.signals.robinhood_discovery.async_session", return_value=session), \
+         patch("domain.signals.robinhood_discovery.build_validated_candidate", new=AsyncMock(return_value=(fake_card, []))), \
+         patch("domain.signals.robinhood_discovery.load_channel_ids", return_value=[999]), \
+         patch("domain.signals.robinhood_discovery.send_pump_card", new=AsyncMock()) as mock_send:
+        stats = await run_robinhood_discovery_cycle(bot)
+
+    assert stats["signals_sent"] == 0
+    assert stats["tokens_rejected"] == 1
+    mock_send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fresh_token_just_under_pump_thresholds_is_not_pump_rejected():
+    """Proves the thresholds are >=35%/5m and >=80%/1h, not a looser
+    boundary -- a candidate just under both still reaches alerting."""
+    near_threshold_data = dict(HEALTHY_DATA, price_change_5m=34.9, price_change_1h=79.9)
+    candidate_entry = {"contract": "RH_NEAR", "source": "dexscreener_new", "prefetched_data": near_threshold_data}
+    fake_card = {"contract": "RH_NEAR", "data": near_threshold_data, "pump": {"final_score": 70.0}}
+    session = _FakeSession(existing_signal=None)
+    bot = AsyncMock()
+
+    with patch("domain.signals.robinhood_discovery.discover_candidates", new=AsyncMock(return_value=[candidate_entry])), \
+         patch("domain.signals.robinhood_discovery.async_session", return_value=session), \
+         patch("domain.signals.robinhood_discovery.build_validated_candidate", new=AsyncMock(return_value=(fake_card, []))), \
+         patch("domain.signals.robinhood_discovery.load_channel_ids", return_value=[999]), \
+         patch("domain.signals.robinhood_discovery.send_pump_card", new=AsyncMock()) as mock_send:
+        stats = await run_robinhood_discovery_cycle(bot)
+
+    assert stats["signals_sent"] == 1
+    assert stats["tokens_rejected"] == 0
+    mock_send.assert_awaited_once()

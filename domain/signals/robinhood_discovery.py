@@ -79,6 +79,8 @@ from config.settings import (
     ROBINHOOD_REVIVAL_MAX_RECOVERY_PCT,
     ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE,
     ROBINHOOD_COOLDOWN_HOURS,
+    ROBINHOOD_FRESH_MAX_PUMP_5M_PCT,
+    ROBINHOOD_FRESH_MAX_PUMP_1H_PCT,
 )
 from models.robinhood_discovery_signal import RobinhoodDiscoverySignal
 from models.robinhood_token_watch import RobinhoodTokenWatch
@@ -560,6 +562,36 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                 logger.info(f"Robinhood discovery: {contract} rejected by safety validation: {reject_reasons}")
                 stats["tokens_rejected"] += 1
                 continue
+
+            # Anti-late-pump filter (fresh lane only): a fresh token that
+            # has already ripped 35%+ in 5 minutes or 80%+ in 1 hour is
+            # most likely being alerted on well after the move started --
+            # exactly the "signal arrives, price already pumped" case
+            # this exists to prevent. Revival-lane tokens are exempt: a
+            # revival is a dump-then-recovery setup, so a sharp recovery
+            # bounce is the point of that lane, not a red flag. Skipped
+            # (not rejected) when price-change data itself is missing --
+            # DexScreener always returns these fields for a real pair, so
+            # "N/A" here means something upstream is already degraded,
+            # and the fail-closed requirement for this task was scoped to
+            # the fake-volume/wash-trading metrics, not price-change data.
+            if bucket == "fresh":
+                pc5m = data.get("price_change_5m")
+                pc1h = data.get("price_change_1h")
+                if isinstance(pc5m, (int, float)) and pc5m >= ROBINHOOD_FRESH_MAX_PUMP_5M_PCT:
+                    logger.info(
+                        f"Robinhood discovery: {contract} rejected -- late pump "
+                        f"(+{pc5m:g}% in 5m, limit {ROBINHOOD_FRESH_MAX_PUMP_5M_PCT:g}%)"
+                    )
+                    stats["tokens_rejected"] += 1
+                    continue
+                if isinstance(pc1h, (int, float)) and pc1h >= ROBINHOOD_FRESH_MAX_PUMP_1H_PCT:
+                    logger.info(
+                        f"Robinhood discovery: {contract} rejected -- late pump "
+                        f"(+{pc1h:g}% in 1h, limit {ROBINHOOD_FRESH_MAX_PUMP_1H_PCT:g}%)"
+                    )
+                    stats["tokens_rejected"] += 1
+                    continue
 
             pool_entry = {
                 "contract": contract, "source": source, "data": data, "card": card,
