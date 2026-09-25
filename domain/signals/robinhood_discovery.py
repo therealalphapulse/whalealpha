@@ -81,6 +81,11 @@ from config.settings import (
     ROBINHOOD_COOLDOWN_HOURS,
     ROBINHOOD_FRESH_MAX_PUMP_5M_PCT,
     ROBINHOOD_FRESH_MAX_PUMP_1H_PCT,
+    ROBINHOOD_ORGANIC_VOLUME_LIQUIDITY_RATIO_1H,
+    ROBINHOOD_MAX_FAKE_VOLUME_PCT,
+    ROBINHOOD_WASH_TRADING_MIN_TXNS_1H,
+    ROBINHOOD_WASH_TRADING_SYMMETRY_BAND,
+    ROBINHOOD_MAX_WASH_TRADING_PCT,
 )
 from models.robinhood_discovery_signal import RobinhoodDiscoverySignal
 from models.robinhood_token_watch import RobinhoodTokenWatch
@@ -125,6 +130,59 @@ def _pair_age_hours(pair_created_at) -> float | None:
         return None
     created = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).replace(tzinfo=None)
     return (_now() - created).total_seconds() / 3600.0
+
+
+def _estimate_fake_volume_pct(data: dict) -> float | None:
+    """In-house estimate of how much of a token's reported 1h volume
+    looks implausible given its liquidity depth -- there is no
+    third-party provider that returns a verified "fake volume %" for
+    Robinhood Chain tokens, so this is computed from the same
+    liquidity/volume_1h fields already fetched for scoring. Returns None
+    if liquidity or volume can't be read as a usable positive number --
+    callers must treat that as "unavailable" and fail closed, not as 0%.
+
+    plausible_max = liquidity * ROBINHOOD_ORGANIC_VOLUME_LIQUIDITY_RATIO_1H
+    (how much volume a token could plausibly turn over organically in an
+    hour relative to its own liquidity); anything reported above that is
+    treated as "excess" and expressed as a % of total volume.
+    """
+    liquidity = _f(data.get("liquidity"), default=-1)
+    volume_1h = _f(data.get("volume_1h"), default=-1)
+    if liquidity <= 0 or volume_1h < 0:
+        return None
+    if volume_1h == 0:
+        return 0.0
+    plausible_max = liquidity * ROBINHOOD_ORGANIC_VOLUME_LIQUIDITY_RATIO_1H
+    excess = max(0.0, volume_1h - plausible_max)
+    return min(100.0, 100.0 * excess / volume_1h)
+
+
+def _estimate_wash_trading_pct(data: dict) -> float | None:
+    """In-house estimate of wash-trading likelihood from 1h buy/sell
+    transaction-count symmetry -- round-tripped (wash-traded) capital
+    tends to produce buy and sell counts far closer to a perfect 50/50
+    split than organic two-sided trading typically is. Returns None
+    (unavailable) if there are fewer than
+    ROBINHOOD_WASH_TRADING_MIN_TXNS_1H total buys+sells in the hour --
+    below that the buy/sell-count signal isn't statistically meaningful
+    either way, so callers must fail closed rather than treat it as 0%.
+
+    Only scores above 0 once the buy/sell imbalance falls inside
+    ROBINHOOD_WASH_TRADING_SYMMETRY_BAND of a perfect split; outside that
+    band (i.e. meaningfully one-sided trading, which is the normal case
+    for organic pumps and dumps) this returns 0.
+    """
+    buys = _f(data.get("txns_1h_buys"), default=-1)
+    sells = _f(data.get("txns_1h_sells"), default=-1)
+    if buys < 0 or sells < 0:
+        return None
+    total = buys + sells
+    if total < ROBINHOOD_WASH_TRADING_MIN_TXNS_1H:
+        return None
+    imbalance = abs(buys - sells) / total
+    if imbalance >= ROBINHOOD_WASH_TRADING_SYMMETRY_BAND:
+        return 0.0
+    return 100.0 * (ROBINHOOD_WASH_TRADING_SYMMETRY_BAND - imbalance) / ROBINHOOD_WASH_TRADING_SYMMETRY_BAND
 
 
 async def discover_candidates() -> list[dict]:
@@ -560,6 +618,37 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
 
             if reject_reasons:
                 logger.info(f"Robinhood discovery: {contract} rejected by safety validation: {reject_reasons}")
+                stats["tokens_rejected"] += 1
+                continue
+
+            # Fake volume / wash trading filter (both lanes). Both metrics
+            # fail closed -- None means "couldn't be computed/verified",
+            # which rejects exactly like a value over the threshold, per
+            # this task's requirement to reject when unavailable rather
+            # than let an unverified token through.
+            fake_volume_pct = _estimate_fake_volume_pct(data)
+            if fake_volume_pct is None:
+                logger.info(f"Robinhood discovery: {contract} rejected -- fake volume % unverified (liquidity/volume missing)")
+                stats["tokens_rejected"] += 1
+                continue
+            if fake_volume_pct >= ROBINHOOD_MAX_FAKE_VOLUME_PCT:
+                logger.info(
+                    f"Robinhood discovery: {contract} rejected -- estimated fake volume "
+                    f"{fake_volume_pct:.0f}% >= {ROBINHOOD_MAX_FAKE_VOLUME_PCT:g}%"
+                )
+                stats["tokens_rejected"] += 1
+                continue
+
+            wash_trading_pct = _estimate_wash_trading_pct(data)
+            if wash_trading_pct is None:
+                logger.info(f"Robinhood discovery: {contract} rejected -- wash trading % unverified (too few 1h txns to evaluate)")
+                stats["tokens_rejected"] += 1
+                continue
+            if wash_trading_pct >= ROBINHOOD_MAX_WASH_TRADING_PCT:
+                logger.info(
+                    f"Robinhood discovery: {contract} rejected -- estimated wash trading "
+                    f"{wash_trading_pct:.0f}% >= {ROBINHOOD_MAX_WASH_TRADING_PCT:g}%"
+                )
                 stats["tokens_rejected"] += 1
                 continue
 
