@@ -817,6 +817,35 @@ ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE = _env_int("ROBINHOOD_REVIVAL_TOP_N_PER_CYCLE"
 ROBINHOOD_FRESH_MAX_PUMP_5M_PCT = _env_float("ROBINHOOD_FRESH_MAX_PUMP_5M_PCT", 35.0)
 ROBINHOOD_FRESH_MAX_PUMP_1H_PCT = _env_float("ROBINHOOD_FRESH_MAX_PUMP_1H_PCT", 80.0)
 
+# Fake volume / wash trading filter, both lanes (domain/signals/
+# robinhood_discovery.py). No third-party provider surfaces a literal
+# "fake volume %" or "wash trading %" for Robinhood Chain tokens, so
+# these are estimated in-house from the same DexScreener 1h volume/
+# liquidity/txns data already fetched for scoring -- an internal
+# estimate, not a verified external score. Known limitation: a
+# genuinely hot organic pump can also show a high volume/liquidity
+# ratio, so this trades some false positives on real pumps for catching
+# actual wash trading; tune the ratio below if that shows up in
+# practice.
+#
+# Fake volume: plausible_max_1h_volume = liquidity * this ratio; volume
+# above that is treated as "excess" and expressed as a % of total
+# 1h volume. Rejected at >= ROBINHOOD_MAX_FAKE_VOLUME_PCT.
+ROBINHOOD_ORGANIC_VOLUME_LIQUIDITY_RATIO_1H = _env_float("ROBINHOOD_ORGANIC_VOLUME_LIQUIDITY_RATIO_1H", 5.0)
+ROBINHOOD_MAX_FAKE_VOLUME_PCT = _env_float("ROBINHOOD_MAX_FAKE_VOLUME_PCT", 25.0)
+
+# Wash trading: buy/sell transaction symmetry within 1h. Real wash
+# trading round-trips the same capital, producing buy/sell counts far
+# closer to perfectly balanced than organic two-sided trading typically
+# is. Only scores as suspicious within SYMMETRY_BAND of a perfect 50/50
+# split, and only once MIN_TXNS_1H total transactions exist (below that,
+# the signal isn't statistically meaningful -- treated as unverified,
+# see the fail-closed check next to where this is used). Rejected at
+# >= ROBINHOOD_MAX_WASH_TRADING_PCT.
+ROBINHOOD_WASH_TRADING_MIN_TXNS_1H = _env_int("ROBINHOOD_WASH_TRADING_MIN_TXNS_1H", 20)
+ROBINHOOD_WASH_TRADING_SYMMETRY_BAND = _env_float("ROBINHOOD_WASH_TRADING_SYMMETRY_BAND", 0.15)
+ROBINHOOD_MAX_WASH_TRADING_PCT = _env_float("ROBINHOOD_MAX_WASH_TRADING_PCT", 20.0)
+
 ROBINHOOD_COOLDOWN_HOURS = _env_float("ROBINHOOD_COOLDOWN_HOURS", 24.0)
 # Comma-separated chat IDs / @usernames for ROBINHOOD_DISCOVERY alerts.
 # Falls back to PUMP_ALERT_CHANNEL_IDS when unset.

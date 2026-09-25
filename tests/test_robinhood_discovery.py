@@ -27,6 +27,8 @@ from domain.signals.robinhood_discovery import (
     score_fresh_potential as score_potential,
     _cooldown_active,
     run_robinhood_discovery_cycle,
+    _estimate_fake_volume_pct,
+    _estimate_wash_trading_pct,
 )
 from models.robinhood_discovery_signal import RobinhoodDiscoverySignal
 
@@ -397,3 +399,85 @@ async def test_fresh_token_just_under_pump_thresholds_is_not_pump_rejected():
     assert stats["signals_sent"] == 1
     assert stats["tokens_rejected"] == 0
     mock_send.assert_awaited_once()
+
+
+
+# ---------------------------------------------------------------------
+# Fake volume / wash trading filter (both lanes)
+# ---------------------------------------------------------------------
+
+def test_fake_volume_pct_zero_for_organic_ratio():
+    data = {"liquidity": 10000, "volume_1h": 20000}  # 2x liquidity, well under the 5x ceiling
+    assert _estimate_fake_volume_pct(data) == 0.0
+
+
+def test_fake_volume_pct_scales_with_excess_over_liquidity_ratio():
+    # plausible_max = 10000 * 5.0 = 50000; volume_1h = 100000 -> 50000 excess / 100000 total = 50%
+    data = {"liquidity": 10000, "volume_1h": 100000}
+    assert _estimate_fake_volume_pct(data) == 50.0
+
+
+def test_fake_volume_pct_unavailable_without_liquidity():
+    assert _estimate_fake_volume_pct({"liquidity": "N/A", "volume_1h": 20000}) is None
+    assert _estimate_fake_volume_pct({"liquidity": 0, "volume_1h": 20000}) is None
+
+
+def test_wash_trading_pct_high_for_near_perfect_symmetry():
+    data = {"txns_1h_buys": 50, "txns_1h_sells": 50}  # perfectly balanced, 100 total txns
+    assert _estimate_wash_trading_pct(data) == 100.0
+
+
+def test_wash_trading_pct_zero_for_one_sided_trading():
+    data = {"txns_1h_buys": 80, "txns_1h_sells": 20}  # imbalance 0.6, well outside the 0.15 band
+    assert _estimate_wash_trading_pct(data) == 0.0
+
+
+def test_wash_trading_pct_unavailable_below_min_sample_size():
+    # 15 total txns, below ROBINHOOD_WASH_TRADING_MIN_TXNS_1H (20) -- not
+    # enough data for the symmetry signal to mean anything either way.
+    assert _estimate_wash_trading_pct({"txns_1h_buys": 8, "txns_1h_sells": 7}) is None
+
+
+@pytest.mark.asyncio
+async def test_robinhood_discovery_rejects_high_fake_volume():
+    """End-to-end: a candidate with implausible volume relative to its
+    liquidity is rejected even though it would otherwise pass every
+    other check, proving this specific filter is what blocks it."""
+    bad_data = dict(HEALTHY_DATA, liquidity=5000, volume_1h=200000)  # 40x liquidity in 1h
+    candidate_entry = {"contract": "RH_FAKEVOL", "source": "dexscreener_new", "prefetched_data": bad_data}
+    fake_card = {"contract": "RH_FAKEVOL", "data": bad_data, "pump": {"final_score": 70.0}}
+    session = _FakeSession(existing_signal=None)
+    bot = AsyncMock()
+
+    with patch("domain.signals.robinhood_discovery.discover_candidates", new=AsyncMock(return_value=[candidate_entry])), \
+         patch("domain.signals.robinhood_discovery.async_session", return_value=session), \
+         patch("domain.signals.robinhood_discovery.build_validated_candidate", new=AsyncMock(return_value=(fake_card, []))), \
+         patch("domain.signals.robinhood_discovery.load_channel_ids", return_value=[999]), \
+         patch("domain.signals.robinhood_discovery.send_pump_card", new=AsyncMock()) as mock_send:
+        stats = await run_robinhood_discovery_cycle(bot)
+
+    assert stats["signals_sent"] == 0
+    assert stats["tokens_rejected"] == 1
+    mock_send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_robinhood_discovery_rejects_unverified_wash_trading_data():
+    """End-to-end fail-closed: too few 1h transactions to evaluate the
+    wash-trading signal must reject, not pass through as 0%."""
+    thin_data = dict(HEALTHY_DATA, txns_1h_buys=3, txns_1h_sells=2)  # 5 total, below the min sample size
+    candidate_entry = {"contract": "RH_THIN", "source": "dexscreener_new", "prefetched_data": thin_data}
+    fake_card = {"contract": "RH_THIN", "data": thin_data, "pump": {"final_score": 70.0}}
+    session = _FakeSession(existing_signal=None)
+    bot = AsyncMock()
+
+    with patch("domain.signals.robinhood_discovery.discover_candidates", new=AsyncMock(return_value=[candidate_entry])), \
+         patch("domain.signals.robinhood_discovery.async_session", return_value=session), \
+         patch("domain.signals.robinhood_discovery.build_validated_candidate", new=AsyncMock(return_value=(fake_card, []))), \
+         patch("domain.signals.robinhood_discovery.load_channel_ids", return_value=[999]), \
+         patch("domain.signals.robinhood_discovery.send_pump_card", new=AsyncMock()) as mock_send:
+        stats = await run_robinhood_discovery_cycle(bot)
+
+    assert stats["signals_sent"] == 0
+    assert stats["tokens_rejected"] == 1
+    mock_send.assert_not_awaited()
