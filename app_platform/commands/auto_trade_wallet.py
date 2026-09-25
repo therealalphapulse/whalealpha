@@ -84,7 +84,7 @@ async def _build_wallet_text(user_id: int) -> str:
         return (
             "\U0001F4BC <b>Auto-Trade Wallet</b>\n\n"
             "You don't have an active Real Wallet yet. Set one up with "
-            "/wallet first, then come back here to configure Auto-Trade."
+            "/realwallet first, then come back here to configure Auto-Trade."
         )
 
     policy = await policy_service.get_or_create_policy(user_id)
@@ -167,7 +167,7 @@ async def _build_wallet_text(user_id: int) -> str:
 
     lines.append("")
     lines.append(
-        "Use the buttons below to manage Auto-Trade, or /wallet to manage your wallet."
+        "Use the buttons below to manage Auto-Trade, or /realwallet to manage your wallet."
     )
 
     return "\n".join(lines)
