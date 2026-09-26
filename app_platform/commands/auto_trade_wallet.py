@@ -81,9 +81,8 @@ def _status_line(policy) -> str:
 async def _build_wallet_text(user_id: int) -> str:
     wallet = await get_real_wallet(user_id)
     if not wallet:
-        # (deploy-trigger nudge #2: first nudge commit c098230 also didn't
-        # trigger Railway's auto-deploy; retrying with a fresh push event.
-        # No functional change from this comment.)
+        # (GitHub connection reconnected in Railway dashboard 2026-09-26;
+        # this push should now be received and deploy everything queued.)
         return (
             "\U0001F4BC <b>Auto-Trade Wallet</b>\n\n"
             "You don't have an active Real Wallet yet. Set one up with "
