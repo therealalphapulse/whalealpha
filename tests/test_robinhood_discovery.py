@@ -481,3 +481,66 @@ async def test_robinhood_discovery_rejects_unverified_wash_trading_data():
     assert stats["signals_sent"] == 0
     assert stats["tokens_rejected"] == 1
     mock_send.assert_not_awaited()
+
+
+
+# ---------------------------------------------------------------------
+# Auto-Trade visibility: SignalToken.alert_delivered must be set
+# ---------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_first_alert_marks_signal_alert_delivered_for_auto_trade():
+    """Critical regression test: domain/trading/auto_trade/signal_adapter.py's
+    get_recent_qualifying_signals() only reads SignalToken rows with
+    alert_delivered == True (defaults to False at the DB level and is
+    never set by create_signal_from_candidate() itself -- see
+    signal_tracker.py). Without robinhood_discovery.py explicitly calling
+    mark_signal_alert_delivered() after a successful first alert, every
+    Robinhood-sourced signal was permanently invisible to Auto-Trade even
+    though the Telegram alert itself sent fine -- turning Auto-Trade on
+    produced neither a buy nor an insufficient-funds message, because
+    scan_and_authorize() never had a single qualifying signal to
+    evaluate. This test fails if that call is ever removed."""
+    candidate_entry = {"contract": "RH_AUTOTRADE", "source": "dexscreener_new", "prefetched_data": HEALTHY_DATA}
+    fake_card = {"contract": "RH_AUTOTRADE", "data": HEALTHY_DATA, "pump": {"final_score": 70.0}}
+    session = _FakeSession(existing_signal=None)
+    bot = AsyncMock()
+
+    with patch("domain.signals.robinhood_discovery.discover_candidates", new=AsyncMock(return_value=[candidate_entry])), \
+         patch("domain.signals.robinhood_discovery.async_session", return_value=session), \
+         patch("domain.signals.robinhood_discovery.build_validated_candidate", new=AsyncMock(return_value=(fake_card, []))), \
+         patch("domain.signals.robinhood_discovery.load_channel_ids", return_value=[999]), \
+         patch("domain.signals.robinhood_discovery.send_pump_card", new=AsyncMock()), \
+         patch("domain.signals.robinhood_discovery.create_signal_from_candidate", new=AsyncMock(return_value=True)), \
+         patch("domain.signals.robinhood_discovery.update_signal_message_ids", new=AsyncMock()), \
+         patch("domain.signals.robinhood_discovery.mark_signal_alert_delivered", new=AsyncMock()) as mock_mark_delivered:
+        stats = await run_robinhood_discovery_cycle(bot)
+
+    assert stats["signals_sent"] == 1
+    mock_mark_delivered.assert_awaited_once_with("RH_AUTOTRADE")
+
+
+@pytest.mark.asyncio
+async def test_mark_signal_alert_delivered_failure_does_not_break_cycle():
+    """mark_signal_alert_delivered() failing must be non-fatal -- the
+    discovery cycle and the RobinhoodDiscoverySignal row it already
+    committed must not be affected by a failure in this best-effort
+    Auto-Trade-visibility step."""
+    candidate_entry = {"contract": "RH_MARKFAIL", "source": "dexscreener_new", "prefetched_data": HEALTHY_DATA}
+    fake_card = {"contract": "RH_MARKFAIL", "data": HEALTHY_DATA, "pump": {"final_score": 70.0}}
+    session = _FakeSession(existing_signal=None)
+    bot = AsyncMock()
+
+    with patch("domain.signals.robinhood_discovery.discover_candidates", new=AsyncMock(return_value=[candidate_entry])), \
+         patch("domain.signals.robinhood_discovery.async_session", return_value=session), \
+         patch("domain.signals.robinhood_discovery.build_validated_candidate", new=AsyncMock(return_value=(fake_card, []))), \
+         patch("domain.signals.robinhood_discovery.load_channel_ids", return_value=[999]), \
+         patch("domain.signals.robinhood_discovery.send_pump_card", new=AsyncMock()), \
+         patch("domain.signals.robinhood_discovery.create_signal_from_candidate", new=AsyncMock(return_value=True)), \
+         patch("domain.signals.robinhood_discovery.update_signal_message_ids", new=AsyncMock()), \
+         patch("domain.signals.robinhood_discovery.mark_signal_alert_delivered", new=AsyncMock(side_effect=RuntimeError("db down"))):
+        stats = await run_robinhood_discovery_cycle(bot)  # must not raise
+
+    assert stats["signals_sent"] == 1
+    assert stats["tokens_promoted"] == 1
+    assert session.committed is True

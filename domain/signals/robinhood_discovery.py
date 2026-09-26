@@ -98,7 +98,7 @@ from providers.marketdata.dexscreener import (
 from domain.signals.candidate_validation import build_validated_candidate
 from domain.signals.pump_radar import send_pump_card, get_pump_subscribers
 from domain.signals.channel_config import load_channel_ids
-from domain.signals.signal_tracker import create_signal_from_candidate, update_signal_message_ids
+from domain.signals.signal_tracker import create_signal_from_candidate, update_signal_message_ids, mark_signal_alert_delivered
 
 logger = logging.getLogger("WhaleAlpha.RobinhoodDiscovery")
 
@@ -792,6 +792,25 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                     )
                     if created and msg_ids:
                         await update_signal_message_ids(contract, msg_ids)
+                        # Auto-Trade (domain/trading/auto_trade/signal_adapter.py)
+                        # only reads SignalToken rows with alert_delivered == True
+                        # -- the same "was this alert genuinely sent" gate
+                        # pump_radar.py's classic path already enforces before its
+                        # own auto-buy. create_signal_from_candidate() never sets
+                        # this flag itself (see signal_tracker.py; it defaults to
+                        # FALSE at the DB level), so without this call every
+                        # Robinhood-sourced signal's bridged SignalToken row stayed
+                        # permanently alert_delivered=False -- invisible to
+                        # Auto-Trade forever, even though the Telegram alert itself
+                        # sent successfully and the user saw it. This is why
+                        # turning Auto-Trade on produced neither a buy nor an
+                        # insufficient-funds message: scan_and_authorize() never
+                        # had a single qualifying signal to evaluate in the first
+                        # place.
+                        try:
+                            await mark_signal_alert_delivered(contract)
+                        except Exception as e:
+                            logger.error(f"Robinhood discovery: mark_signal_alert_delivered failed (non-fatal): {e}")
                 except Exception as e:
                     logger.error(f"Robinhood discovery: SignalToken creation failed for {contract}: {e}")
 
