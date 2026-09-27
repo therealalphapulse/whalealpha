@@ -50,6 +50,8 @@ from infra.observability.error_tracking import configure_error_tracking
 from infra.db.session import close_db
 from domain.signals.keyboard_provider import set_keyboard_factory
 from domain.trading.real.robinhood_wallet import migrate_real_wallet_schema
+from domain.trading.auto_trade.policy_service import migrate_auto_trade_schema
+from domain.trading.auto_trade.claims import migrate_auto_trade_claims_schema
 
 # Importing workers.signal_trading_worker (rather than re-implementing
 # its contents) triggers its module-level holder-state / discovery
@@ -83,6 +85,18 @@ async def main() -> None:
         await migrate_real_wallet_schema()
     except Exception as e:
         logger.error(f"RealWallet schema migration failed at worker startup: {e}")
+
+    # Auto-Trade Engine schema (paused_until/paused_reason, claim
+    # retry_count/last_reason) -- this worker is the process that
+    # actually reads/writes those columns (orchestrator.py), so it
+    # migrates them itself at startup too, same as RealWallet above,
+    # rather than relying solely on the bot gateway's own boot sequence
+    # having already run first.
+    try:
+        await migrate_auto_trade_schema()
+        await migrate_auto_trade_claims_schema()
+    except Exception as e:
+        logger.error(f"Auto-Trade schema migration failed at worker startup: {e}")
 
     logger.info("Trading worker starting (trade execution / position management only)...")
 

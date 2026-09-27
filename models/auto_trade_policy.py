@@ -85,6 +85,18 @@ class AutoTradePolicy(Base):
     daily_trade_count = Column(Integer, nullable=False, default=0)
     daily_trade_count_date = Column(String, nullable=True)
 
+    # Wallet-level circuit breaker (distinct from kill_switch, which is
+    # a manual, indefinite user toggle): set when a deterministic,
+    # account-level condition blocks every trade regardless of which
+    # signal triggers it (currently: insufficient balance / no
+    # wallet). While paused_until is in the future, scan_and_authorize
+    # skips this user entirely -- no risk-gate calls, no repeat
+    # rejection notifications -- until it expires or a manual
+    # /autotrade resume clears it. See
+    # domain/trading/auto_trade/constants.py:INSUFFICIENT_BALANCE_PAUSE_MINUTES.
+    paused_until = Column(DateTime, nullable=True)
+    paused_reason = Column(String, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
