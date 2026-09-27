@@ -361,6 +361,11 @@ async def build_daily_eod_report(target_date=None) -> str | None:
     Last 15 Alerts system) already uses: pct = (ath_multiple - 1) * 100,
     performing when pct >= 0, non-performing otherwise.
 
+    Also reports Total % Gained (the sum of every alert's individual pct
+    for the day -- the same per-signal pct this function already
+    classifies performing/non-performing with, just totaled instead of
+    counted) and Win Rate (performing / total alerts, as a %).
+
     Counts only signals whose Signal Alert was actually confirmed
     delivered (alert_delivered=True) -- the same "was this alert
     genuinely sent" definition mark_signal_alert_delivered() /
@@ -390,24 +395,30 @@ async def build_daily_eod_report(target_date=None) -> str | None:
     text_msg = f"\U0001F319 <b>End-of-Day Report \u2014 {day.isoformat()}</b>\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
 
     if total == 0:
-        text_msg += "No alerts were sent today.\n\n\u26A1 Powered by AlphaPulse"
+        text_msg += "No alerts were sent today.\n\n\u26A1 Powered by WhaleAlpha"
         return text_msg
 
     performing = 0
     non_performing = 0
+    total_pct = 0.0
     for s in todays_alerts:
         mult = s.ath_multiple or 1.0
         pct = (mult - 1) * 100
+        total_pct += pct
         if pct >= 0:
             performing += 1
         else:
             non_performing += 1
 
+    win_rate = (performing / total) * 100
+    total_pct_sign = "+" if total_pct >= 0 else ""
     text_msg += (
         f"\U0001F4EC Total Alerts Sent: {total}\n"
         f"\U0001F7E2 Performing: {performing}\n"
         f"\U0001F534 Non-Performing: {non_performing}\n\n"
-        "\u26A1 Powered by AlphaPulse"
+        f"\U0001F4CA Total % Gained: {total_pct_sign}{total_pct:.0f}%\n"
+        f"\U0001F3AF Win Rate: {win_rate:.0f}%\n\n"
+        "\u26A1 Powered by WhaleAlpha"
     )
     return text_msg
 
