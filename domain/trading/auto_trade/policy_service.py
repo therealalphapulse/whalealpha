@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 
@@ -27,6 +27,7 @@ from .constants import (
     DEFAULT_DAILY_TRADE_LIMIT,
     DEFAULT_MAX_OPEN_POSITIONS,
     DEFAULT_COOLDOWN_SECONDS,
+    INSUFFICIENT_BALANCE_PAUSE_MINUTES,
 )
 
 logger = logging.getLogger("AlphaPulse.AutoTrade.Policy")
@@ -197,6 +198,51 @@ async def set_trailing_for_all_open_positions(
     return updated
 
 
+def is_paused(policy: AutoTradePolicy) -> bool:
+    """True while a wallet-level circuit breaker (see
+    AutoTradePolicy.paused_until) is still in effect."""
+    if policy.paused_until is None:
+        return False
+    paused_until = policy.paused_until
+    now = datetime.now(timezone.utc)
+    if paused_until.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return now < paused_until
+
+
+async def pause_auto_trade(user_id: int, reason: str, minutes: int = INSUFFICIENT_BALANCE_PAUSE_MINUTES) -> None:
+    """Engage the wallet-level circuit breaker: stop evaluating new
+    signals for this user for `minutes`, so a deterministic condition
+    (e.g. insufficient balance) doesn't produce a fresh rejection
+    notification for every new qualifying signal that shows up while
+    it's still true. Distinct from kill_switch (manual, indefinite) --
+    this clears itself automatically."""
+    until = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=minutes)
+    async with async_session() as session:
+        result = await session.execute(select(AutoTradePolicy).where(AutoTradePolicy.user_id == user_id))
+        policy = result.scalar_one_or_none()
+        if policy is None:
+            return
+        policy.paused_until = until
+        policy.paused_reason = reason
+        await session.commit()
+    logger.info("[AutoTrade] paused user=%s for %sm reason=%s", user_id, minutes, reason)
+
+
+async def clear_pause(user_id: int) -> None:
+    """Manually lift the wallet-level circuit breaker (e.g. a
+    /autotrade resume command, or once a fresh balance check
+    succeeds)."""
+    async with async_session() as session:
+        result = await session.execute(select(AutoTradePolicy).where(AutoTradePolicy.user_id == user_id))
+        policy = result.scalar_one_or_none()
+        if policy is None:
+            return
+        policy.paused_until = None
+        policy.paused_reason = None
+        await session.commit()
+
+
 def signal_is_after_activation(signal_detected_at, policy: AutoTradePolicy) -> bool:
     activation_at = policy.auto_trade_enabled_at
     if activation_at is None or signal_detected_at is None:
@@ -276,7 +322,7 @@ async def release_exposure(user_id: int, amount_usdt: float) -> None:
 async def migrate_auto_trade_schema() -> None:
     """Idempotent production migration for the Auto-Trade Engine's policy table.
 
-    This app's live boot path (Bible \u00a77/\u00a78) does not run Alembic --
+    This app's live boot path (Bible §7/§8) does not run Alembic --
     schema changes for tables introduced after the Alembic baseline are
     applied here on every boot, the same way as every other
     migrate_*_schema() function (see domain/trading/real/solana_wallet.py,
@@ -326,6 +372,9 @@ async def migrate_auto_trade_schema() -> None:
         # domain/trading/auto_trade/exit_engine.py.
         "ALTER TABLE auto_trade_policies ADD COLUMN IF NOT EXISTS trailing_activation_pct FLOAT",
         "ALTER TABLE auto_trade_policies ADD COLUMN IF NOT EXISTS trailing_retracement_pct FLOAT",
+        # Wallet-level circuit breaker (see AutoTradePolicy.paused_until).
+        "ALTER TABLE auto_trade_policies ADD COLUMN IF NOT EXISTS paused_until TIMESTAMP",
+        "ALTER TABLE auto_trade_policies ADD COLUMN IF NOT EXISTS paused_reason VARCHAR",
     ]
     try:
         async with engine.begin() as conn:

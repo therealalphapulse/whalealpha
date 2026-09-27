@@ -10,6 +10,23 @@ real_automation_engine._execute_auto_buy: the idempotency claim is
 reserved FIRST (cheapest, and the only thing that stops two concurrent
 evaluations of the same signal from both proceeding), then the daily
 trade-slot count, then exposure, and only then the actual swap.
+
+Failure handling (see claims.py's module docstring for the full
+retry/pause policy this implements):
+  - A deterministic rejection (daily limit, exposure cap, insufficient
+    balance, no wallet, a definitively-failed buy) marks the claim
+    "skipped" -- this exact signal_id is never retried, so it can
+    never spam a repeat notification.
+  - Insufficient balance / no wallet additionally engage a wallet-level
+    pause (policy_service.pause_auto_trade) so a *different* signal
+    arriving minutes later doesn't just trigger its own fresh
+    rejection -- the whole wallet is skipped until the pause clears.
+  - A transient/technical failure (EXECUTION_UNAVAILABLE, or a buy
+    that failed for a reason that looks like an RPC/on-chain blip) is
+    retried up to MAX_CLAIM_RETRY_ATTEMPTS times with real backoff
+    between attempts, and the user is only notified once -- either on
+    the eventual success, or once retries are exhausted -- never once
+    per attempt.
 """
 
 from __future__ import annotations
@@ -26,9 +43,25 @@ from models.auto_trade_execution import AutoTradeExecution
 from models.real_wallet import RealWallet
 
 from . import claims, execution, policy_service, risk_gate
+from .constants import MAX_CLAIM_RETRY_ATTEMPTS, RETRYABLE_REJECTION_REASONS, RejectionReason
 from .signal_adapter import AutoTradeSignal, get_recent_qualifying_signals
 
 logger = logging.getLogger("AlphaPulse.AutoTrade.Orchestrator")
+
+# Reasons handed back by execution.execute_buy_swap (free-form strings,
+# not RejectionReason codes -- see that module's "ok"/"uncertain"/
+# "reason" contract) that reflect a permanent misconfiguration rather
+# than a technical blip. Retrying these a few seconds later can't help,
+# so they're excluded from the default "retryable" treatment every
+# other definitive buy failure gets (on-chain rejections, quote
+# errors, unexpected exceptions -- all technical, all worth a bounded
+# retry, which is what a professional execution engine does instead of
+# either hot-looping or giving up on the first blip).
+_NON_RETRYABLE_BUY_FAILURES = ("No active wallet.", "Amount must be greater than 0 ETH.")
+
+
+def _is_retryable_buy_failure(reason: str | None) -> bool:
+    return reason not in _NON_RETRYABLE_BUY_FAILURES
 
 
 async def _get_auto_trade_enabled_wallets() -> list[RealWallet]:
@@ -86,11 +119,11 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
 
     claim = await claims.try_claim(user_id, signal.signal_id, signal.contract)
     if claim is None:
-        return  # already claimed/in-flight/committed -- no duplicate trade (§9)
+        return  # already claimed/in-flight/committed/skipped/backed-off -- no duplicate trade or notification (§9)
 
     buy_slot = await policy_service.register_daily_trade(user_id, policy.daily_trade_limit)
     if not buy_slot["ok"]:
-        await claims.release_claim(claim.id)
+        await claims.finalize_claim(claim.id, retryable=False, reason=buy_slot["reason"])
         logger.info("[AutoTrade] daily limit reached user=%s: %s", user_id, buy_slot["reason"])
         return
 
@@ -107,7 +140,7 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
     exposure_check = await policy_service.register_exposure(user_id, sol_amount, policy.max_total_exposure_usdt)
     if not exposure_check["ok"]:
         await policy_service.release_daily_trade(user_id)
-        await claims.release_claim(claim.id)
+        await claims.finalize_claim(claim.id, retryable=False, reason=exposure_check["reason"])
         logger.info("[AutoTrade] exposure cap reached user=%s: %s", user_id, exposure_check["reason"])
         return
 
@@ -115,9 +148,38 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
     if not risk:
         await policy_service.release_exposure(user_id, sol_amount)
         await policy_service.release_daily_trade(user_id)
-        await claims.release_claim(claim.id)
-        logger.info("[AutoTrade] execution risk gate failed user=%s: %s", user_id, risk.reason)
-        await _notify(bot, user_id, f"⚠️ <b>Auto-Trade Rejected</b>\nToken: {signal.symbol}\nReason: {risk.reason}")
+        retryable = risk.reason in RETRYABLE_REJECTION_REASONS
+        outcome = await claims.finalize_claim(claim.id, retryable=retryable, reason=risk.reason)
+        logger.info("[AutoTrade] execution risk gate failed user=%s reason=%s outcome=%s", user_id, risk.reason, outcome)
+
+        if outcome == "retry_scheduled":
+            # Transient (e.g. a balance-check RPC call failing) -- retried
+            # automatically with backoff, no notification for this attempt.
+            return
+
+        if risk.reason in (RejectionReason.INSUFFICIENT_BALANCE, RejectionReason.NO_WALLET):
+            # Deterministic, account-level: won't resolve itself in the next
+            # few minutes, and a different signal for a different token
+            # would hit the exact same wall -- pause the whole wallet so it
+            # only has to be reported once, not once per signal.
+            await policy_service.pause_auto_trade(user_id, reason=risk.reason)
+            human_reason = "Insufficient wallet balance" if risk.reason == RejectionReason.INSUFFICIENT_BALANCE else "No active wallet"
+            await _notify(
+                bot, user_id,
+                f"⏸ <b>Auto-Trade Paused</b>\n"
+                f"Token: {signal.symbol}\n"
+                f"Reason: {human_reason}\n\n"
+                f"Auto-buy attempts are paused for this wallet — fund it (or connect one) and it'll resume "
+                f"automatically on the next check.",
+            )
+        elif outcome == "gave_up":
+            await _notify(
+                bot, user_id,
+                f"⚠️ <b>Auto-Trade Rejected</b>\nToken: {signal.symbol}\nReason: {risk.reason}\n"
+                f"Gave up after {MAX_CLAIM_RETRY_ATTEMPTS} attempts — this signal won't be retried again.",
+            )
+        else:
+            await _notify(bot, user_id, f"⚠️ <b>Auto-Trade Rejected</b>\nToken: {signal.symbol}\nReason: {risk.reason}")
         return
 
     snapshot = policy_service.snapshot_policy(policy)
@@ -150,12 +212,28 @@ async def try_auto_trade(bot, user_id: int, policy: AutoTradePolicy, signal: Aut
         await policy_service.release_exposure(user_id, sol_amount)
         await policy_service.release_daily_trade(user_id)
         if result.get("uncertain"):
+            # Genuinely unknown outcome (e.g. submitted but confirmation
+            # timed out) -- leave the claim "pending" for reconciliation.py
+            # to resolve once the real on-chain outcome is known; retrying
+            # a fresh buy here would risk a double-spend.
             await session_set_position_state(position.id, AutoTradeState.BUY_RECONCILING, last_error=result["reason"])
             logger.warning("[AutoTrade] buy outcome uncertain user=%s contract=%s: %s", user_id, signal.contract, result["reason"])
+            return
+
+        retryable = _is_retryable_buy_failure(result["reason"])
+        outcome = await claims.finalize_claim(claim.id, retryable=retryable, reason=result["reason"])
+        await session_set_position_state(position.id, AutoTradeState.BUY_FAILED, last_error=result["reason"], closed_at=_now())
+        logger.warning("[AutoTrade] buy failed user=%s contract=%s outcome=%s: %s", user_id, signal.contract, outcome, result["reason"])
+
+        if outcome == "retry_scheduled":
+            return  # technical failure, retried automatically with backoff -- no notification yet
+        if outcome == "gave_up":
+            await _notify(
+                bot, user_id,
+                f"⚠️ <b>Auto-Trade Buy Failed</b>\nToken: {signal.symbol}\nReason: {result['reason']}\n"
+                f"Gave up after {MAX_CLAIM_RETRY_ATTEMPTS} attempts — this signal won't be retried again.",
+            )
         else:
-            await claims.release_claim(claim.id)
-            await session_set_position_state(position.id, AutoTradeState.BUY_FAILED, last_error=result["reason"], closed_at=_now())
-            logger.warning("[AutoTrade] buy failed user=%s contract=%s: %s", user_id, signal.contract, result["reason"])
             await _notify(bot, user_id, f"⚠️ <b>Auto-Trade Buy Failed</b>\nToken: {signal.symbol}\nReason: {result['reason']}")
         return
 
@@ -217,6 +295,12 @@ async def scan_and_authorize(bot=None) -> int:
 
     evaluated = 0
     for wallet, policy in wallets_and_policies:
+        if policy_service.is_paused(policy):
+            # Wallet-level circuit breaker engaged (e.g. insufficient
+            # balance) -- skip every signal for this user without a
+            # single risk-gate call or notification until it clears.
+            logger.debug("[AutoTrade] skipping paused user=%s reason=%s until=%s", wallet.user_id, policy.paused_reason, policy.paused_until)
+            continue
         for signal in signals:
             evaluated += 1
             try:

@@ -47,7 +47,10 @@ async def reconcile_position(position: AutoTradePosition) -> None:
         if not position.buy_tx_signature:
             await position_manager.set_state(position.id, AutoTradeState.BUY_FAILED, closed_at=_now())
             if position.claim_id:
-                await claims.release_claim(position.claim_id)
+                # Left mid-flight by a crash/restart, not a deterministic
+                # rejection -- eligible for the normal bounded, backed-off
+                # retry (see claims.py), same as any other technical failure.
+                await claims.finalize_claim(position.claim_id, retryable=True, reason="reconciled: no buy tx signature recorded")
             return
         try:
             fill = await get_confirmed_transaction_deltas(position.buy_tx_signature, wallet.public_key, position.contract)
@@ -70,7 +73,7 @@ async def reconcile_position(position: AutoTradePosition) -> None:
         else:
             await position_manager.set_state(position.id, AutoTradeState.BUY_FAILED, closed_at=_now())
             if position.claim_id:
-                await claims.release_claim(position.claim_id)
+                await claims.finalize_claim(position.claim_id, retryable=True, reason="reconciled: no token delta on-chain")
             logger.info("[AutoTrade] buy reconciled as FAILURE pos=%s", position.id)
 
     elif position.state == AutoTradeState.SELL_RECONCILING:
@@ -92,23 +95,26 @@ async def sweep_orphaned_claims() -> int:
 
     A claim is reserved (claims.try_claim) *before* its AutoTradePosition
     row is created (see orchestrator.try_auto_trade) -- every early-return
-    path in between already calls claims.release_claim() to flip the
-    claim back to "failed" so it can be retried on the signal's next
-    evaluation. The only way a claim is left "pending" forever with no
-    AutoTradePosition at all is a hard process crash inside that narrow
-    window (not a caught exception -- those already release the claim).
+    path in between already calls claims.finalize_claim() to resolve the
+    claim (either a bounded, backed-off retry or a permanent "skipped",
+    depending on the failure -- see claims.py's module docstring). The
+    only way a claim is left "pending" forever with no AutoTradePosition
+    at all is a hard process crash inside that narrow window (not a
+    caught exception -- those already resolve the claim).
 
-    A claim like that can never resolve itself: claims.try_claim's own
-    grace-period retry only reopens a claim once its status is "failed"
-    (see _claim_insert_or_reopen's `where=(AutoTradeClaim.status ==
-    "failed")`), and nothing else ever sets a "pending" claim to "failed"
-    except claims.release_claim() -- which nothing is left to call once
-    the process that would have called it is gone. Sweep those here, the
+    A claim like that can never resolve itself: claims.try_claim only
+    reopens a "pending" claim once it's older than
+    CLAIM_RECONCILE_GRACE_SECONDS (stuck-claim recovery), and nothing
+    else ever moves a "pending" claim out of that state except
+    claims.finalize_claim() -- which nothing is left to call once the
+    process that would have called it is gone. Sweep those here, the
     same way reconcile_position() above resolves positions left
     mid-flight: any claim still "pending" past the grace period with no
     matching position is definitively abandoned -- if anything were
     still executing it, it would already have created that position row
-    -- so it's safe to flip to "failed" and let it be retried normally.
+    -- so it's safe to flip to "failed" (a technical/crash situation,
+    not a deterministic rejection) and let claims.try_claim's normal
+    backed-off retry pick it up again.
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=CLAIM_RECONCILE_GRACE_SECONDS)
     swept = 0
@@ -125,6 +131,7 @@ async def sweep_orphaned_claims() -> int:
         orphaned = result.scalars().all()
         for claim in orphaned:
             claim.status = "failed"
+            claim.last_reason = "orphaned: worker crashed before position could be created"
             swept += 1
         if swept:
             await session.commit()
