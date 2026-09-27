@@ -810,8 +810,8 @@ async def run_robinhood_discovery_cycle(bot=None) -> dict:
                         try:
                             await mark_signal_alert_delivered(contract)
                         except Exception as e:
-                            # (deploy-trigger nudge: PR #35's webhook to Railway
-                            # didn't fire; this comment forces a fresh push.)
+                            # (GitHub<->Railway connection reconnected again on
+                            # 2026-09-26; this push should now deploy PR #35.)
                             logger.error(f"Robinhood discovery: mark_signal_alert_delivered failed (non-fatal): {e}")
                 except Exception as e:
                     logger.error(f"Robinhood discovery: SignalToken creation failed for {contract}: {e}")
