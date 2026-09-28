@@ -407,6 +407,8 @@ async def build_daily_eod_report(target_date=None) -> str | None:
         f"\U0001F4EC Total Alerts Sent: {total}\n"
         f"\U0001F7E2 Performing: {performing}\n"
         f"\U0001F534 Non-Performing: {non_performing}\n\n"
+        f"\U0001F4CA Total % Gained: {total_pct_sign}{total_pct:.0f}%\n"
+        f"\U0001F3AF Win Rate: {win_rate:.0f}%\n\n"
         "\u26A1 Powered by WhaleAlpha"
     )
     return text_msg
