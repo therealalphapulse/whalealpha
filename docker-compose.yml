@@ -101,7 +101,7 @@ services:
     command: python -m workers.trading_worker
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://alphapulse:${POSTGRES_PASSWORD:-alphapulse_dev_only}@db:5432/alphapulse
+      DATABASE_URL: postgresql://whalealpha:${POSTGRES_PASSWORD:-whalealpha_dev_only}@db:5432/whalealpha
       REDIS_URL: redis://redis:6379/0
       LOG_FORMAT: json
     ports:

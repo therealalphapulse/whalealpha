@@ -56,7 +56,7 @@ from domain.signals.keyboard_provider import set_keyboard_factory
 # why those installs are explicit rather than import-hook-timed.
 import workers.signal_trading_worker as signal_trading_worker
 
-logger = logging.getLogger("AlphaPulse.Worker.Signal")
+logger = logging.getLogger("WhaleAlpha.Worker.Signal")
 
 
 async def main() -> None:

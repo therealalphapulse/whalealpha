@@ -65,7 +65,7 @@ from domain.trading.auto_trade.claims import migrate_auto_trade_claims_schema
 # rather than import-hook-timed.
 import workers.signal_trading_worker as signal_trading_worker
 
-logger = logging.getLogger("AlphaPulse.Worker.Trading")
+logger = logging.getLogger("WhaleAlpha.Worker.Trading")
 
 
 async def main() -> None:
