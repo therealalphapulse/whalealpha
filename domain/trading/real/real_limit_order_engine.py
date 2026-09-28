@@ -27,7 +27,7 @@ from providers.marketdata.dexscreener import get_token_card_info
 from domain.trading.real.robinhood_wallet import get_wallet_settings, register_auto_spend, release_auto_spend
 from domain.trading.real import real_trade_engine
 
-logger = logging.getLogger("AlphaPulse.RealLimitOrderEngine")
+logger = logging.getLogger("WhaleAlpha.RealLimitOrderEngine")
 
 VALID_DIRECTIONS = {"buy_below", "buy_above"}
 MAX_OPEN_ORDERS_PER_USER = 20

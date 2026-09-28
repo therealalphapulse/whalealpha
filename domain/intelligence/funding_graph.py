@@ -9,7 +9,7 @@ except ImportError:
 
 from providers.rpc.helius_request_manager import helius_manager, PRIORITY_LOW
 
-logger = logging.getLogger("AlphaPulse.FundingGraph")
+logger = logging.getLogger("WhaleAlpha.FundingGraph")
 
 # Cost/latency controls. Tracing every holder on every candidate would be
 # far too slow/expensive for a live scanner, so this only ever runs on

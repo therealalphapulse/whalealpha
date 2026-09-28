@@ -19,7 +19,7 @@ from app_platform.commands.score import calculate_alpha_score
 from app_platform.keyboards.token_actions import token_actions_keyboard
 
 router = Router()
-logger = logging.getLogger("AlphaPulse.AutoScan")
+logger = logging.getLogger("WhaleAlpha.AutoScan")
 
 SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
@@ -145,7 +145,7 @@ def _format_x(value) -> str:
 
 def build_previous_signal_banner(signal, requester_chat_id: int) -> tuple[str, int | None]:
     """
-    Builds the "AlphaPulse already called this" banner for a token a
+    Builds the "WhaleAlpha already called this" banner for a token a
     user pasted independently, and figures out whether we can quote the
     original alert (Telegram reply preview) for THIS specific chat.
 
@@ -173,7 +173,7 @@ def build_previous_signal_banner(signal, requester_chat_id: int) -> tuple[str, i
     pct_sign = "+" if pct_gain >= 0 else ""
 
     lines = [
-        "📡 <b>Already Called by AlphaPulse!</b>",
+        "📡 <b>Already Called by WhaleAlpha!</b>",
         "━━━━━━━━━━━━━━━━━━━━━",
         f"💊 <b>{esc(signal.name or 'Unknown')}</b> · <b>${esc(signal.symbol or '???')}</b>",
         f"🕒 First called: <b>{_signaled_at_ago(signal.signaled_at)}</b>",
@@ -184,11 +184,11 @@ def build_previous_signal_banner(signal, requester_chat_id: int) -> tuple[str, i
     ]
 
     if reply_to:
-        lines.append("⬆️ Tap the quoted message above to jump to AlphaPulse's original alert.")
+        lines.append("⬆️ Tap the quoted message above to jump to WhaleAlpha's original alert.")
     else:
         lines.append(
             "<i>The original alert wasn't sent to this chat, so it can't be quoted "
-            "directly here — but the stats above are from AlphaPulse's own tracked signal.</i>"
+            "directly here — but the stats above are from WhaleAlpha's own tracked signal.</i>"
         )
 
     return "\n".join(lines), reply_to
@@ -318,7 +318,7 @@ def format_auto_scan_report(
         f"🔗 Links: {build_social_links(data)}\n\n"
         f"<code>{contract}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ Powered by AlphaPulse"
+        f"⚡ Powered by WhaleAlpha"
     )
 
     return text
@@ -329,7 +329,7 @@ async def send_auto_scan_report(message: Message, contract: str):
     Main automatic address scanner.
 
     Flow:
-    0. If AlphaPulse already called this contract before, send a
+    0. If WhaleAlpha already called this contract before, send a
        "previously called" banner first (quoting the original alert in
        this chat if possible) — purely additive, does not change
        anything below.
@@ -394,7 +394,7 @@ async def send_auto_scan_report(message: Message, contract: str):
 
             await message.answer(
                 "⚠️ <b>Address Detected, But No DEX Pair Found</b>\n\n"
-                "AlphaPulse detected a Solana address, but could not find an active "
+                "WhaleAlpha detected a Solana address, but could not find an active "
                 "DexScreener pair or resolve the address type right now.\n\n"
                 "Possible reasons:\n"
                 "• Token is too new\n"
@@ -458,7 +458,7 @@ async def auto_detect_contract(message: Message):
     if not is_probable_solana_address(contract):
         return
 
-    await message.answer("🔎 AlphaPulse scanning address...")
+    await message.answer("🔎 WhaleAlpha scanning address...")
     await send_auto_scan_report(message, contract)
 
 
@@ -525,7 +525,7 @@ async def handle_autoscan_buttons(callback: CallbackQuery):
             note = "\n⚠️ <i>Security data unavailable. Score may be incomplete.</i>\n"
 
         text = (
-            f"🧠 <b>AlphaPulse Score</b>\n"
+            f"🧠 <b>WhaleAlpha Score</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📛 <b>{esc(token_data['name'])}</b> ({esc(token_data['symbol'])})\n\n"
             f"🏆 Score: <b>{result['total']}/100</b>\n"

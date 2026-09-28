@@ -5,7 +5,7 @@ from config.settings import HELIUS_API_KEY, MULTI_RPC_METADATA_CACHE_TTL_SECONDS
 from providers.rpc.helius_request_manager import helius_manager, PRIORITY_NORMAL
 from providers.marketdata.dexscreener import get_token_card_info
 
-logger = logging.getLogger("AlphaPulse.SolanaResolver")
+logger = logging.getLogger("WhaleAlpha.SolanaResolver")
 
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
@@ -41,7 +41,7 @@ def _rpc_url() -> str:
 async def _rpc_call(method: str, params, priority: int = PRIORITY_NORMAL, cache_ttl: float = 30.0):
     payload = {
         "jsonrpc": "2.0",
-        "id": "alphapulse-resolver",
+        "id": "whalealpha-resolver",
         "method": method,
         "params": params,
     }
@@ -281,7 +281,7 @@ def format_resolution_message(address: str, resolved: dict) -> str:
             "👛 <b>Wallet Address Detected</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"💰 SOL Balance: <b>{sol_balance:.4f} SOL</b>\n\n"
-            "AlphaPulse did not find fungible token holdings for this wallet.\n\n"
+            "WhaleAlpha did not find fungible token holdings for this wallet.\n\n"
             "Try:\n"
             f"<code>/activity {address}</code>\n\n"
             f"🔎 <a href=\"{solscan_account}\">View on Solscan</a>\n\n"
@@ -313,7 +313,7 @@ def format_resolution_message(address: str, resolved: dict) -> str:
         return (
             "❓ <b>Unknown Solana Address</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "AlphaPulse could not find an active Solana account or DEX pair for this address.\n\n"
+            "WhaleAlpha could not find an active Solana account or DEX pair for this address.\n\n"
             "Possible reasons:\n"
             "• Invalid address\n"
             "• Account not initialized\n"

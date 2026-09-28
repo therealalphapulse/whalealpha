@@ -48,7 +48,7 @@ def get_associated_token_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
     )
     return ata
 
-logger = logging.getLogger("AlphaPulse.PaymentVerify")
+logger = logging.getLogger("WhaleAlpha.PaymentVerify")
 
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"

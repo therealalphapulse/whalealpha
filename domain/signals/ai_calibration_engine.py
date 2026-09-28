@@ -1,4 +1,4 @@
-"""Shadow-mode AI self-learning calibration foundation for AlphaPulse.
+"""Shadow-mode AI self-learning calibration foundation for WhaleAlpha.
 
 This module is advisory only. It reads existing SignalToken history and
 produces calibration statistics. It MUST NOT change signal filters, scoring,
@@ -19,7 +19,7 @@ from sqlalchemy import select
 from infra.db.session import async_session
 from models.signal_token import SignalToken
 
-logger = logging.getLogger("AlphaPulse.AICalibration")
+logger = logging.getLogger("WhaleAlpha.AICalibration")
 
 TARGETS: tuple[tuple[float, str], ...] = (
     (1.25, "+25%"), (1.50, "+50%"), (2.00, "2X"),

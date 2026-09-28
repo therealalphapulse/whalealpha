@@ -10,7 +10,7 @@ from providers.marketdata.dexscreener import get_token_info
 # — same layering violation as pump_radar.py, same fix.
 from domain.signals.keyboard_provider import build_token_actions_keyboard
 
-logger = logging.getLogger("AlphaPulse.Alerts")
+logger = logging.getLogger("WhaleAlpha.Alerts")
 
 # In-memory cache to avoid spamming users
 # Key: (user_id, contract) -> Value: last_known_price

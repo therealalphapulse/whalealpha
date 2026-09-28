@@ -18,7 +18,7 @@ from domain.payments.payment_methods import get_method
 from domain.payments.premium_service import activate_premium, renew_premium
 from domain.payments import solana_payment_verify
 
-logger = logging.getLogger("AlphaPulse.PremiumPayments")
+logger = logging.getLogger("WhaleAlpha.PremiumPayments")
 
 # A pending request nobody ever pays or submits proof for is auto-marked
 # expired after this long, mostly for the admin queue / /premium history

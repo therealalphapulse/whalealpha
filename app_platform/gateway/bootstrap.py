@@ -48,7 +48,7 @@ from domain.trading.real.robinhood_wallet import migrate_real_wallet_schema
 from domain.trading.auto_trade.policy_service import migrate_auto_trade_schema
 from domain.signals.pump_radar import subscribe_all_users_to_pump_alerts
 
-logger = logging.getLogger("AlphaPulse.Bootstrap")
+logger = logging.getLogger("WhaleAlpha.Bootstrap")
 
 
 async def run_startup_tasks() -> None:

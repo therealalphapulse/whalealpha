@@ -21,7 +21,7 @@ try:
 except ImportError:
     BUNDLE_RISK_SOLANA_TRACKER_ENABLED = True
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 # Classic SPL Token program. Covers the overwhelming majority of Solana
 # memecoins/Pump.fun launches (this bot's actual target population); Token-
@@ -188,7 +188,7 @@ async def _fetch_via_program_accounts_v2(
 
         payload = {
             "jsonrpc": "2.0",
-            "id": "alphapulse-holder-data-v2",
+            "id": "whalealpha-holder-data-v2",
             "method": "getProgramAccountsV2",
             "params": [TOKEN_PROGRAM_ID, params],
         }
@@ -365,7 +365,7 @@ async def _fetch_token_accounts(
 
         payload = {
             "jsonrpc": "2.0",
-            "id": "alphapulse-holder-data",
+            "id": "whalealpha-holder-data",
             "method": "getProgramAccounts",
             "params": [
                 TOKEN_PROGRAM_ID,

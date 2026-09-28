@@ -73,6 +73,6 @@ async def cmd_token(message: Message):
     if data.get("pair_url"):
         text += f"🔗 <a href=\"{data['pair_url']}\">View on DexScreener</a>\n\n"
 
-    text += "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by AlphaPulse"
+    text += "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by WhaleAlpha"
 
     await message.answer(text)

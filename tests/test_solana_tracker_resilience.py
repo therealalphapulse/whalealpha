@@ -1,7 +1,7 @@
 """
 tests/test_solana_tracker_resilience.py
 
-Regression coverage for the AlphaPulse Provider Resilience task
+Regression coverage for the WhaleAlpha Provider Resilience task
 (2026-08-28): providers/marketdata/_resilience.py's opt-in circuit-breaker
 integration, and providers/marketdata/solanatracker.py's two Solana Tracker
 lookups (get_pool_liquidity_usd, get_bundle_risk_pct) actually using it.

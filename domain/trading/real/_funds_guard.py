@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import sys
 
-logger = logging.getLogger("AlphaPulse.RealWallet")
+logger = logging.getLogger("WhaleAlpha.RealWallet")
 
 INSUFFICIENT_FUNDS_PREFIX = "Insufficient funds."
 
@@ -33,7 +33,7 @@ async def _guarded_execute_real_buy(*args, **kwargs):
     if module is None:
         raise RuntimeError("Real trade engine is not loaded")
 
-    original = getattr(module, "_alphapulse_original_execute_real_buy", None)
+    original = getattr(module, "_whalealpha_original_execute_real_buy", None)
     if original is None:
         raise RuntimeError("Original execute_real_buy is unavailable")
 
@@ -45,10 +45,10 @@ def install() -> None:
     module = sys.modules.get("domain.trading.real.real_trade_engine")
     if module is None or not hasattr(module, "execute_real_buy"):
         return
-    if getattr(module.execute_real_buy, "_alphapulse_funds_guard", False):
+    if getattr(module.execute_real_buy, "_whalealpha_funds_guard", False):
         return
 
-    module._alphapulse_original_execute_real_buy = module.execute_real_buy
+    module._whalealpha_original_execute_real_buy = module.execute_real_buy
     module.execute_real_buy = _guarded_execute_real_buy
-    module.execute_real_buy._alphapulse_funds_guard = True
+    module.execute_real_buy._whalealpha_funds_guard = True
     logger.info("[RealWallet] Insufficient-funds preflight installed")

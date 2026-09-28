@@ -2,7 +2,7 @@
 infra/db/migrations/env.py
 
 NEW in v4 (Bible §7 — Database Evolution Strategy). This is the standard
-Alembic env.py, wired to AlphaPulse's existing config: it reads
+Alembic env.py, wired to WhaleAlpha's existing config: it reads
 DATABASE_URL the same way `infra/db/session.py` does (no separate,
 divergent config to keep in sync), and imports every model in `models/`
 so `alembic revision --autogenerate` can diff against the real, complete

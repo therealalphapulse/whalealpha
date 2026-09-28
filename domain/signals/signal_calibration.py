@@ -6,7 +6,7 @@ from sqlalchemy import select
 from infra.db.session import async_session
 from models.signal_token import SignalToken
 
-logger = logging.getLogger("AlphaPulse.SignalCalibration")
+logger = logging.getLogger("WhaleAlpha.SignalCalibration")
 
 BREAKDOWN_COMPONENTS = (
     "liquidity_lp_integrity",

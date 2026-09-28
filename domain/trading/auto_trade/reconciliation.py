@@ -27,7 +27,7 @@ from domain.trading.real.robinhood_wallet import get_real_wallet
 from . import claims, position_manager
 from .constants import CLAIM_RECONCILE_GRACE_SECONDS
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Reconciliation")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Reconciliation")
 
 
 def _now():

@@ -1,6 +1,6 @@
 import logging
 
-logger = logging.getLogger("AlphaPulse.RiskEngine")
+logger = logging.getLogger("WhaleAlpha.RiskEngine")
 
 
 def _to_float(value, default: float = 0.0) -> float:

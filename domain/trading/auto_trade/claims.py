@@ -41,7 +41,7 @@ from models.auto_trade_claim import AutoTradeClaim
 
 from .constants import CLAIM_RECONCILE_GRACE_SECONDS, CLAIM_RETRY_BACKOFF_SECONDS, MAX_CLAIM_RETRY_ATTEMPTS
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Claims")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Claims")
 
 TERMINAL_STATUSES = ("committed", "skipped")
 

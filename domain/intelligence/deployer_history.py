@@ -9,7 +9,7 @@ except ImportError:
 
 from providers.rpc.helius_request_manager import helius_manager, PRIORITY_LOW
 
-logger = logging.getLogger("AlphaPulse.DeployerHistory")
+logger = logging.getLogger("WhaleAlpha.DeployerHistory")
 
 PAGE_SIZE = 100
 MAX_PAGES = 3

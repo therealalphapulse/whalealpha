@@ -46,7 +46,7 @@ from . import claims, execution, policy_service, risk_gate
 from .constants import MAX_CLAIM_RETRY_ATTEMPTS, RETRYABLE_REJECTION_REASONS, RejectionReason
 from .signal_adapter import AutoTradeSignal, get_recent_qualifying_signals
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Orchestrator")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Orchestrator")
 
 # Reasons handed back by execution.execute_buy_swap (free-form strings,
 # not RejectionReason codes -- see that module's "ok"/"uncertain"/

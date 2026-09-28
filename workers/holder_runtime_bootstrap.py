@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 _INSTALLED = False
 

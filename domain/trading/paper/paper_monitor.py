@@ -15,7 +15,7 @@ except ImportError:
     PNL_MASCOT_DIR = None
     PNL_MASCOT_PATH = None
 
-logger = logging.getLogger("AlphaPulse.PaperMonitor")
+logger = logging.getLogger("WhaleAlpha.PaperMonitor")
 
 _VALID_MASCOT_EXT = (".png", ".jpg", ".jpeg", ".webp")
 
@@ -113,7 +113,7 @@ async def send_pnl_card(bot, result: dict, reason_label: str):
         f"📋 Reason: {reason_label}\n\n"
         f"<code>{result.get('contract', '')}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 AlphaPulse Paper Trading"
+        f"📊 WhaleAlpha Paper Trading"
     )
 
     card_data = {

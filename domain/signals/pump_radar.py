@@ -83,7 +83,7 @@ from config.settings import (
 # see domain/signals/keyboard_provider.py for the rationale.
 from domain.signals.keyboard_provider import build_token_actions_keyboard
 
-logger = logging.getLogger("AlphaPulse.PumpRadar")
+logger = logging.getLogger("WhaleAlpha.PumpRadar")
 
 # --------------------------------------------------
 # QUALITY FILTERS (but Pump.fun ONLY)
@@ -185,7 +185,7 @@ MIN_HOLDERS_NEW_WITH_PROFILE = 15
 #      analyze_candidate above) has to independently rate it a genuine
 #      high-confidence setup all over again, with fresh volume/momentum/
 #      security data, exactly as it would for a brand-new contract. That
-#      full re-scoring pass IS the "existing AlphaPulse AI Intelligence"
+#      full re-scoring pass IS the "existing WhaleAlpha AI Intelligence"
 #      decision Blueprint Problem 4B calls for — there is deliberately
 #      no second, separate percentage-based gate here anymore (no fixed
 #      "must have hit +X%" / "must have retraced to <=Y%" thresholds).
@@ -2002,7 +2002,7 @@ async def _signal_rearm_eligible(contract: str) -> bool:
        cutoff, all with fresh volume/momentum/security data — has to
        independently rate it a genuine high-confidence setup all over
        again before any alert can fire. That full re-scoring pass is
-       the "existing AlphaPulse AI Intelligence" decision the spec
+       the "existing WhaleAlpha AI Intelligence" decision the spec
        calls for; this function never substitutes its own scoring for
        it.
     """

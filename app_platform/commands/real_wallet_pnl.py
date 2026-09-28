@@ -12,7 +12,7 @@ from app_platform.domain.trading.real_pnl_image import generate_real_pnl_card
 from providers.marketdata.dexscreener import get_token_card_info
 
 router = Router()
-logger = logging.getLogger("AlphaPulse.RealWalletPnL")
+logger = logging.getLogger("WhaleAlpha.RealWalletPnL")
 
 
 def _to_float(value, default: float = 0.0) -> float:

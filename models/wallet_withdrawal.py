@@ -6,7 +6,7 @@ class WalletWithdrawal(Base):
     """
     Audit log of every Real Wallet withdrawal (SOL or SPL token) sent to
     an external address. Separate from RealTrade since a withdrawal isn't
-    a swap/position — it's funds leaving AlphaPulse entirely.
+    a swap/position — it's funds leaving WhaleAlpha entirely.
 
     Written after broadcast (status starts "broadcast", then updated to
     "confirmed"/"failed"/"timeout" once services.wallet_withdraw polls

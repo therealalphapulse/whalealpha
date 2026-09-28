@@ -51,7 +51,7 @@ from infra.observability.error_tracking import configure_error_tracking
 from infra.db.session import close_db
 from app_platform.gateway.app import build_app, set_bot_commands
 
-logger = logging.getLogger("AlphaPulse.Gateway.Webhook")
+logger = logging.getLogger("WhaleAlpha.Gateway.Webhook")
 
 WEBHOOK_PATH = "/webhook"
 

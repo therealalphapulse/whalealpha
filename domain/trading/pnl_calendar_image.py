@@ -5,7 +5,7 @@ import logging
 
 from PIL import Image, ImageDraw, ImageFont
 
-logger = logging.getLogger("AlphaPulse.PnlCalendarImage")
+logger = logging.getLogger("WhaleAlpha.PnlCalendarImage")
 
 WIDTH = 900
 PAD = 40
@@ -99,8 +99,8 @@ def _draw_calendar(cal: dict, title: str = "Trading Calendar") -> Image.Image:
                             radius=26, fill=CARD_COLOR, outline=CARD_BORDER, width=2)
 
     # Header
-    draw.text((PAD, 40), "AlphaPulse", font=_font(26, bold=True), fill=TEXT_PRIMARY)
-    brand_w = draw.textbbox((0, 0), "AlphaPulse ", font=_font(26, bold=True))[2]
+    draw.text((PAD, 40), "WhaleAlpha", font=_font(26, bold=True), fill=TEXT_PRIMARY)
+    brand_w = draw.textbbox((0, 0), "WhaleAlpha ", font=_font(26, bold=True))[2]
     draw.text((PAD + brand_w, 47), title.upper(), font=_font(13, bold=True), fill=ACCENT)
 
     month_label = f"{cal_module.month_name[month]} {year}"
@@ -157,7 +157,7 @@ def _draw_calendar(cal: dict, title: str = "Trading Calendar") -> Image.Image:
     footer_y = height - 50
     draw.line([(PAD, footer_y), (WIDTH - PAD, footer_y)], fill=CARD_BORDER, width=2)
     draw.text((PAD, footer_y + 16), "Simulated results \u2022 Not financial advice", font=_font(12), fill=TEXT_MUTED)
-    footer_text = "AlphaPulse Bot"
+    footer_text = "WhaleAlpha Bot"
     ffont = _font(12, bold=True)
     fw = draw.textbbox((0, 0), footer_text, font=ffont)[2]
     draw.text((WIDTH - PAD - fw, footer_y + 16), footer_text, font=ffont, fill=TEXT_MUTED)
@@ -177,7 +177,7 @@ async def generate_calendar_image(cal: dict, title: str = "Trading Calendar") ->
     """
     Renders the redesigned PnL Calendar as a branded PNG card (dark theme,
     rounded day cells colored green/red by realized PnL — matching the
-    reference calendar's look while carrying AlphaPulse branding).
+    reference calendar's look while carrying WhaleAlpha branding).
     `cal` is the dict returned by services.paper_engine.get_pnl_calendar.
     Returns PNG bytes, or None on failure (fails gracefully; caller should
     fall back to the existing text/button calendar view).

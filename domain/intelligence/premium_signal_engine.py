@@ -12,7 +12,7 @@ Two responsibilities, run as one cohesive pipeline:
   2. CONSENSUS + AI GATE — looks for tokens that multiple distinct
      active Premium wallets bought within a short rolling window
      (Smart Wallet consensus), then — only for tokens that clear that
-     bar — runs the existing AlphaPulse AI conviction-scoring pipeline
+     bar — runs the existing WhaleAlpha AI conviction-scoring pipeline
      (services/conviction_scorer.py, the same engine the free Signal
      Engine uses) on that token. A Premium Signal is only ever created
      when BOTH gates pass. Both thresholds are configurable in
@@ -57,7 +57,7 @@ from domain.intelligence.holders import get_holder_analysis
 from domain.signals.scoring import hard_reject_reasons, score_candidate
 from domain.payments.premium_service import format_premium_header, format_premium_badge
 
-logger = logging.getLogger("AlphaPulse.PremiumSignalEngine")
+logger = logging.getLogger("WhaleAlpha.PremiumSignalEngine")
 
 WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 NATIVE_SOL_TOKEN = "SOL"
@@ -175,7 +175,7 @@ async def _record_trade(
     # Rug pull / honeypot / scam-token exposure — only meaningful for
     # what the wallet bought INTO, and only checked once per token per
     # cycle no matter how many wallets traded it (cached), keeping this
-    # inside AlphaPulse's existing API rate-limit budget.
+    # inside WhaleAlpha's existing API rate-limit budget.
     is_flagged_risky = None
     risk_flags_str = None
     if direction == "IN":

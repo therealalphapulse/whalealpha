@@ -209,7 +209,7 @@ async def build_portfolio_report(user_id: int) -> str:
     total_value = 0.0
 
     text = (
-        "💼 <b>AlphaPulse Portfolio</b>\n"
+        "💼 <b>WhaleAlpha Portfolio</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
@@ -282,7 +282,7 @@ async def build_portfolio_report(user_id: int) -> str:
         f"{total_emoji} Total PnL: <b>{total_sign}{format_usd(total_pnl)}</b> "
         f"(<b>{total_sign}{total_pnl_pct:.2f}%</b>)\n\n"
         "⚠️ <i>Manual portfolio tracking. Not financial advice.</i>\n"
-        "⚡ Powered by AlphaPulse"
+        "⚡ Powered by WhaleAlpha"
     )
 
     if len(positions) > 15:

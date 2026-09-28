@@ -1,4 +1,4 @@
-"""Telegram gateway composition root for AlphaPulse v4."""
+"""Telegram gateway composition root for WhaleAlpha v4."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from aiogram.types import BotCommand
 
 from config.settings import BOT_TOKEN
 
-logger = logging.getLogger("AlphaPulse.Gateway")
+logger = logging.getLogger("WhaleAlpha.Gateway")
 
 
 def _build_storage():

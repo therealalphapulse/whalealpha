@@ -18,7 +18,7 @@ from domain.trading.real.robinhood_swap import get_token_balance, SwapError, NAT
 from domain.trading.real.robinhood_wallet import get_real_wallet
 from providers.marketdata.dexscreener import get_token_card_info
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.PositionManager")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.PositionManager")
 
 
 async def _get_sol_usd_price() -> float | None:

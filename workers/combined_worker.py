@@ -58,7 +58,7 @@ signal_trading_worker.pump_radar_loop = enhanced_pump_radar_loop
 signal_trading_worker.signal_lifecycle_loop = enhanced_signal_lifecycle_loop
 enhanced_alert_runtime.fetch_reactivation_candidates = fetch_expanded_reactivation_candidates
 
-logger = logging.getLogger("AlphaPulse.Worker.Combined")
+logger = logging.getLogger("WhaleAlpha.Worker.Combined")
 
 
 async def _reconcile_confirmed_alert_delivery() -> None:
@@ -191,7 +191,7 @@ async def _run_usdc_holder_control_probe() -> None:
 
 async def main() -> None:
     logger.info(
-        "Starting AlphaPulse v4 combined worker process (free-tier mode). "
+        "Starting WhaleAlpha v4 combined worker process (free-tier mode). "
         "Runs the Signal/Trading and Intelligence worker pools together in "
         "one process, separate from the Bot Gateway. Signal filters are "
         "unchanged; enhanced downstream signal/quote delivery is enabled."

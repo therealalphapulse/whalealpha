@@ -30,7 +30,7 @@ from .constants import (
     INSUFFICIENT_BALANCE_PAUSE_MINUTES,
 )
 
-logger = logging.getLogger("AlphaPulse.AutoTrade.Policy")
+logger = logging.getLogger("WhaleAlpha.AutoTrade.Policy")
 
 
 def _today_str() -> str:

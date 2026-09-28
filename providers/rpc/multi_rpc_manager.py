@@ -69,7 +69,7 @@ from config.settings import (
     MULTI_RPC_DEDUP_WINDOW_SECONDS,
 )
 
-logger = logging.getLogger("AlphaPulse.MultiRPCManager")
+logger = logging.getLogger("WhaleAlpha.MultiRPCManager")
 
 # Helius DAS ("Digital Asset Standard") / proprietary RPC methods. These are
 # NOT part of standard Solana JSON-RPC and are only implemented by Helius —
@@ -103,7 +103,7 @@ _PROVIDER_DISPLAY_NAMES = {
     "alchemy": "Alchemy",
     "drpc": "dRPC",
     "quicknode": "QuickNode",
-    # Added by the AlphaPulse Provider Integration Task (2026-08-19) as an
+    # Added by the WhaleAlpha Provider Integration Task (2026-08-19) as an
     # additional RPC/failover provider -- see RPC_PROVIDER_PRIORITY in
     # config/settings.py for where it sits in the failover order (last).
     "ankr": "Ankr",
@@ -342,7 +342,7 @@ class MultiRPCManager:
                 "full_url": bool(QUICKNODE_SOLANA_RPC),
                 "endpoint": QUICKNODE_SOLANA_RPC or "https://solana-mainnet.rpc.quicknode.io/",
             },
-            # Added by the AlphaPulse Provider Integration Task (2026-08-19).
+            # Added by the WhaleAlpha Provider Integration Task (2026-08-19).
             # Additional RPC/failover provider only -- registered last in
             # RPC_PROVIDER_PRIORITY (config/settings.py), so it is only ever
             # tried once Helius, QuickNode, Alchemy, AND dRPC have all

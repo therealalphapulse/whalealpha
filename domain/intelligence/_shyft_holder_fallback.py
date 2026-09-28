@@ -1,6 +1,6 @@
-"""Indexed holder fallback for AlphaPulse signal analysis — Shyft.
+"""Indexed holder fallback for WhaleAlpha signal analysis — Shyft.
 
-NEW (AlphaPulse Provider Integration Task, 2026-08-19). Installed as the
+NEW (WhaleAlpha Provider Integration Task, 2026-08-19). Installed as the
 last link in the indexed holder-fallback chain (Solana Tracker -> Birdeye
 -> Moralis -> Shyft; see workers/holder_runtime_bootstrap.py for the
 authoritative install order). Follows the exact wrap-and-delegate pattern
@@ -28,7 +28,7 @@ from typing import Any
 
 import aiohttp
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 ENDPOINT = "https://api.shyft.to/sol/v1/token/get_owners"
 PAGE_SIZE = 100
@@ -184,7 +184,7 @@ def install() -> None:
     order)."""
     from domain.intelligence import holders
 
-    if getattr(holders._fetch_token_accounts, "_alphapulse_shyft_fallback", False):
+    if getattr(holders._fetch_token_accounts, "_whalealpha_shyft_fallback", False):
         return
 
     original_fetch = holders._fetch_token_accounts
@@ -237,6 +237,6 @@ def install() -> None:
         # concentration data. Preserve the original result semantics.
         return result
 
-    _fetch_with_shyft._alphapulse_shyft_fallback = True
+    _fetch_with_shyft._whalealpha_shyft_fallback = True
     holders._fetch_token_accounts = _fetch_with_shyft
     logger.info("[HolderDiag] Shyft indexed holder fallback installed")

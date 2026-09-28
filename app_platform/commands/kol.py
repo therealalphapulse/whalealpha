@@ -14,7 +14,7 @@ from domain.intelligence.kol_tracker import (
 )
 
 router = Router()
-logger = logging.getLogger("AlphaPulse.KOLCommands")
+logger = logging.getLogger("WhaleAlpha.KOLCommands")
 
 
 @router.message(Command("kol_wallets"))
@@ -44,7 +44,7 @@ async def cmd_kol_alerts_on(message: Message):
 
         await message.answer(
             "✅ <b>KOL Alerts Enabled</b>\n\n"
-            "AlphaPulse will alert you when the synced KOL provider reports new wallet activity.\n\n"
+            "WhaleAlpha will alert you when the synced KOL provider reports new wallet activity.\n\n"
             "Use /kol_wallets to view synced wallets.\n"
             "Use /kol_alerts_off to disable alerts."
         )

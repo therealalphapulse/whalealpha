@@ -30,7 +30,7 @@ import aiohttp
 from providers.cache import get_cache
 from providers.marketdata import _provider_circuit_breaker as _breaker
 
-logger = logging.getLogger("AlphaPulse.ProviderResilience")
+logger = logging.getLogger("WhaleAlpha.ProviderResilience")
 
 _session: aiohttp.ClientSession | None = None
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=10)
@@ -70,7 +70,7 @@ async def get_json(
     provider_name (optional, default None): opts this call into the
     lightweight per-provider circuit breaker in
     providers.marketdata._provider_circuit_breaker — see that module's
-    docstring for the full design (AlphaPulse Provider Resilience task,
+    docstring for the full design (WhaleAlpha Provider Resilience task,
     2026-08-28). When omitted (the default), behavior is byte-for-byte
     identical to before this parameter existed: every other caller of
     get_json (coingecko, dexscreener, geckoterminal, goplus, rugcheck) is

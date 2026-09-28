@@ -19,7 +19,7 @@ from config.settings import (
 from models.kol_wallet import KolWallet
 from models.kol_subscription import KolAlertSubscription
 
-logger = logging.getLogger("AlphaPulse.KOLProvider")
+logger = logging.getLogger("WhaleAlpha.KOLProvider")
 
 SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
@@ -227,7 +227,7 @@ async def fetch_provider_payload():
 
 def normalize_provider_wallet(raw: dict) -> dict | None:
     """
-    Converts provider-specific fields into AlphaPulse standard fields.
+    Converts provider-specific fields into WhaleAlpha standard fields.
     Returns None for invalid entries.
     """
 

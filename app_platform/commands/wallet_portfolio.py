@@ -9,7 +9,7 @@ from domain.intelligence.wallet_portfolio import build_wallet_portfolio_report
 from providers.marketdata.dexscreener import get_token_card_info
 
 router = Router()
-logger = logging.getLogger("AlphaPulse.WalletPortfolioCommand")
+logger = logging.getLogger("WhaleAlpha.WalletPortfolioCommand")
 
 SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 

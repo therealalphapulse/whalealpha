@@ -9,7 +9,7 @@ from providers.rpc.helius import get_recent_signatures
 from providers.rpc.helius_request_manager import PRIORITY_LOW
 from domain.intelligence.solana_token_holdings import fetch_wallet_holdings
 
-logger = logging.getLogger("AlphaPulse.WalletIntelligence")
+logger = logging.getLogger("WhaleAlpha.WalletIntelligence")
 
 WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 
@@ -469,7 +469,7 @@ async def build_wallet_intelligence_card(wallet_address: str, limit: int = 10) -
         f"🔎 <a href=\"{solscan_url}\">View Wallet on Solscan</a>\n\n"
         f"<code>{wallet_address}</code>\n\n"
         "⚠️ <i>Classification is heuristic. Unpriced tokens may have no public market.</i>\n"
-        "⚡ Powered by AlphaPulse"
+        "⚡ Powered by WhaleAlpha"
     )
 
     return text

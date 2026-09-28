@@ -97,7 +97,7 @@ from domain.trading.real.robinhood_swap import (
 )
 from providers.cache import get_cache
 
-logger = logging.getLogger("AlphaPulse.SellabilityCheck")
+logger = logging.getLogger("WhaleAlpha.SellabilityCheck")
 
 LAMPORTS_PER_SOL = 1_000_000_000
 WEI_PER_ETH = 1_000_000_000_000_000_000

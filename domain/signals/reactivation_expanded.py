@@ -1,7 +1,7 @@
 """Expanded Reactivation Radar discovery source.
 
 This module only broadens the DISCOVERY pool. It deliberately reuses the
-existing AlphaPulse reactivation activity thresholds and sends every returned
+existing WhaleAlpha reactivation activity thresholds and sends every returned
 candidate through the unchanged authoritative analyze_candidate() pipeline.
 It does not alter scoring, hard rejects, holder requirements, security checks,
 confidence, quota, or alert delivery.
@@ -23,9 +23,9 @@ from domain.signals.enhanced_alert_runtime import (
     _parse_pool_created_at,
 )
 
-logger = logging.getLogger("AlphaPulse.ReactivationExpanded")
+logger = logging.getLogger("WhaleAlpha.ReactivationExpanded")
 
-# Discovery-only expansion. These do NOT change AlphaPulse qualification.
+# Discovery-only expansion. These do NOT change WhaleAlpha qualification.
 # More pages increase the chance of finding older tokens that have just
 # re-entered the activity distribution; the existing activity thresholds
 # remain unchanged.

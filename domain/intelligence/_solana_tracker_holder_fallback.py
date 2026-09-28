@@ -1,4 +1,4 @@
-"""Free-first indexed holder fallback for AlphaPulse signal analysis.
+"""Free-first indexed holder fallback for WhaleAlpha signal analysis.
 
 Solana Tracker is used only when the primary Helius holder snapshot is
 unavailable or empty. The adapter normalizes its holder response to the
@@ -17,7 +17,7 @@ _error_detail below (added alongside the identical helper in
 _birdeye_holder_fallback.py) now surfaces the provider's own message so
 this can be confirmed from logs instead of guessed at.
 
-Update (2026-08-28, AlphaPulse Provider Resilience task): the Aug 15
+Update (2026-08-28, WhaleAlpha Provider Resilience task): the Aug 15
 incident above exposed two separate gaps, both fixed here:
 
   1. There was no memory of the 403 across calls -- every single token
@@ -53,7 +53,7 @@ import aiohttp
 
 from providers.marketdata import _provider_circuit_breaker as _breaker
 
-logger = logging.getLogger("AlphaPulse.Holders")
+logger = logging.getLogger("WhaleAlpha.Holders")
 
 ENDPOINT = "https://data.solanatracker.io/tokens/{mint}/holders/paginated"
 MAX_PAGE_SIZE = 5000
@@ -317,7 +317,7 @@ def install() -> None:
     """Install Tracker as the indexed fallback after the primary Helius path."""
     from domain.intelligence import holders
 
-    if getattr(holders._fetch_token_accounts, "_alphapulse_solana_tracker_fallback", False):
+    if getattr(holders._fetch_token_accounts, "_whalealpha_solana_tracker_fallback", False):
         return
 
     original_fetch = holders._fetch_token_accounts
@@ -381,6 +381,6 @@ def install() -> None:
         # concentration data. Preserve the original RPC result semantics.
         return result
 
-    _fetch_with_tracker._alphapulse_solana_tracker_fallback = True
+    _fetch_with_tracker._whalealpha_solana_tracker_fallback = True
     holders._fetch_token_accounts = _fetch_with_tracker
     logger.info("[HolderDiag] Solana Tracker indexed holder fallback installed")

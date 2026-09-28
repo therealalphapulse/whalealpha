@@ -38,13 +38,13 @@ from app_platform.gateway.bootstrap import run_startup_tasks
 from workers.signal_trading_worker import main as run_signal_trading_worker
 from workers.intelligence_worker import main as run_intelligence_worker
 
-logger = logging.getLogger("AlphaPulse.SingleProcess")
+logger = logging.getLogger("WhaleAlpha.SingleProcess")
 
 
 async def main() -> None:
     configure_logging()
     logger.info(
-        "Starting AlphaPulse v4 in single-process mode (main.py). "
+        "Starting WhaleAlpha v4 in single-process mode (main.py). "
         "For horizontal scaling, run app_platform.gateway + workers/ as "
         "separate services instead — see docker-compose.yml."
     )

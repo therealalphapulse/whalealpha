@@ -1,7 +1,7 @@
 """
 tests/test_solana_tracker_holder_circuit_breaker.py
 
-Regression coverage for the AlphaPulse Provider Resilience task
+Regression coverage for the WhaleAlpha Provider Resilience task
 (2026-08-28), holder-data half of the fix:
 domain/intelligence/_solana_tracker_holder_fallback.py.
 
@@ -44,7 +44,7 @@ from providers.marketdata import _provider_circuit_breaker as breaker  # noqa: E
 def setup_function(_fn):
     breaker.reset(tracker._BREAKER_KEY)
     os.environ["SOLANA_TRACKER_API_KEY"] = "test-key"
-    # install() is idempotent-guarded (_alphapulse_solana_tracker_fallback
+    # install() is idempotent-guarded (_whalealpha_solana_tracker_fallback
     # flag) and monkeypatches a MODULE-LEVEL function, so every test gets a
     # completely fresh, un-monkeypatched holders._fetch_token_accounts to
     # avoid tests wiring on top of each other.

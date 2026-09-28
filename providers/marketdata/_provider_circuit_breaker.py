@@ -2,7 +2,7 @@
 providers/marketdata/_provider_circuit_breaker.py
 
 Surgical fix for the Ankr / Solana Tracker provider-resilience gap (see
-AlphaPulse Provider Resilience task, 2026-08-28): Solana Tracker (both the
+WhaleAlpha Provider Resilience task, 2026-08-28): Solana Tracker (both the
 liquidity/bundle-risk lookups in providers.marketdata.solanatracker and the
 paginated holder fallback in domain.intelligence._solana_tracker_holder_fallback)
 had no memory of past failures. A 403 (out of credits), an auth failure, or a
@@ -66,7 +66,7 @@ except ImportError:  # pragma: no cover - config always present in production
     SOLANA_TRACKER_CIRCUIT_BREAKER_AUTH_THRESHOLD = 1
     SOLANA_TRACKER_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 120
 
-logger = logging.getLogger("AlphaPulse.ProviderCircuitBreaker")
+logger = logging.getLogger("WhaleAlpha.ProviderCircuitBreaker")
 
 # Failure classification -- callers pass one of these to record_failure() so
 # the breaker can apply the right threshold. Kept as plain strings (not an
@@ -155,7 +155,7 @@ def record_success(provider_key: str) -> None:
     one half-open probe) is enough to close the circuit again; this
     intentionally does not require several consecutive good responses,
     since staying openly degraded any longer than necessary is exactly the
-    "unnecessarily stop AlphaPulse from producing valid signals" failure
+    "unnecessarily stop WhaleAlpha from producing valid signals" failure
     mode this breaker exists to prevent.
     """
     state = _get(provider_key)

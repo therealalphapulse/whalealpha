@@ -79,6 +79,6 @@ async def cmd_trending(message: Message):
 
         text += "\n"
 
-    text += "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by AlphaPulse"
+    text += "━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by WhaleAlpha"
 
     await message.answer(text)

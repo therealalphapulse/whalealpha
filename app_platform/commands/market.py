@@ -24,7 +24,7 @@ async def cmd_market(message: Message):
     change_val = sol.get("change_24h", 0) or 0
 
     text = (
-        "📊 <b>AlphaPulse Market Overview</b>\n"
+        "📊 <b>WhaleAlpha Market Overview</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"☀️ <b>Solana (SOL)</b>\n"
         f"💰 Price: <b>${sol['price']:,.2f}</b>\n"
@@ -52,6 +52,6 @@ async def cmd_market(message: Message):
             f"📡 Sentiment: <b>{dex_data['sentiment']}</b>\n"
         )
 
-    text += "\n━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by AlphaPulse"
+    text += "\n━━━━━━━━━━━━━━━━━━━━━\n⚡ Powered by WhaleAlpha"
 
     await message.answer(text)

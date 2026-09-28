@@ -1,7 +1,7 @@
 """
 tests/test_rugcheck_fallback.py
 
-Regression coverage for providers/marketdata/rugcheck.py (AlphaPulse
+Regression coverage for providers/marketdata/rugcheck.py (WhaleAlpha
 Provider Integration Task, 2026-08-19) and its integration point in
 providers/marketdata/goplus.py::check_token_security().
 

@@ -12,7 +12,7 @@ healthy over time with zero manual administration:
   - Puts chronically underperforming wallets on probation, then removes
     them if they don't recover within PREMIUM_WALLET_PROBATION_DAYS.
   - Removes wallets that have gone dark (no on-chain activity for
-    PREMIUM_WALLET_INACTIVITY_REMOVE_DAYS) — a wallet AlphaPulse can't
+    PREMIUM_WALLET_INACTIVITY_REMOVE_DAYS) — a wallet WhaleAlpha can't
     observe trading can't contribute to consensus anyway.
   - Enforces PREMIUM_WALLET_LONGTERM_TARGET / PREMIUM_WALLET_HARD_CAP by
     trimming the lowest-scoring wallets once the database is comfortably
@@ -42,7 +42,7 @@ from config.settings import (
 )
 from models.premium_wallet import PremiumWallet
 
-logger = logging.getLogger("AlphaPulse.PremiumMaintenance")
+logger = logging.getLogger("WhaleAlpha.PremiumMaintenance")
 
 
 def _now():

@@ -28,7 +28,7 @@ try:
 except ImportError:
     HELIUS_HOLDER_CACHE_TTL_SECONDS = 420.0
 
-logger = logging.getLogger("AlphaPulse.ValidationQueue")
+logger = logging.getLogger("WhaleAlpha.ValidationQueue")
 
 # A contract stays eligible for automatic re-validation for up to this
 # long. This is not a decision to "pass" or "reject" the token itself —

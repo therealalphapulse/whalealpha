@@ -9,7 +9,7 @@ router = Router()
 
 
 def calculate_alpha_score(token_data: dict, security_data: dict) -> dict:
-    """Calculate AlphaPulse score (0-100) based on multiple factors."""
+    """Calculate WhaleAlpha score (0-100) based on multiple factors."""
 
     score = 0
     breakdown = {}
@@ -167,7 +167,7 @@ async def cmd_score(message: Message):
     bd = result["breakdown"]
 
     text = (
-        f"⚡ <b>AlphaPulse Score</b> ⚡\n"
+        f"⚡ <b>WhaleAlpha Score</b> ⚡\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📛 <b>{token_data['name']}</b> ({token_data['symbol']})\n\n"
         f"🏆 <b>Score: {result['total']}/100</b>\n"
@@ -183,7 +183,7 @@ async def cmd_score(message: Message):
         f"({bd['activity']['score']}/{bd['activity']['max']})\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <i>This is not financial advice. Always DYOR.</i>\n"
-        f"⚡ Powered by AlphaPulse"
+        f"⚡ Powered by WhaleAlpha"
     )
 
     await message.answer(text)

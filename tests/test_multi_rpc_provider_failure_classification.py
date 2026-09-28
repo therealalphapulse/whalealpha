@@ -1,7 +1,7 @@
 """
 tests/test_multi_rpc_provider_failure_classification.py
 
-Regression coverage for the AlphaPulse Provider Resilience task
+Regression coverage for the WhaleAlpha Provider Resilience task
 (2026-08-28), Ankr/RPC-gateway half of the fix:
 providers/rpc/multi_rpc_manager.py `_dispatch_to_provider`.
 

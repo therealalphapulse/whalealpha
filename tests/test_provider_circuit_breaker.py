@@ -2,7 +2,7 @@
 tests/test_provider_circuit_breaker.py
 
 Regression coverage for providers/marketdata/_provider_circuit_breaker.py
-(AlphaPulse Provider Resilience task, 2026-08-28).
+(WhaleAlpha Provider Resilience task, 2026-08-28).
 
 Plain pytest-discoverable sync functions -- the breaker itself has no I/O,
 so no async runner is needed here (contrast with

@@ -1,4 +1,4 @@
-# AlphaPulse MultiRPCManager Production Audit Report
+# WhaleAlpha MultiRPCManager Production Audit Report
 
 **Date:** 2026-07-23  
 **Auditor:** Copilot  

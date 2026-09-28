@@ -1,4 +1,4 @@
-# AlphaPulse v4 — Database Migrations
+# WhaleAlpha v4 — Database Migrations
 
 This directory replaces v3's hand-written `migrate_*_schema()` functions
 (previously in `signal_tracker.py`, `kol_tracker.py`, `paper_engine.py`,

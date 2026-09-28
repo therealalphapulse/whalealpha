@@ -7,7 +7,7 @@ from sqlalchemy import select
 from infra.db.session import async_session
 from models.premium_plan import PremiumPlan
 
-logger = logging.getLogger("AlphaPulse.PremiumPlans")
+logger = logging.getLogger("WhaleAlpha.PremiumPlans")
 
 # Seeded once, only if the table is empty, so a fresh deploy has
 # something payable immediately. All values are then fully editable
