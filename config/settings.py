@@ -722,15 +722,48 @@ ROBINHOOD_MAX_ALERTS_PER_CYCLE = _env_int("ROBINHOOD_MAX_ALERTS_PER_CYCLE", 3)
 # rate-limit-driven one.
 AUTO_TRADE_SCAN_INTERVAL_SECONDS = _env_int("AUTO_TRADE_SCAN_INTERVAL_SECONDS", 5)
 
-# real_exit_engine_loop and auto_trade_exit_loop (TP/SL/trailing monitor,
-# both real and auto-bought positions): both price their positions via
-# providers.marketdata.dexscreener.get_token_card_info(), which caches
-# for 15s. 18s (15s + ~20% buffer) guarantees a fresh fetch every tick
-# without landing exactly on the cache boundary (which would cause every
-# other tick to silently reuse a stale price instead of refreshing).
-# Ticking faster than the cache TTL would not improve freshness, only add
-# wasted ticks and DexScreener call volume for no benefit.
-EXIT_MONITOR_INTERVAL_SECONDS = _env_int("EXIT_MONITOR_INTERVAL_SECONDS", 18)
+# real_exit_engine_loop's tick interval (manual /track trailing rules on
+# real_trade.py positions). Prices via
+# providers.marketdata.dexscreener.get_token_card_info() using
+# POSITION_PRICE_CACHE_TTL_SECONDS below (NOT the general 15s TTL used
+# elsewhere in the codebase for discovery/scoring) -- so this can now
+# tick faster than the old 18s default without ticking faster than the
+# price data actually refreshes. Kept independently tunable from
+# AUTO_TRADE_EXIT_INTERVAL_SECONDS below since the two engines have
+# different call volumes (real_exit_engine prices one trade at a time;
+# auto_trade batches all positions in one DexScreener call, see
+# providers.marketdata.dexscreener.get_prices_batch), so they can
+# tolerate different floors before hitting DexScreener's rate limit.
+EXIT_MONITOR_INTERVAL_SECONDS = _env_int("EXIT_MONITOR_INTERVAL_SECONDS", 5)
+
+# auto_trade_exit_loop's tick interval (TP/SL/trailing monitor for
+# AutoTradePosition). Separate from EXIT_MONITOR_INTERVAL_SECONDS above
+# because this engine batches every open position's price into a single
+# DexScreener call per tick (get_prices_batch) regardless of how many
+# positions are open, so it can safely run faster. Default 2s: fast
+# enough for a "1-3s" trailing feel while staying comfortably inside
+# DexScreener's published free-tier rate limit even with several
+# concurrent leader-elected instances during a deploy handoff.
+AUTO_TRADE_EXIT_INTERVAL_SECONDS = _env_int("AUTO_TRADE_EXIT_INTERVAL_SECONDS", 2)
+
+# Cache TTL used ONLY for position-monitoring price fetches (exit_engine.py,
+# real_exit_engine.py, position_manager.py) -- deliberately separate from
+# the general 15s TTL get_token_card_info() still defaults to everywhere
+# else (signal discovery/scoring), so speeding up exit monitoring does not
+# also multiply DexScreener call volume for the discovery/scoring loops
+# that don't need sub-15s freshness.
+POSITION_PRICE_CACHE_TTL_SECONDS = _env_int("POSITION_PRICE_CACHE_TTL_SECONDS", 3)
+
+# How often a growing in-memory trailing-high (auto_trade exit loop) gets
+# flushed to Postgres, independent of the monitor tick rate. At a 1-3s
+# tick, persisting every single new high would multiply DB writes by
+# 6-18x versus the old 18s cadence for no safety benefit -- see
+# domain/trading/auto_trade/exit_engine.py's trailing-high cache
+# docstring for why a stale DB value between flushes is always safe
+# (it can only make the trailing stop MORE conservative, never less).
+# A flush also always happens immediately before an exit actually fires,
+# regardless of this interval.
+TRAILING_HIGH_DB_FLUSH_SECONDS = _env_int("TRAILING_HIGH_DB_FLUSH_SECONDS", 20)
 
 # "New token" bucket — freshly-created Robinhood Chain pairs.
 ROBINHOOD_NEW_MAX_AGE_HOURS = _env_float("ROBINHOOD_NEW_MAX_AGE_HOURS", 24.0)
