@@ -90,11 +90,11 @@ async def _update_trailing_high(position_id: int, current_price: float, highest_
 async def execute_exit(bot, position: AutoTradePosition, reason: str) -> None:
     """§21/§23/§24 -- sell-side state machine for one position."""
     user_id = position.user_id
-    await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_REETHVING)
+    await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_RESOLVING)
 
     balance = await position_manager.resolve_sellable_balance(user_id, position)
     if not balance["ok"]:
-        await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_REETHVING, last_error=balance.get("reason"))
+        await position_manager.set_state(position.id, AutoTradeState.SELL_BALANCE_RESOLVING, last_error=balance.get("reason"))
         logger.warning("[AutoTrade] sellable balance unresolved, will retry, pos=%s: %s", position.id, balance.get("reason"))
         return
 
