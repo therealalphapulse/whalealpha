@@ -29,6 +29,7 @@ from sqlalchemy import select
 from infra.db.session import async_session
 from models.real_exit_rule import RealExitRule
 from models.real_trade import RealTrade
+from config.settings import POSITION_PRICE_CACHE_TTL_SECONDS
 from providers.marketdata.dexscreener import get_token_card_info
 from domain.trading.real.robinhood_wallet import get_wallet_settings
 from domain.trading.real import real_trade_engine
@@ -370,7 +371,7 @@ async def scan_and_execute(bot=None) -> int:
         if trade.contract not in price_cache:
             price = None
             try:
-                info = await get_token_card_info(trade.contract)
+                info = await get_token_card_info(trade.contract, cache_ttl_seconds=POSITION_PRICE_CACHE_TTL_SECONDS)
                 if info and info.get("price") not in (None, "N/A"):
                     price = float(info["price"])
             except Exception:

@@ -12,11 +12,12 @@ import logging
 
 from sqlalchemy import select, func as sa_func
 
+from config.settings import ROBINHOOD_CHAIN_ID, POSITION_PRICE_CACHE_TTL_SECONDS
 from infra.db.session import async_session
 from models.auto_trade_position import AutoTradePosition, AutoTradeState
 from domain.trading.real.robinhood_swap import get_token_balance, SwapError, NATIVE_ETH_ADDRESS
 from domain.trading.real.robinhood_wallet import get_real_wallet
-from providers.marketdata.dexscreener import get_token_card_info
+from providers.marketdata.dexscreener import get_token_card_info, get_prices_batch
 
 logger = logging.getLogger("WhaleAlpha.AutoTrade.PositionManager")
 
@@ -33,9 +34,15 @@ async def _get_sol_usd_price() -> float | None:
     ETH/token figure silently inflates the computed % change by
     roughly the ETH/USD rate and can fire a false "tp"/"sl"/"trailing"
     trigger after no real token-price movement at all. Returns None on
-    any failure; never a guessed price."""
+    any failure; never a guessed price.
+
+    Uses POSITION_PRICE_CACHE_TTL_SECONDS (not the general 15s default)
+    so this stays fresh at the same cadence as position prices
+    themselves -- a stale ETH/USD rate would otherwise reintroduce the
+    exact unit-drift problem this function exists to prevent, just on
+    the conversion side instead of the token-price side."""
     try:
-        info = await get_token_card_info(NATIVE_ETH_ADDRESS)
+        info = await get_token_card_info(NATIVE_ETH_ADDRESS, cache_ttl_seconds=POSITION_PRICE_CACHE_TTL_SECONDS)
         raw_price = info.get("price") if info else None
         price = float(raw_price)
         if price > 0:
@@ -130,21 +137,51 @@ async def set_state(position_id: int, state: str, **fields) -> None:
         await session.commit()
 
 
-async def get_live_positions_view(user_id: int) -> list[dict]:
+async def _prices_usd_for(contracts: list[str]) -> dict[str, float]:
+    """One batched DexScreener call for every distinct contract, instead
+    of one call per position -- see providers.marketdata.dexscreener.
+    get_prices_batch's docstring. Used whenever a caller doesn't already
+    have a price map (e.g. get_live_positions_view called standalone
+    for /wallet, rather than from monitor_and_exit's already-batched
+    tick)."""
+    if not contracts:
+        return {}
+    try:
+        return await get_prices_batch(contracts, chain_id=ROBINHOOD_CHAIN_ID, cache_ttl_seconds=POSITION_PRICE_CACHE_TTL_SECONDS)
+    except Exception as exc:
+        logger.warning("[AutoTrade] batch price fetch failed for %d contract(s): %s", len(contracts), exc)
+        return {}
+
+
+async def get_live_positions_view(user_id: int, price_map: dict[str, float] | None = None) -> list[dict]:
     """Live price/PnL view for open positions -- used by exit_engine.py
     and the /wallet command. Mirrors real_trade_engine.get_real_positions_view's
-    shape/approach (price refresh with graceful fallback on provider error)."""
+    shape/approach (price refresh with graceful fallback on provider error).
+
+    price_map (contract -> USD price), when given, comes from a single
+    batched fetch the caller already did for a whole tick's worth of
+    positions across every user (exit_engine.py's monitor_and_exit) --
+    avoids re-fetching prices per user. When omitted (e.g. /wallet
+    displaying one user's positions on demand), this batches just this
+    user's own distinct contracts in one call instead of the old N
+    individual calls."""
     positions = await get_open_positions(user_id)
     if not positions:
         return []
 
+    owns_price_map = price_map is None
+    if owns_price_map:
+        price_map = await _prices_usd_for(list({p.contract for p in positions}))
+
+    sol_usd: float | None = None
+
     async def _with_price(position: AutoTradePosition) -> tuple[AutoTradePosition, float, bool]:
+        nonlocal sol_usd
         try:
-            info = await get_token_card_info(position.contract)
-            raw_price_usd = info.get("price") if info else None
-            price_usd = float(raw_price_usd)
+            price_usd = price_map.get(position.contract, 0.0)
             if price_usd > 0:
-                sol_usd = await _get_sol_usd_price()
+                if sol_usd is None:
+                    sol_usd = await _get_sol_usd_price()
                 if sol_usd and sol_usd > 0:
                     # Convert DexScreener's USD-per-token price into the
                     # ETH-per-token domain entry_price is stored in --

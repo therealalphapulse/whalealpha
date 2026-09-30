@@ -11,12 +11,15 @@ tick, the most protective one wins.
 
 from __future__ import annotations
 
+import time
 import logging
 from datetime import datetime, timezone
 
+from config.settings import ROBINHOOD_CHAIN_ID, POSITION_PRICE_CACHE_TTL_SECONDS, TRAILING_HIGH_DB_FLUSH_SECONDS
 from infra.db.session import async_session
 from models.auto_trade_position import AutoTradePosition, AutoTradeState
 from models.auto_trade_execution import AutoTradeExecution
+from providers.marketdata.dexscreener import get_prices_batch
 
 from . import execution, position_manager
 
@@ -27,9 +30,15 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _check_exit_trigger(position: AutoTradePosition, current_price: float) -> str | None:
+def _check_exit_trigger(position: AutoTradePosition, current_price: float, highest_observed_price: float | None = None) -> str | None:
     """Returns "sl" | "trailing" | "tp" | None. Pure function, no I/O,
-    easy to unit test in isolation from the network (§20/§21)."""
+    easy to unit test in isolation from the network (§20/§21).
+
+    highest_observed_price, when given, overrides position.highest_observed_price
+    for the trailing check -- monitor_and_exit passes the in-memory
+    trailing-high cache's value here, which can be ahead of what's
+    currently persisted to the DB (see the module docstring on
+    _TrailingHighCache below for why that's always safe)."""
     from .policy_service import TradePolicySnapshot
     snapshot = TradePolicySnapshot.from_json(position.policy_snapshot_json)
     entry_price = float(position.entry_price or 0.0)
@@ -53,7 +62,10 @@ def _check_exit_trigger(position: AutoTradePosition, current_price: float) -> st
             else snapshot.trailing_stop_pct
         )
         if retracement_pct:
-            highest = float(position.highest_observed_price or entry_price)
+            highest = float(
+                highest_observed_price if highest_observed_price is not None
+                else (position.highest_observed_price or entry_price)
+            )
             if current_price > highest:
                 highest = current_price
 
@@ -77,13 +89,77 @@ def _check_exit_trigger(position: AutoTradePosition, current_price: float) -> st
     return None
 
 
-async def _update_trailing_high(position_id: int, current_price: float, highest_so_far: float) -> None:
-    if current_price <= highest_so_far:
-        return
+class _TrailingHighCache:
+    """In-memory trailing-high tracker for the auto_trade exit loop.
+
+    At an 18s tick, persisting a new high to Postgres every tick was
+    fine. At a 1-3s tick (Phase 2), the same pattern would multiply
+    writes 6-18x for no safety benefit -- so this keeps the running
+    high in memory (this loop only ever has one leader replica at a
+    time, per infra/locks.py's run_as_leader, so a plain in-process
+    dict is safe) and flushes to Postgres only every
+    TRAILING_HIGH_DB_FLUSH_SECONDS, or immediately before an exit
+    actually fires (see monitor_and_exit).
+
+    Why a stale DB value between flushes is always safe: the DB value
+    is only ever read as a fallback floor (via _check_exit_trigger's
+    highest_observed_price param, or on process restart before this
+    cache is repopulated). A DB value that lags the true in-memory high
+    is LOWER than reality, which makes the trailing-stop trigger price
+    (highest * (1 - retracement)) lower too -- i.e. it can only widen
+    the trailing stop slightly (more conservative, holds a bit longer),
+    never tighten it into a premature sale. The reverse error (DB ahead
+    of reality) never happens, since the cache is only ever fed real
+    observed prices.
+
+    Seeded from position.highest_observed_price the first time a
+    position is seen (crash/restart/leadership-handoff recovery), so a
+    freshly-started process never starts from zero.
+    """
+
+    def __init__(self) -> None:
+        self._high: dict[int, float] = {}
+        self._last_flush_at: dict[int, float] = {}
+
+    def note(self, position: AutoTradePosition, current_price: float) -> float:
+        """Records current_price for this position if it's a new high;
+        returns the up-to-date high (new or previous) either way."""
+        pid = position.id
+        if pid not in self._high:
+            self._high[pid] = float(position.highest_observed_price or position.entry_price or 0.0)
+            self._last_flush_at[pid] = time.monotonic()
+        if current_price > self._high[pid]:
+            self._high[pid] = current_price
+        return self._high[pid]
+
+    def due_for_flush(self, position_id: int) -> bool:
+        last = self._last_flush_at.get(position_id, 0.0)
+        return (time.monotonic() - last) >= TRAILING_HIGH_DB_FLUSH_SECONDS
+
+    def mark_flushed(self, position_id: int) -> None:
+        self._last_flush_at[position_id] = time.monotonic()
+
+    def discard(self, position_id: int) -> None:
+        self._high.pop(position_id, None)
+        self._last_flush_at.pop(position_id, None)
+
+    def prune_to(self, open_position_ids: set[int]) -> None:
+        """Drops cache entries for positions no longer open (closed since
+        the last tick), so the cache doesn't grow unbounded over the
+        life of the worker process."""
+        stale = [pid for pid in self._high if pid not in open_position_ids]
+        for pid in stale:
+            self.discard(pid)
+
+
+_trailing_high_cache = _TrailingHighCache()
+
+
+async def _flush_trailing_high(position_id: int, price: float) -> None:
     async with async_session() as session:
         db_position = await session.get(AutoTradePosition, position_id)
-        if db_position and (db_position.highest_observed_price or 0.0) < current_price:
-            db_position.highest_observed_price = current_price
+        if db_position and (db_position.highest_observed_price or 0.0) < price:
+            db_position.highest_observed_price = price
             await session.commit()
 
 
@@ -210,7 +286,17 @@ async def execute_exit(bot, position: AutoTradePosition, reason: str) -> None:
 
 async def monitor_and_exit(bot=None) -> int:
     """One tick of the exit-monitor loop (§40). Evaluates every open
-    position across all users; returns the number evaluated."""
+    position across all users; returns the number evaluated.
+
+    Phase 2 speed-up: prices every distinct contract across ALL users in
+    ONE batched DexScreener call (get_prices_batch), instead of the old
+    one-call-per-position-per-user pattern -- so a tick's DexScreener
+    call count depends on the number of distinct tokens held, not on
+    the number of positions or how fast the loop ticks. Combined with
+    the in-memory trailing-high cache (_trailing_high_cache) instead of
+    a DB write per position per tick, this is what makes a 1-3s
+    AUTO_TRADE_EXIT_INTERVAL_SECONDS actually viable instead of just
+    moving the bottleneck from "DexScreener calls" to "DB writes"."""
     from sqlalchemy import select
     async with async_session() as session:
         result = await session.execute(
@@ -223,22 +309,47 @@ async def monitor_and_exit(bot=None) -> int:
     if not open_positions:
         return 0
 
+    _trailing_high_cache.prune_to({p.id for p in open_positions})
+
+    try:
+        price_map = await get_prices_batch(
+            list({p.contract for p in open_positions}),
+            chain_id=ROBINHOOD_CHAIN_ID,
+            cache_ttl_seconds=POSITION_PRICE_CACHE_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.error("[AutoTrade] batch price fetch failed this tick, skipping (%d position(s)): %s", len(open_positions), e)
+        return len(open_positions)
+
     view_by_user: dict[int, list[dict]] = {}
     evaluated = 0
     for position in open_positions:
         evaluated += 1
         if position.user_id not in view_by_user:
-            view_by_user[position.user_id] = await position_manager.get_live_positions_view(position.user_id)
+            view_by_user[position.user_id] = await position_manager.get_live_positions_view(position.user_id, price_map=price_map)
         views = {v["position"].id: v for v in view_by_user[position.user_id]}
         view = views.get(position.id)
         if not view or view["price_stale"]:
             continue
         current_price = view["current_price"]
-        await _update_trailing_high(position.id, current_price, float(position.highest_observed_price or position.entry_price or 0.0))
-        trigger = _check_exit_trigger(position, current_price)
+
+        highest = _trailing_high_cache.note(position, current_price)
+        if _trailing_high_cache.due_for_flush(position.id):
+            await _flush_trailing_high(position.id, highest)
+            _trailing_high_cache.mark_flushed(position.id)
+
+        trigger = _check_exit_trigger(position, current_price, highest_observed_price=highest)
         if trigger:
             try:
+                # Durably persist the high BEFORE selling, regardless of
+                # the periodic-flush schedule above -- execute_exit
+                # re-fetches the position from the DB internally, so the
+                # just-triggered high must land first or it could be
+                # lost on a crash mid-exit.
+                await _flush_trailing_high(position.id, highest)
+                _trailing_high_cache.mark_flushed(position.id)
                 await execute_exit(bot, position, trigger)
+                _trailing_high_cache.discard(position.id)
             except Exception as e:
                 logger.error("[AutoTrade] unhandled error exiting position=%s: %s", position.id, e)
     return evaluated

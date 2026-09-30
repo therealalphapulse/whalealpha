@@ -47,6 +47,7 @@ from config.settings import (
     REAL_AUTOMATION_ENABLED,
     AUTO_TRADE_SCAN_INTERVAL_SECONDS,
     EXIT_MONITOR_INTERVAL_SECONDS,
+    AUTO_TRADE_EXIT_INTERVAL_SECONDS,
 )
 from domain.signals.wallet_consensus_engine import wallet_consensus_loop
 from domain.signals.robinhood_discovery import robinhood_discovery_loop
@@ -179,7 +180,7 @@ def build_trading_jobs(bot) -> list:
                        lease_seconds=90, renew_interval_seconds=30),
         run_as_leader("loop:auto_trade_scan", lambda: auto_trade_scan_loop(bot, interval_seconds=AUTO_TRADE_SCAN_INTERVAL_SECONDS),
                        lease_seconds=90, renew_interval_seconds=30),
-        run_as_leader("loop:auto_trade_exit", lambda: auto_trade_exit_loop(bot, interval_seconds=EXIT_MONITOR_INTERVAL_SECONDS),
+        run_as_leader("loop:auto_trade_exit", lambda: auto_trade_exit_loop(bot, interval_seconds=AUTO_TRADE_EXIT_INTERVAL_SECONDS),
                        lease_seconds=90, renew_interval_seconds=30),
     ]
 

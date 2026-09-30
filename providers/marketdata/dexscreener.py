@@ -1,3 +1,5 @@
+import asyncio
+
 from config.settings import DEXSCREENER_API, DEXSCREENER_ROOT_API
 from providers.marketdata._resilience import get_json
 
@@ -123,17 +125,24 @@ def _to_float(value, default: float = 0.0) -> float:
         return default
 
 
-async def get_token_card_info(contract_address: str, chain_id: str = "solana") -> dict | None:
+async def get_token_card_info(contract_address: str, chain_id: str = "solana", cache_ttl_seconds: int = 15) -> dict | None:
     """
     Fetch richer token info for the automatic contract scanner.
 
     Uses DexScreener free API.
     Selects the Solana pair with the highest liquidity.
+
+    cache_ttl_seconds defaults to 15 (unchanged) for every existing
+    caller (discovery/scoring). Position-monitoring callers
+    (position_manager.py, real_exit_engine.py) pass
+    config.settings.POSITION_PRICE_CACHE_TTL_SECONDS explicitly so exit
+    monitoring can tick faster than 15s without changing the default
+    for everyone else.
     """
     url = f"{DEXSCREENER_API}/tokens/{contract_address}"
 
     try:
-        data = await get_json(url, cache_ttl_seconds=15, timeout_seconds=10)
+        data = await get_json(url, cache_ttl_seconds=cache_ttl_seconds, timeout_seconds=10)
         if data is None:
             return None
 
@@ -247,6 +256,68 @@ async def get_token_card_info(contract_address: str, chain_id: str = "solana") -
 
     except Exception:
         return None
+
+
+async def get_prices_batch(
+    contract_addresses: list[str], chain_id: str, cache_ttl_seconds: int = 3,
+) -> dict[str, float]:
+    """Batched USD price lookup for exit-monitoring loops with many open
+    positions (domain/trading/auto_trade/exit_engine.py). One DexScreener
+    call per <=30 contracts via the /tokens/v1/{chainId}/{addr1,addr2,...}
+    endpoint, instead of one call per position -- so a monitor tick's
+    DexScreener call count depends on how many DISTINCT tokens are held,
+    not on the tick interval or position count beyond that. Verified live
+    against DexScreener on 2026-09-28: this endpoint returns a bare list
+    of pair objects (not {"pairs": [...]}), unlike get_token_card_info's
+    /latest/dex/tokens/{addr} endpoint -- handled below.
+
+    Returns {contract_address (as given, NOT lowercased): price_usd}.
+    A contract with no matching chain_id pair, or that fails to fetch,
+    is simply absent from the result -- callers must treat a missing key
+    as "unknown this tick", never as zero, matching get_json's "None =
+    unknown, not zero" convention.
+    """
+    unique = list(dict.fromkeys(contract_addresses))  # de-dupe, preserve order
+    if not unique:
+        return {}
+
+    CHUNK = 30  # DexScreener's documented max addresses per batch call
+    chunks = [unique[i:i + CHUNK] for i in range(0, len(unique), CHUNK)]
+
+    async def _fetch_chunk(addrs: list[str]) -> dict[str, float]:
+        url = f"{DEXSCREENER_ROOT_API}/tokens/v1/{chain_id}/{','.join(addrs)}"
+        try:
+            data = await get_json(url, cache_ttl_seconds=cache_ttl_seconds, timeout_seconds=10)
+        except Exception:
+            return {}
+        if not isinstance(data, list):
+            return {}
+
+        by_addr_best: dict[str, dict] = {}
+        for pair in data:
+            base = (pair.get("baseToken") or {}).get("address")
+            if not base:
+                continue
+            match = next((a for a in addrs if a.lower() == base.lower()), None)
+            if not match:
+                continue
+            liq = _to_float((pair.get("liquidity") or {}).get("usd", 0))
+            if match not in by_addr_best or liq > _to_float((by_addr_best[match].get("liquidity") or {}).get("usd", 0)):
+                by_addr_best[match] = pair
+
+        out: dict[str, float] = {}
+        for addr, pair in by_addr_best.items():
+            price = _to_float(pair.get("priceUsd"), default=0.0)
+            if price > 0:
+                out[addr] = price
+        return out
+
+    results = await asyncio.gather(*(_fetch_chunk(c) for c in chunks), return_exceptions=True)
+    merged: dict[str, float] = {}
+    for r in results:
+        if isinstance(r, dict):
+            merged.update(r)
+    return merged
 
 
 async def get_latest_token_profiles() -> list[dict]:
