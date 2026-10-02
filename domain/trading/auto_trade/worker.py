@@ -54,3 +54,22 @@ async def auto_trade_exit_loop(bot, interval_seconds: int = 20) -> None:
         except Exception as e:
             logger.exception("[AutoTrade] monitor-and-exit loop iteration failed: %s", e)
         await asyncio.sleep(interval_seconds)
+
+
+async def auto_trade_reconciliation_loop(interval_seconds: int = 60) -> None:
+    """Periodically re-checks BUY_RECONCILING / SELL_RECONCILING positions
+    against the chain during normal operation -- not just once at worker
+    startup (reconciliation.run_startup_reconciliation, still called from
+    auto_trade_scan_loop above, continues to handle the crash-recovery
+    case). Its own loop, deliberately separate from the fast
+    auto_trade_exit_loop above -- see RECONCILIATION_SWEEP_INTERVAL_SECONDS's
+    definition in config/settings.py for why."""
+    logger.info("[AutoTrade] reconciliation sweep loop starting (interval=%ss)", interval_seconds)
+    while True:
+        try:
+            reconciled = await reconciliation.reconcile_stuck_positions()
+            if reconciled:
+                logger.info("[AutoTrade] periodic reconciliation resolved %s position(s)", reconciled)
+        except Exception as e:
+            logger.exception("[AutoTrade] periodic reconciliation sweep failed: %s", e)
+        await asyncio.sleep(interval_seconds)

@@ -6,9 +6,16 @@ AutoTradeClaim left in a non-terminal / uncertain state (typically
 after a worker crash or restart mid-trade) by checking actual on-chain
 outcomes before allowing anything to proceed.
 
-Runs once at worker startup (see worker.py) and can also be invoked
-periodically to sweep BUY_RECONCILING / SELL_RECONCILING positions that
-a single failed confirmation poll left dangling.
+Runs once at worker startup (see worker.py), AND periodically during
+normal operation (reconcile_stuck_positions(), called from
+auto_trade_exit_loop every RECONCILIATION_SWEEP_INTERVAL_SECONDS) to
+sweep BUY_RECONCILING / SELL_RECONCILING positions left dangling by a
+single failed confirmation poll (robinhood_swap.py's _sign_send
+returning "unknown" -- see that module's docstring). Before this
+periodic sweep existed, a position stuck in "unknown" during normal
+operation (no crash, no restart) was only ever re-checked against the
+chain at the NEXT worker restart -- which could be hours or days away --
+rather than within a few minutes.
 """
 
 from __future__ import annotations
@@ -144,6 +151,24 @@ async def sweep_orphaned_claims() -> int:
     return swept
 
 
+async def reconcile_stuck_positions() -> int:
+    """Resolves every BUY_RECONCILING / SELL_RECONCILING position against
+    the chain. Shared by run_startup_reconciliation() (once, at process
+    start) and the periodic sweep in worker.py (every
+    RECONCILIATION_SWEEP_INTERVAL_SECONDS during normal operation) --
+    same logic either way, just a different trigger."""
+    positions = await position_manager.get_all_non_terminal_positions()
+    reconciled = 0
+    for position in positions:
+        if position.state in (AutoTradeState.BUY_RECONCILING, AutoTradeState.SELL_RECONCILING):
+            try:
+                await reconcile_position(position)
+                reconciled += 1
+            except Exception as e:
+                logger.error("[AutoTrade] reconciliation failed for pos=%s: %s", position.id, e)
+    return reconciled
+
+
 async def run_startup_reconciliation() -> int:
     """§33 -- called once when the worker process starts, before the
     scan/exit loops begin. Resolves anything left mid-flight by a
@@ -154,15 +179,7 @@ async def run_startup_reconciliation() -> int:
     except Exception as e:
         logger.error("[AutoTrade] startup orphaned-claim sweep failed: %s", e)
 
-    positions = await position_manager.get_all_non_terminal_positions()
-    reconciled = 0
-    for position in positions:
-        if position.state in (AutoTradeState.BUY_RECONCILING, AutoTradeState.SELL_RECONCILING):
-            try:
-                await reconcile_position(position)
-                reconciled += 1
-            except Exception as e:
-                logger.error("[AutoTrade] startup reconciliation failed for pos=%s: %s", position.id, e)
+    reconciled = await reconcile_stuck_positions()
     if reconciled:
         logger.info("[AutoTrade] startup reconciliation resolved %s position(s)", reconciled)
     return reconciled

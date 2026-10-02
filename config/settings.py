@@ -746,6 +746,19 @@ EXIT_MONITOR_INTERVAL_SECONDS = _env_int("EXIT_MONITOR_INTERVAL_SECONDS", 5)
 # concurrent leader-elected instances during a deploy handoff.
 AUTO_TRADE_EXIT_INTERVAL_SECONDS = _env_int("AUTO_TRADE_EXIT_INTERVAL_SECONDS", 2)
 
+# How often BUY_RECONCILING / SELL_RECONCILING positions are re-checked
+# against the chain during normal operation (domain/trading/auto_trade/
+# reconciliation.py::reconcile_stuck_positions, run from its own
+# leader-elected loop -- see auto_trade/worker.py). Before this existed,
+# a position left "unknown" by robinhood_swap.py's _sign_send (broadcast
+# but no receipt observed within its 60s window) was only ever re-checked
+# at the NEXT worker restart, which could be hours away. Deliberately its
+# own loop rather than folded into the 2s AUTO_TRADE_EXIT_INTERVAL_SECONDS
+# loop -- a reconciliation pass queries every non-terminal position and
+# potentially makes an RPC call per stuck one, which has no business
+# running on a 2s cadence.
+RECONCILIATION_SWEEP_INTERVAL_SECONDS = _env_int("RECONCILIATION_SWEEP_INTERVAL_SECONDS", 60)
+
 # Cache TTL used ONLY for position-monitoring price fetches (exit_engine.py,
 # real_exit_engine.py, position_manager.py) -- deliberately separate from
 # the general 15s TTL get_token_card_info() still defaults to everywhere
@@ -897,6 +910,27 @@ REAL_AUTOMATION_ENABLED = _env_bool("REAL_AUTOMATION_ENABLED", False)
 # Robinhood Chain trading (EVM, chain 4663)
 ROBINHOOD_EVM_CHAIN_ID = 4663
 ROBINHOOD_RPC_URL = os.getenv("ROBINHOOD_RPC_URL", "https://rpc.mainnet.chain.robinhood.com")
+
+# Fallback RPC endpoints for domain/trading/real/robinhood_swap.py::rpc_call,
+# tried in order only when the primary is unreachable/erroring at the
+# transport level (timeout, connection error, HTTP 5xx) -- NEVER on a
+# valid JSON-RPC error response, since that's the chain's own answer and
+# would be identical on any provider. Without this, every buy/sell/
+# approval/balance-check on Robinhood Chain depends on ROBINHOOD_RPC_URL's
+# uptime alone.
+#
+# Alchemy officially serves Robinhood Chain (docs.robinhood.com/chain) at
+# the URL below, reusing the SAME ALCHEMY_API_KEY already configured for
+# Ethereum/Solana elsewhere in this file -- no separate key needed if one
+# is already set. ROBINHOOD_RPC_FALLBACK_URLS (comma-separated) lets you
+# add more providers (e.g. a second Alchemy-compatible endpoint, or
+# goldrush/dwellir) without a code change.
+ROBINHOOD_RPC_FALLBACK_URLS = [
+    u.strip() for u in os.getenv("ROBINHOOD_RPC_FALLBACK_URLS", "").split(",") if u.strip()
+]
+if ALCHEMY_API_KEY:
+    ROBINHOOD_RPC_FALLBACK_URLS.append(f"https://robinhood-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}")
+
 ROBINHOOD_UNISWAP_API_KEY = os.getenv("UNISWAP_API_KEY")
 
 # Ethereum mainnet (EVM, chain 1) -- read-only balance lookups for the

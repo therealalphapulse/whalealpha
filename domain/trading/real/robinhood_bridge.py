@@ -144,7 +144,7 @@ async def _sign_send(rpc_url: str, chain_id: int, private_key: bytes, tx: dict) 
     tx = dict(tx)
     tx["from"] = acct.address
     tx["chainId"] = chain_id
-    tx["nonce"] = int(await _rpc_call(rpc_url, "eth_getTransactionCount", [acct.address, "pending"]))
+    tx["nonce"] = int(await _rpc_call(rpc_url, "eth_getTransactionCount", [acct.address, "pending"]), 16)
     if "gas" not in tx:
         tx["gas"] = int(await _rpc_call(rpc_url, "eth_estimateGas", [{k: v for k, v in tx.items() if k != "nonce"}]), 16)
     if "gasPrice" not in tx and "maxFeePerGas" not in tx:
