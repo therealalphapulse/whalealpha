@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, Float, Boolean, DateTime, func, Text
+from sqlalchemy import Column, BigInteger, String, Float, Boolean, DateTime, Integer, func, Text
 from sqlalchemy.orm import relationship
 from infra.db.session import Base
 
@@ -82,6 +82,25 @@ class SignalToken(Base):
     # for that same chat can quote/reply to it instead of the (nonexistent)
     # original alert. Only ever populated on a signal's first milestone.
     first_milestone_message_ids_json = Column(Text, nullable=True, default="{}")
+
+    # Re-pump re-delivery / tracking cycles (see
+    # domain/signals/repump_redelivery.py). A signal that pumped, dumped and
+    # later began a significant new pump is re-delivered as a new full alert
+    # card marked REDELIVERED, and its milestone tracking restarts as a fresh
+    # cycle anchored to that moment. Cycle 1 is the original signal.
+    # NOTE: distinct from `was_redelivered` above, which only means "first
+    # Signal Alert delivery had to be retried" and feeds the auto-buy filter.
+    tracking_cycle = Column(Integer, nullable=True, default=1)
+    # Exact DB timestamp the current cycle began (NULL for cycle 1 -> use
+    # signaled_at). send_milestone_alert() scopes its per-label dedup to
+    # SignalEvent rows created at/after this moment.
+    cycle_started_at = Column(DateTime, nullable=True)
+    # Confirmed post-dump low (market cap) used to detect the re-pump.
+    repump_trough_market_cap = Column(Float, nullable=True)
+    repump_redelivery_count = Column(Integer, nullable=True, default=0)
+    last_repump_redelivery_at = Column(DateTime, nullable=True)
+    # JSON list of archived earlier cycles (entry, peak, trough, ...).
+    prior_cycles_json = Column(Text, nullable=True, default="[]")
 
     # Holder / bundle / dev analysis snapshot (refreshed on each milestone
     # alert so follow-up cards show live data too)

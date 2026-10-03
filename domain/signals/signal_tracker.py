@@ -105,6 +105,14 @@ async def migrate_signal_schema():
         # First Milestone Snapshot support -- see models/signal_token.py
         # and send_milestone_alert() below.
         "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS first_milestone_message_ids_json TEXT DEFAULT '{}'",
+        # Re-pump re-delivery / tracking cycles -- see models/signal_token.py
+        # and domain/signals/repump_redelivery.py.
+        "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS tracking_cycle INTEGER DEFAULT 1",
+        "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS cycle_started_at TIMESTAMP",
+        "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS repump_trough_market_cap DOUBLE PRECISION",
+        "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS repump_redelivery_count INTEGER DEFAULT 0",
+        "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS last_repump_redelivery_at TIMESTAMP",
+        "ALTER TABLE signal_tokens ADD COLUMN IF NOT EXISTS prior_cycles_json TEXT DEFAULT '[]'",
         # NOTE: models/signal_event.py's SAEnum(Milestone) uses SQLAlchemy's
         # default mapping, which sends each member's NAME (e.g. "PCT_25",
         # "SIX_X"), not its .value. A prior patch briefly switched this to
@@ -843,6 +851,18 @@ async def signal_lifecycle_loop(bot, interval_seconds=90):
                         )
                         await session2.commit()
 
+                    # Re-pump re-delivery: a token that already pumped, dumped
+                    # and has now begun a significant new pump is re-sent as a
+                    # new full REDELIVERED card and its milestone tracking is
+                    # reset from this moment. When that happens the ladder was
+                    # just re-anchored, so skip milestone alerts for this pass.
+                    try:
+                        from domain.signals.repump_redelivery import maybe_redeliver_repump
+                        if await maybe_redeliver_repump(bot, s, data, cur_mc):
+                            crossed_milestones = []
+                    except Exception as e:
+                        logger.error(f"Re-pump re-delivery check failed (non-fatal) for {s.contract[:8]}: {e}")
+
                     # Fire one alert per crossed rung, in ascending order.
                     # The final (highest) rung uses the actual live gain/mc
                     # (identical to the old single-alert behavior for the
@@ -931,14 +951,23 @@ async def send_milestone_alert(bot, signal, label, cur_mc, gain):
     # through the one shared function.
     from domain.signals.pump_radar import _load_channel_ids
 
+    # Re-pump re-delivery restarts the milestone ladder as a fresh tracking
+    # cycle (domain/signals/repump_redelivery.py). A label already fired in
+    # an EARLIER cycle (e.g. "2X") must not suppress the same rung in the
+    # current one, so the per-label dedup only considers events recorded at
+    # or after the current cycle's start. cycle_started_at is NULL for every
+    # signal that was never re-delivered -> identical to the old behaviour.
+    _cycle_started_at = getattr(signal, "cycle_started_at", None)
+    _dedup_filters = [
+        SignalEvent.signal_id == signal.id,
+        SignalEvent.status == label,
+    ]
+    if _cycle_started_at is not None:
+        _dedup_filters.append(SignalEvent.created_at >= _cycle_started_at)
+
     async with async_session() as session:
-        check = await session.execute(
-            select(SignalEvent).where(
-                SignalEvent.signal_id == signal.id,
-                SignalEvent.status == label
-            )
-        )
-        if check.scalar_one_or_none():
+        check = await session.execute(select(SignalEvent).where(*_dedup_filters))
+        if check.scalars().first():
             return
 
         # First Milestone Snapshot / First Milestone Auto-Buy (item 1/2/3):

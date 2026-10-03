@@ -606,6 +606,20 @@ async def enhanced_signal_lifecycle_loop(bot, interval_seconds: int = 90):
                         )
                         await session2.commit()
 
+                    # Re-pump re-delivery (see domain/signals/repump_redelivery.py):
+                    # on a qualifying pump -> dump -> new pump, send a new full
+                    # REDELIVERED card and reset milestone tracking from this
+                    # moment; skip this pass's milestone since it was re-anchored.
+                    try:
+                        from domain.signals.repump_redelivery import maybe_redeliver_repump
+                        if await maybe_redeliver_repump(bot, signal, data, current_mc):
+                            milestone = None
+                    except Exception as exc:
+                        logger.error(
+                            "Re-pump re-delivery check failed (non-fatal) for %s: %s",
+                            signal.contract[:8], exc,
+                        )
+
                     if milestone:
                         threshold, label = milestone
                         logger.info(
